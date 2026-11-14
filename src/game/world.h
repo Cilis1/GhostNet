@@ -12,7 +12,8 @@ struct StoryInfo {
 };
 
 const StoryInfo& storyInfo(int idx);
-bool contractAvailable(const GameState& g);   // one new contract per map refresh
+bool contractAvailable(const GameState& g);   // one new contract per board refresh
+bool deepListed(const GameState& g);          // the deep job, once HELIOS's secret is out
 std::vector<Target> buildBoard(const GameState& g);    // everything you can hit right now
 Target* findTarget(std::vector<Target>& board, int id);
 bool isMapLocal(int id);                                // regular + shrine targets

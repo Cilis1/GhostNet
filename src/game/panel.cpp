@@ -51,6 +51,7 @@ void panelBriefing(const GameState& g, const Target& t) {
                           : static_cast<int>((baseGuesses(t.lock) + g.deck.breaker) * 0.75) * bal::COST_GUESS;
     int objSecs = 0;
     for (auto& f : t.files) if (f.kind == FileKind::Objective) objSecs += secondsToDownload(g, f.size);
+    objSecs = static_cast<int>(std::ceil(objSecs * bal::DOWNLOAD_TRACE_MULT));   // downloads are loud
     int need = lockCost + objSecs + 4;
 
     // VESPER - risk.
@@ -58,18 +59,19 @@ void panelBriefing(const GameState& g, const Target& t) {
     std::string vl = "Trace budget ~" + std::to_string(budget) + "s. Door costs ~" + std::to_string(lockCost) + "s";
     if (objSecs) vl += ", objectives ~" + std::to_string(objSecs) + "s";
     vl += ".";
-    if (budget < need) { vv = Vote::Abort; vl += " That math does not work. Bring proxies or a phrase."; }
+    if (t.watchdog) budget = static_cast<int>(budget * 0.8);   // the ramp eats about a fifth
+    if (budget < need) { vv = Vote::Abort; vl += t.deep ? " The deep job. Your gear can't carry it yet - the math is a wall." : " That math does not work. Bring proxies or a phrase."; }
     else if (budget < need + 15) { vv = Vote::Caution; vl += " Thin margin. Don't browse."; }
     else vl += " Comfortable, if you stay disciplined.";
     speak(VESPER, col::magenta(), vl);
     if (t.watchdog) speak(VESPER, col::magenta(), "Watchdog on this box: every minute you stay, the hunt gets 50% faster.");
-    if (const Machine* b = g.net.bait()) {
-        speak(VESPER, col::magenta(), "Bait armed: '" + b->name + "'. If this goes wrong, it dies instead of you.");
+    if (const Machine* b = g.net.decoy()) {
+        speak(VESPER, col::magenta(), "Decoy armed: '" + b->name + "'. If this goes wrong, HELIOS traces it instead of you.");
     } else if (g.netUnlocked && t.security >= 3) {
         bool hasProxy = false;
         for (auto& m : g.net.machines) if (m.working() && m.job == Job::Proxy && !m.home) hasProxy = true;
-        speak(VESPER, col::magenta(), hasProxy ? "No bait armed. You have a running proxy that could take the fall."
-                                               : "No bait, no proxy to sacrifice. A trace-out here costs you everything it can.");
+        speak(VESPER, col::magenta(), hasProxy ? "No decoy armed. You have a running proxy that could take the fall."
+                                               : "No decoy, no proxy to sacrifice. A trace-out here seizes the night's haul.");
         if (vv == Vote::Go) vv = Vote::Caution;
     }
 
@@ -77,22 +79,22 @@ void panelBriefing(const GameState& g, const Target& t) {
     Vote lv = Vote::Go;
     int bill = g.net.upkeepTotal();
     int fine = std::min(g.credits, baseFine(g, t, false, false));
-    std::string ll = "Bill after this run: " + ui::credits(bill) + ". Fine if traced: up to " + ui::credits(fine) + ".";
+    std::string ll = "Bill after this run: " + ui::credits(bill) + ". If traced: fine up to " + ui::credits(fine) + " and the haul is seized.";
     if (bill > g.credits) {
         lv = Vote::Caution;
         ll += " You can't cover the bill right now - earn at least " + ui::credits(bill - g.credits) + " or everything goes dark.";
     }
     if (t.reward) ll += " Contract pays " + ui::credits(t.reward) + " on completion.";
     speak(LEDGER, col::yellow(), ll);
-    if (t.stealable && g.netUnlocked) {
+    if (t.stealable && g.net.bestScoutTier() > 0) {
         HardwareSpec hw = hardwareFor(t.kind);
         int up = bal::TIER_UPKEEP[hw.tier] + (hw.noise - 1) * bal::NOISE_UPKEEP;
         speak(LEDGER, col::yellow(), std::string("Detachable ") + jobName(hw.def) + " T" + std::to_string(hw.tier) +
-                                         " here. Free to take, ~" + std::to_string(up) + "cr/run to keep breathing." +
+                                         " here. Free to take, ~" + std::to_string(up) + "cr/run to keep running." +
                                          (hw.tier == 3 ? " Ruinous, but it's the only way to get top-tier iron." : ""));
     }
     if (g.net.externalCount() >= bal::MAX_EXTERNAL && t.stealable)
-        speak(LEDGER, col::yellow(), "Archive is full (10). Scrap something before you try to steal.");
+        speak(LEDGER, col::yellow(), "You own 10 machines already. Scrap something before you try to capture.");
 
     // MOTH - intel.
     Vote mv = Vote::Go;
@@ -106,7 +108,7 @@ void panelBriefing(const GameState& g, const Target& t) {
     else if (t.backdoor && quality >= 3) speak(MOTH, col::cyan(), "There IS a maintenance way in. Somebody wrote the phrase down. Shrines hoard memos.");
     if (t.lock != LockType::None && lockHasOddNearRule(t.lock) && (quality >= 1 || t.kind == Kind::Story))
         speak(MOTH, col::cyan(), "Rotor lock. '~' means one notch off, NOT misplaced. It's how most ghosts die.");
-    if (t.hasHoneypot() && quality >= 1) { speak(MOTH, col::cyan(), "There's bait in the files. Read before you grab."); if (mv == Vote::Go) mv = Vote::Caution; }
+    if (t.hasHoneypot() && quality >= 1) { speak(MOTH, col::cyan(), "There's a bait file in there. Read before you grab."); if (mv == Vote::Go) mv = Vote::Caution; }
 
     // Verdict.
     std::cout << "\n  Votes: " << VESPER << " " << voteCol(vv) << voteStr(vv) << col::reset() << "  " << LEDGER << " "
@@ -120,8 +122,8 @@ void panelBriefing(const GameState& g, const Target& t) {
 void panelReview(const GameState& g) {
     ui::header("THE PANEL - network review");
     if (!g.netUnlocked) {
-        speak(MOTH, col::cyan(), "We're just voices in a deck right now. Finish Mags' first contract and you'll get hardware.");
-        speak(LEDGER, col::yellow(), "Meanwhile: deck upgrades are permanent and never bill you. Worth remembering.");
+        speak(MOTH, col::cyan(), "We're just voices in a rented deck right now. Finish a contract; the rack has more in it than it looks.");
+        speak(LEDGER, col::yellow(), "Meanwhile: tools for your own deck are permanent and never bill you. Worth remembering.");
         speak(VESPER, col::magenta(), "Open targets have the slowest trace. Learn the keypad there. Practice range is free.");
         return;
     }
@@ -136,18 +138,25 @@ void panelReview(const GameState& g) {
     int repair = 0;
     for (auto& m : n.machines) if (!m.home) repair += (100 - m.condition) * bal::REPAIR_PER_POINT;
     if (repair > 0) speak(LEDGER, col::yellow(), "Full repair would cost " + ui::credits(repair) + ".");
-    if (bill > g.credits) speak(LEDGER, col::yellow(), "Warning: you cannot pay the next bill. Every external machine will go dark.");
+    if (bill > g.credits) speak(LEDGER, col::yellow(), "Warning: you cannot pay the next bill. Everything except N0 would go dark.");
 
     for (auto& m : n.machines)
         if (!m.home && m.condition > 0 && m.condition < 25)
             speak(VESPER, col::magenta(), "'" + m.name + "' is at " + std::to_string(m.condition) + "%. One bad night and it goes dark.");
-    if (const Machine* b = n.bait()) speak(VESPER, col::magenta(), "Bait armed: '" + b->name + "'. I hope you said goodbye.");
-    else speak(VESPER, col::magenta(), "No bait armed. Proxy bonus " + std::to_string(n.proxyBonus()) + "% of a " + std::to_string(bal::PROXY_CAP) + "% cap.");
+    if (const Machine* b = n.decoy()) speak(VESPER, col::magenta(), "Decoy armed: '" + b->name + "'. I hope you said goodbye.");
+    else speak(VESPER, col::magenta(), "No decoy armed. Proxy bonus " + std::to_string(n.proxyBonus()) + "% of a " + std::to_string(bal::PROXY_CAP) + "% cap.");
     speak(VESPER, col::magenta(), "Relay bonus " + std::to_string(n.relayBonus()) + "% of a " + std::to_string(bal::RELAY_CAP) + "% cap. Past the cap, more relays do nothing.");
 
     speak(MOTH, col::cyan(), "Scouting: " + std::to_string(n.usableScoutCharges()) + " charge(s), capacity " + std::to_string(n.scoutCapacity()) +
                                  ", best report quality " + std::to_string(n.bestScoutTier()) + "/3.");
     speak(MOTH, col::cyan(), "Emergency attempts next run: " + std::to_string(n.computeCapacity()) + " (max " + std::to_string(bal::COMPUTE_MAX) + ", one per lock).");
     if (!g.knownPhrases.empty()) speak(MOTH, col::cyan(), "Passphrases in your journal: " + std::to_string(g.knownPhrases.size()) + ".");
-    if (n.home() && n.home()->tier < 3) speak(MOTH, col::cyan(), "Home server upgrades never bill and never break. Safest investment you have.");
+    if (n.home() && n.home()->tier < 3) speak(MOTH, col::cyan(), n.home()->name + " upgrades never bill and never wear. It's the only tier 3 you can get without stealing.");
+    if (deepListed(g)) {
+        int relayGap = bal::RELAY_CAP - n.relayBonus(), proxyGap = bal::PROXY_CAP - n.proxyBonus();
+        speak(MOTH, col::cyan(), "The deep job: relays " + std::to_string(n.relayBonus()) + "/" + std::to_string(bal::RELAY_CAP) + "%, proxies " +
+                                     std::to_string(n.proxyBonus()) + "/" + std::to_string(bal::PROXY_CAP) + "%" +
+                                     (g.knownPhrases.count(kDeepId) ? ", phrase in hand." : ", no phrase yet - the Facilities Annex has it.") +
+                                     (relayGap + proxyGap > 30 ? " Not yet." : " Close enough to try."));
+    }
 }

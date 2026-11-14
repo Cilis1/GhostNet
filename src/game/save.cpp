@@ -13,7 +13,7 @@
 namespace fs = std::filesystem;
 
 namespace {
-constexpr int kVersion = 1;
+constexpr int kVersion = 2;   // v1 saves (0.1.x) still load; new fields default
 
 std::string esc(const std::string& s) {
     static const char* hex = "0123456789ABCDEF";
@@ -52,15 +52,16 @@ bool saveGame(const GameState& g, std::string* err) {
     o << "credits " << g.credits << "\n";
     o << "map " << g.mapIndex << " " << g.mapRunsLeft << "\n";
     o << "story " << g.story << "\n";
+    o << "act " << g.act << " " << (g.deepDone ? 1 : 0) << " " << (g.retired ? 1 : 0) << "\n";
     o << "unlocked " << (g.netUnlocked ? 1 : 0) << "\n";
-    o << "net " << g.net.slots << " " << g.net.baitId << " " << g.net.scoutCharges << " " << g.net.nextId << " " << g.net.burnedCount << "\n";
+    o << "net " << g.net.slots << " " << g.net.decoyId << " " << g.net.scoutCharges << " " << g.net.nextId << " " << g.net.burnedCount << "\n";
     o << "sound " << (g.sound ? 1 : 0) << "\n";
     o << "runcounter " << g.runCounter << "\n";
-    o << "deck " << g.deck.breaker << " " << g.deck.uplink << " " << g.deck.shroud << "\n";
+    o << "deck " << g.deck.breaker << " " << g.deck.uplink << " " << g.deck.shroud << " " << g.deck.lens << "\n";
     const Stats& s = g.stats;
-    o << "stats " << s.runs << " " << s.jobs << " " << s.robberies << " " << s.traceouts << " " << s.sacrifices << " " << s.steals
+    o << "stats " << s.runs << " " << s.jobs << " " << s.robberies << " " << s.traceouts << " " << s.sacrifices << " " << s.captures
       << " " << s.walkaways << " " << s.unpaidBills << " " << s.earned << " " << s.billsPaid << " " << s.finesPaid << " "
-      << s.repairsPaid << "\n";
+      << s.repairsPaid << " " << s.deepAttempts << "\n";
     for (auto& m : g.net.machines)
         o << "m " << m.id << " " << esc(m.name) << " " << static_cast<int>(m.job) << " " << m.tier << " " << m.captured << " "
           << m.home << " " << m.active << " " << m.condition << " " << m.noise << " " << m.price << " " << esc(m.origin) << "\n";
@@ -102,32 +103,40 @@ bool loadGame(GameState& g, std::string* err) {
         std::istringstream is(line);
         std::string k;
         is >> k;
-        if (k == "GHOSTNET") { int v = 0; is >> v; header = v == kVersion; }
+        if (k == "GHOSTNET") { int v = 0; is >> v; header = v >= 1 && v <= kVersion; }
         else if (k == "seed") is >> n.worldSeed;
         else if (k == "credits") { long long v = 0; is >> v; n.credits = clampi(v, 0, 100000000); }
         else if (k == "map") { long long a = 0, b = 3; is >> a >> b; n.mapIndex = clampi(a, 0, 1000000); n.mapRunsLeft = clampi(b, 1, bal::RUNS_PER_MAP); }
         else if (k == "story") { long long v = 0; is >> v; n.story = clampi(v, 0, storyCount()); }
-        else if (k == "unlocked") { int v = 0; is >> v; n.netUnlocked = v != 0; }
+        else if (k == "act") {
+            long long a = 1; int d = 0, r = 0;
+            is >> a >> d >> r;
+            n.act = clampi(a, 1, 3);
+            n.deepDone = d != 0;
+            n.retired = r != 0;
+        } else if (k == "unlocked") { int v = 0; is >> v; n.netUnlocked = v != 0; }
         else if (k == "net") {
             long long a = 3, b = -1, c = 0, d = 1, e = 0;
             is >> a >> b >> c >> d >> e;
             n.net.slots = clampi(a, bal::START_SLOTS, bal::MAX_SLOTS);
-            n.net.baitId = static_cast<int>(b);
+            n.net.decoyId = static_cast<int>(b);
             n.net.scoutCharges = clampi(c, 0, bal::SCOUT_MAX_CHARGES);
             n.net.nextId = clampi(d, 1, 1000000000);
             n.net.burnedCount = clampi(e, 0, 1000000);
         } else if (k == "sound") { int v = 1; is >> v; n.sound = v != 0; }
         else if (k == "runcounter") is >> n.runCounter;
         else if (k == "deck") {
-            long long a = 0, b = 0, c = 0;
-            is >> a >> b >> c;
+            long long a = 0, b = 0, c = 0, d = 0;
+            is >> a >> b >> c >> d;
             n.deck.breaker = clampi(a, 0, bal::DECK_MAX);
             n.deck.uplink = clampi(b, 0, bal::DECK_MAX);
             n.deck.shroud = clampi(c, 0, bal::DECK_MAX);
+            n.deck.lens = clampi(d, 0, bal::LENS_MAX);
         } else if (k == "stats") {
             Stats& s = n.stats;
-            is >> s.runs >> s.jobs >> s.robberies >> s.traceouts >> s.sacrifices >> s.steals >> s.walkaways >> s.unpaidBills >>
+            is >> s.runs >> s.jobs >> s.robberies >> s.traceouts >> s.sacrifices >> s.captures >> s.walkaways >> s.unpaidBills >>
                 s.earned >> s.billsPaid >> s.finesPaid >> s.repairsPaid;
+            if (!(is >> s.deepAttempts)) s.deepAttempts = 0;
         } else if (k == "m") {
             Machine m;
             std::string name, origin;
@@ -160,7 +169,7 @@ bool loadGame(GameState& g, std::string* err) {
         else if (k == "end") { end = true; break; }
     }
     if (!header || !end) { if (err) *err = "save file is damaged or from another version"; return false; }
-    // Integrity: the home server comes first, the active count fits the rack, bait is legal.
+    // Integrity: the home server comes first, the active count fits the rack, the decoy is legal.
     std::stable_partition(n.net.machines.begin(), n.net.machines.end(), [](const Machine& m) { return m.home; });
     int active = 0;
     for (auto& m : n.net.machines) {
@@ -169,7 +178,9 @@ bool loadGame(GameState& g, std::string* err) {
             else ++active;
         }
     }
-    if (!n.net.bait()) n.net.baitId = -1;
+    if (!n.net.decoy()) n.net.decoyId = -1;
+    if (n.stats.captures > 0 && n.act < 2) n.act = 2;      // 0.1.x saves: derive the act from history
+    if (n.stats.sacrifices > 0 && n.act < 3) n.act = 3;
     if (n.netUnlocked && !n.net.home()) n.netUnlocked = false;
     g = n;
     return true;

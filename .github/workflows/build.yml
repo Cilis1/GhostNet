@@ -25,6 +25,8 @@ jobs:
         run: python3 tools/playtest_bot.py build/GhostNet 7 12
       - name: Playtest bot (reckless player)
         run: python3 tools/playtest_bot.py build/GhostNet 11 12 chaos
+      - name: Playtest bot (deep job must be beatable with a built network)
+        run: python3 tools/playtest_bot.py build/GhostNet 7 70 deep
 
   windows:
     name: Windows build (MSVC, static runtime)

@@ -21,12 +21,16 @@ std::string sanitizeName(const std::string& raw) {
 
 void unlockNetwork(GameState& g) {
     ui::header("GHOSTNET");
-    ui::typeOut("  A favour comes due. Mags' runner drops off a salvaged server rack - hardware the", 6);
-    ui::typeOut("  corporation believes was destroyed. One machine hums inside.", 6);
+    plat::soundAlert();
+    ui::typeOut("  Bad news first: the room's landlord bills by the rack unit now, and somebody has to pay it.", 6);
+    ui::typeOut("  Then the good news. Behind the false panel in THE RACK, under SAINT's old courier tags:", 6);
+    ui::typeOut("  three slots of salvaged hardware HELIOS logged as melted down. SAINT never melted anything.", 6);
+    ui::typeOut("  One machine is still warm. It boots when you touch it.", 6);
     std::cout << "\n  " << col::bold() << "This is your own server mesh." << col::reset()
-              << " It is optional infrastructure and will never replace the upgrades you buy for yourself.\n\n";
-    std::string name = sanitizeName(ui::prompt("  Name your home server (Enter for 'hearth'): "));
-    if (name.empty()) name = "hearth";
+              << " It is optional infrastructure, and it never replaces your tools.\n"
+              << "  " << col::dim() << "Nothing on it earns money. Nothing runs while you're away. It only helps you on runs - and it bills you." << col::reset() << "\n\n";
+    std::string name = sanitizeName(ui::prompt("  Name your home server (Enter for 'N0'): "));
+    if (name.empty()) name = "N0";
     Machine h;
     h.id = 0;
     h.name = name;
@@ -36,42 +40,45 @@ void unlockNetwork(GameState& g) {
     h.active = true;
     h.condition = 100;
     h.noise = 1;
-    h.origin = "Your first machine. It cannot be destroyed.";
+    h.origin = "SAINT's last machine. Never billed, never worn, never lost.";
     g.net.machines.insert(g.net.machines.begin(), h);
     g.net.slots = bal::START_SLOTS;
     g.netUnlocked = true;
     g.net.refillScout();
     plat::soundOnline();
     std::cout << "  " << col::green() << name << " comes online." << col::reset()
-              << " RELAY, tier 1, free to run, takes one slot. Open GhostNet from your deck.\n";
+              << " RELAY, tier 1, free to run, takes one slot. Open GhostNet from THE RACK menu.\n";
 }
 
 namespace {
 
 void summary(const GameState& g) {
     const Network& n = g.net;
-    ui::header("GHOSTNET - your network");
+    ui::header("THE RACK - GhostNet");
+    int worth = 0;
+    for (auto& m : n.machines) worth += scrapValue(m);
     std::cout << "  Credits " << col::yellow() << g.credits << "cr" << col::reset() << "   Running " << n.activeCount() << "/" << n.slots
-              << " slots   Archive " << n.externalCount() << "/" << bal::MAX_EXTERNAL << " external   Burned as bait: " << n.burnedCount << "\n";
+              << " slots   Machines " << n.externalCount() << "/" << bal::MAX_EXTERNAL << " (plus N0)   Worth " << worth
+              << "cr scrapped   Burned as decoys: " << n.burnedCount << "\n";
     std::cout << "  Download bonus " << col::green() << "+" << n.relayBonus() << "%" << col::reset() << " (cap " << bal::RELAY_CAP << ")"
               << "   Trace reduction " << col::green() << "-" << n.proxyBonus() << "%" << col::reset() << " (cap " << bal::PROXY_CAP << ")"
               << "   Emergency attempts next run " << n.computeCapacity() << "/" << bal::COMPUTE_MAX << "\n";
     std::cout << "  Scouting charges " << n.usableScoutCharges() << "/" << n.scoutCapacity() << " (best report quality "
-              << n.bestScoutTier() << ")   Next upkeep bill " << col::yellow() << n.upkeepTotal() << "cr" << col::reset()
-              << "   Bait: " << (n.bait() ? std::string(col::red()) + n.bait()->name + col::reset() : std::string("none")) << "\n\n";
+              << n.bestScoutTier() << ")   Next run costs " << col::yellow() << n.upkeepTotal() << "cr" << col::reset()
+              << "   Armed to die: " << (n.decoy() ? std::string(col::red()) + n.decoy()->name + col::reset() : std::string("nobody")) << "\n\n";
     ui::drawRack(g);
     const Machine* h = n.home();
     std::cout << "\n  " << col::dim() << "Prices: relay " << bal::BUY_PRICE[0] << ", proxy " << bal::BUY_PRICE[1] << ", scout "
-              << bal::BUY_PRICE[2] << ", compute " << bal::BUY_PRICE[3] << " (clean T2)  | reimagine " << bal::REIMAGINE_FEE
+              << bal::BUY_PRICE[2] << ", compute " << bal::BUY_PRICE[3] << " (clean T2)  | re-job " << bal::REIMAGINE_FEE
               << " | repair " << bal::REPAIR_PER_POINT << "cr/pt";
     if (n.slots < bal::MAX_SLOTS) std::cout << " | next slot " << bal::SLOT_COST[n.slots - bal::START_SLOTS];
-    if (h && h->tier < 3) std::cout << " | home upgrade " << bal::HOME_UPGRADE[h->tier - 1];
+    if (h && h->tier < 3) std::cout << " | " << h->name << " upgrade " << bal::HOME_UPGRADE[h->tier - 1];
     std::cout << col::reset() << "\n";
 }
 
 void help() {
-    std::cout << "  buy <relay|proxy|scout|compute>   on <id>   off <id>   job <id> <job>   repair <id|all>\n"
-              << "  scrap <id>   rename <id> <name>   bait <id>   unbait   expand   home (upgrade home server)\n"
+    std::cout << "  buy <relay|proxy|scout|compute>   on <id>   off <id> (cold storage)   job <id> <job>   repair <id|all>\n"
+              << "  scrap <id>   rename <id> <name>   decoy <id>   disarm   expand   home (upgrade N0)\n"
               << "  back\n";
 }
 
@@ -86,7 +93,7 @@ void buy(GameState& g, const std::vector<std::string>& w) {
     Job j;
     if (w.size() < 2 || !parseJob(w[1], j)) { std::cout << "  buy <relay|proxy|scout|compute>\n"; return; }
     int price = bal::BUY_PRICE[static_cast<int>(j)];
-    if (g.net.externalCount() >= bal::MAX_EXTERNAL) { std::cout << "  Archive full (10 external machines). Scrap one first.\n"; return; }
+    if (g.net.externalCount() >= bal::MAX_EXTERNAL) { std::cout << "  You already own 10 machines besides N0 - the most anyone can keep. Scrap one first.\n"; return; }
     if (g.credits < price) { std::cout << "  That costs " << price << "cr. You have " << g.credits << "cr.\n"; return; }
     g.credits -= price;
     Machine m;
@@ -98,8 +105,9 @@ void buy(GameState& g, const std::vector<std::string>& w) {
     m.price = price;
     char buf[8];
     std::snprintf(buf, sizeof buf, "%02d", m.id);
-    m.name = std::string("clean-") + jobLower(j) + "-" + buf;
-    m.origin = "Bought refurbished for " + std::to_string(price) + "cr.";
+    static const char* serial[4] = {"RLY-", "PRX-", "SCT-", "CMP-"};
+    m.name = std::string(serial[static_cast<int>(j)]) + buf;
+    m.origin = "Bought clean for " + std::to_string(price) + "cr.";
     m.active = g.net.activeCount() < g.net.slots;
     g.net.machines.push_back(m);
     if (m.active) {
@@ -107,13 +115,13 @@ void buy(GameState& g, const std::vector<std::string>& w) {
         std::cout << "  " << col::green() << m.name << " racked and running." << col::reset() << "\n";
     } else {
         std::cout << "  " << col::yellow() << "Your rack is full: " << m.name
-                  << " went to COLD STORAGE. It is not running and does nothing until you switch something off." << col::reset() << "\n";
+                  << " went to COLD STORAGE. It is not running and does nothing until you free a slot and switch it on." << col::reset() << "\n";
     }
 }
 
 void activate(GameState& g, Machine& m) {
     if (m.active) { std::cout << "  Already running.\n"; return; }
-    if (m.dark()) { std::cout << "  " << m.name << " is worn out. Repair it first.\n"; return; }
+    if (m.dark()) { std::cout << "  " << m.name << " is dark (condition 0). Repair it first.\n"; return; }
     if (g.net.activeCount() >= g.net.slots) { std::cout << "  No free slot (" << g.net.slots << "). Switch something off or expand.\n"; return; }
     m.active = true;
     plat::soundOnline();
@@ -121,22 +129,22 @@ void activate(GameState& g, Machine& m) {
 }
 
 void deactivate(GameState& g, Machine& m) {
-    if (m.home) { std::cout << "  The home server is always running - it's the rack's heart.\n"; return; }
+    if (m.home) { std::cout << "  " << m.name << " is always running - it's the rack's heart.\n"; return; }
     if (!m.active) { std::cout << "  Already in storage.\n"; return; }
     m.active = false;
-    std::cout << "  " << m.name << " goes to cold storage. Silent, dark, free.\n";
-    if (g.net.baitId == m.id) { g.net.baitId = -1; std::cout << "  It is no longer bait.\n"; }
+    std::cout << "  " << m.name << " goes to cold storage. Silent, free, no wear.\n";
+    if (g.net.decoyId == m.id) { g.net.decoyId = -1; std::cout << "  Storing it disarmed the decoy.\n"; }
 }
 
 void reimagine(GameState& g, Machine& m, const std::vector<std::string>& w) {
     Job j;
     if (w.size() < 3 || !parseJob(w[2], j)) { std::cout << "  job <id> <relay|proxy|scout|compute>\n"; return; }
-    if (g.net.baitId == m.id) { std::cout << "  " << m.name << " is armed as bait. You don't get to change the terms of a sacrifice.\n"; return; }
+    if (g.net.decoyId == m.id) { std::cout << "  " << m.name << " is armed as the decoy. Disarm it before you change its job.\n"; return; }
     if (m.job == j) { std::cout << "  It already does that.\n"; return; }
-    if (g.credits < bal::REIMAGINE_FEE) { std::cout << "  Reimagining costs " << bal::REIMAGINE_FEE << "cr.\n"; return; }
+    if (g.credits < bal::REIMAGINE_FEE) { std::cout << "  Re-jobbing costs " << bal::REIMAGINE_FEE << "cr.\n"; return; }
     g.credits -= bal::REIMAGINE_FEE;
     m.job = j;
-    std::cout << "  " << m.name << " is now a " << jobName(j) << ". Same tier, same scars, same history.\n";
+    std::cout << "  " << m.name << " is now a " << jobName(j) << ". Same tier, condition, signal, name and history. -" << bal::REIMAGINE_FEE << "cr.\n";
     if (j == Job::Scout) std::cout << col::dim() << "  (Capacity, not ammunition: scouting charges are not refilled.)" << col::reset() << "\n";
 }
 
@@ -171,13 +179,13 @@ void repair(GameState& g, const std::vector<std::string>& w) {
 }
 
 void scrap(GameState& g, Machine& m) {
-    if (m.home) { std::cout << "  The home server can never be released.\n"; return; }
-    int value = m.captured ? bal::SCRAP_CAPTURED[m.tier] : m.price * bal::SCRAP_BOUGHT_PCT / 100;
+    if (m.home) { std::cout << "  " << m.name << " can never be scrapped.\n"; return; }
+    int value = scrapValue(m);
     std::cout << "  Scrapping " << col::bold() << m.name << col::reset() << " destroys it permanently for " << col::yellow() << value
-              << "cr" << col::reset() << ".\n";
+              << "cr" << col::reset() << (m.captured ? " (flat rate for captured hardware)." : " (a fraction of the " + std::to_string(m.price) + "cr you paid).") << "\n";
     std::string a = ui::prompt("  Type its name to confirm: ");
     if (a != m.name) { std::cout << "  Kept.\n"; return; }
-    if (g.net.baitId == m.id) g.net.baitId = -1;
+    if (g.net.decoyId == m.id) g.net.decoyId = -1;
     int id = m.id;
     std::string name = m.name;
     auto& v = g.net.machines;
@@ -186,27 +194,30 @@ void scrap(GameState& g, Machine& m) {
     std::cout << "  " << name << " is stripped for parts. +" << value << "cr. A small funeral.\n";
 }
 
-void armBait(GameState& g, Machine& m) {
-    if (m.home) { std::cout << "  Never the home server. There has to be one thing you cannot lose.\n"; return; }
-    if (g.net.baitId == m.id) { std::cout << "  " << m.name << " is already armed as bait.\n"; return; }
-    if (m.job != Job::Proxy) { std::cout << "  Only a PROXY (trace-slowing machine) can take the fall.\n"; return; }
-    if (!m.active) { std::cout << "  It has to be running.\n"; return; }
-    if (m.dark()) { std::cout << "  It's worn out. A dead machine can't fool the hunter.\n"; return; }
+void armDecoy(GameState& g, Machine& m) {
+    if (m.home) { std::cout << "  Never " << m.name << ". There has to be one thing you cannot lose.\n"; return; }
+    if (g.net.decoyId == m.id) { std::cout << "  " << m.name << " is already the decoy.\n"; return; }
+    if (m.job != Job::Proxy) { std::cout << "  Only a PROXY can be a decoy.\n"; return; }
+    if (!m.active) { std::cout << "  It has to be in the rack, running.\n"; return; }
+    if (m.dark()) { std::cout << "  It's dark. A dead machine can't fool HELIOS.\n"; return; }
     if (!m.captured) {
         std::cout << "  " << col::red() << "You paid " << m.price << "cr for " << m.name << "." << col::reset()
-                  << " If the trace completes, it is DESTROYED - not stored, not repairable, gone.\n";
-        if (!ui::confirm("  Arm it anyway?")) return;
-        if (!ui::confirm("  Say it twice. " + m.name + " dies for you if this goes wrong?")) return;
+                  << " If the trace fills, HELIOS traces it instead of you and it is DESTROYED -\n"
+                  << "  not stored, not repairable, gone. The fine is halved and you keep the night.\n";
+        std::string a = ui::prompt("  Type 'sacrifice' to arm it: ");
+        if (ui::lower(a) != "sacrifice") { std::cout << "  Not armed.\n"; return; }
     }
-    g.net.baitId = m.id;
-    std::cout << "  " << col::bgRed() << " BAIT ARMED " << col::reset() << " " << m.name << " keeps working normally until the moment it dies.\n";
+    if (g.net.decoyId >= 0)
+        if (const Machine* old = g.net.find(g.net.decoyId)) std::cout << "  " << old->name << " is no longer the decoy.\n";
+    g.net.decoyId = m.id;
+    std::cout << "  " << col::bgRed() << " DECOY ARMED " << col::reset() << " " << m.name << " keeps slowing the trace until the moment it dies.\n";
 }
 
 }  // namespace
 
 void networkScreen(GameState& g) {
     if (!g.netUnlocked) {
-        std::cout << "  " << col::dim() << "[LOCKED] Finish your first real job and someone will owe you hardware." << col::reset() << "\n";
+        std::cout << "  " << col::dim() << "[LOCKED] The rack is just a rented room for now. Finish a contract." << col::reset() << "\n";
         ui::pause();
         return;
     }
@@ -235,10 +246,10 @@ void networkScreen(GameState& g) {
             if (n.empty()) { std::cout << "  rename <id> <name>  (letters, digits, space - _ . ; max 16)\n"; continue; }
             std::cout << "  " << m->name << " is now called " << col::bold() << n << col::reset() << ".\n";
             m->name = n;
-        } else if (c == "bait") { if (Machine* m = machineArg(g, w)) armBait(g, *m); }
-        else if (c == "unbait" || c == "disarm") {
-            if (g.net.baitId < 0) std::cout << "  Nothing is armed.\n";
-            else { g.net.baitId = -1; std::cout << "  Bait disarmed.\n"; }
+        } else if (c == "decoy" || c == "arm") { if (Machine* m = machineArg(g, w)) armDecoy(g, *m); }
+        else if (c == "disarm" || c == "undecoy") {
+            if (g.net.decoyId < 0) std::cout << "  Nothing is armed.\n";
+            else { g.net.decoyId = -1; std::cout << "  Decoy disarmed.\n"; }
         } else if (c == "expand") {
             if (g.net.slots >= bal::MAX_SLOTS) { std::cout << "  The rack is at its maximum of " << bal::MAX_SLOTS << " slots.\n"; continue; }
             int cost = bal::SLOT_COST[g.net.slots - bal::START_SLOTS];
@@ -255,7 +266,7 @@ void networkScreen(GameState& g) {
             g.credits -= cost;
             h->tier += 1;
             plat::soundOnline();
-            std::cout << "  " << h->name << " is now tier " << h->tier << ". It never bills you and it never breaks.\n";
+            std::cout << "  " << h->name << " is now tier " << h->tier << ". It never bills you and it never wears.\n";
         } else std::cout << "  Unknown command. Type 'help'.\n";
     }
 }

@@ -1,15 +1,19 @@
 # GhostNet
 
-> *own the network. pay the bill. lose what you name.*
+> *A game about a runner who stops renting and starts owning.*
 
-**GHOSTNET** is a terminal hacking game written in C++17. You break into
-servers before the trace finds you. Along the way you build a private mesh of
-machines you own, and every one of them bills you, wears out, and can die in
-your place.
+**GHOSTNET** is a terminal hacking game written in C++17. In this city, server
+space is real estate. You rent a room called THE RACK, take jobs off the board,
+and break into servers before HELIOS (the maintenance corp whose trace meter is
+"how long you've been an open ticket") closes your ticket. Then you find what the
+dead courier SAINT left behind: a salvaged 3-slot rack and a home server, **N0**.
+From there you build a network you own, and every machine in it bills you, wears
+out, and can die in your place. The goal is to survive, then pull off **the deep
+job**.
 
-It is built from the *GHOSTNET* design document (the system extracted from
-*NEON//FALL*). A [design panel of AI reviewers](DESIGN_PANEL.md) proposed
-improvements, and each was checked against the document's own rules.
+It is built from the concept doc *"GHOSTNET: A game about a runner who stops
+renting and starts owning"*. A [design panel of AI reviewers](DESIGN_PANEL.md)
+proposed improvements, and each one was checked against the doc's own rules.
 
 ## Download & play (Windows)
 
@@ -26,21 +30,40 @@ the release notes, then click *More info → Run anyway*. See
 ## How it plays
 
 ```
-JOB BOARD -> pick a target -> scan it / ask the Panel -> CONNECT
+THE RACK -> JOB BOARD -> pick a listing -> scan it / ask the Panel -> CONNECT
   door>   break the lock in limited guesses   (or: phrase <word>)
   inside> ls / cat <n> / get <n> / steal / disconnect
-THE BILL -> haul, fines, upkeep, wear, machines going dark
+THE RECKONING -> haul, fines, the bill, wear, machines going dark
 ```
 
-* **Locks:** Keypad (hit/near), Rotor (`~` = one notch away, *not* misplaced) and Cipher (word feedback).
-* **GhostNet** (unlocks after your first contract): **Relay** speeds downloads,
-  **Proxy** slows the trace, **Scout** gives target reports, and **Compute**
-  holds one emergency extra guess per run.
-* **The bill:** running machines bill you after every run and wear down. If you can't pay, everything goes dark (there is never debt).
-* **Bait:** arm a Proxy. If you're traced, it is destroyed in your place and the fine is halved.
-* **Stealing:** targets marked `[HW]` carry detachable hardware. Rob first and the machine arrives damaged. Steal first and you leave the money behind.
-* **The Panel:** VESPER (risk), LEDGER (money) and MOTH (intel) are advisor AIs who read your meters and vote before each run. They never solve a lock.
-* There is no idle income, no timers and no raids. A five-contract campaign then continues as an endless city.
+* **Three acts.** *Renting* ends at your first trace-out. *Owning* starts with
+  your first captured machine. *The Deep Job* starts when a decoy first dies for you.
+* **Trace-out:** your accounts are seized, so the night's haul is lost. You pay a fine
+  (never more than you have), the bill still comes due, and your machines wear hard.
+* **Downloading** takes time and makes you easier to find: the trace runs ×1.25 while bytes move.
+* **Locks:** Keypad (hit/near), Rotor (`~` = one notch away, *not* misplaced) and
+  Cipher (word feedback). A passphrase opens a door without breaking it.
+* **The deck:** tools you buy for yourself (Breaker, Uplink, Shroud, Lens). They are
+  permanent, never billed, and separate from the network.
+* **GhostNet** (unlocks after your first contract): N0 plus up to 10 machines.
+  * **Relay** speeds downloads.
+  * **Proxy** slows the trace.
+  * **Scout** gives target reports and reveals `[HW]` listings.
+  * **Compute** holds one emergency extra guess.
+  * Bought machines are clean tier 2: Relay 400, Scout 450, Proxy 500, Compute 550.
+  * Tier 3 comes only from upgrading N0 or stealing corporate iron.
+* **The bill:** running machines bill you after a run that does something. If you can't
+  pay, nothing is taken and everything except N0 goes dark. There is never debt.
+* **Decoy:** arm a Proxy. If the trace fills, HELIOS traces it instead of you. The decoy
+  is destroyed, the fine is halved, and you keep the night.
+* **The deep job** is tuned so that no deck alone can finish it. You can try it as soon
+  as it appears. If you fall short, the game tells you by how much.
+  * **Owner ending:** finish the deep job and retire as an owner.
+  * **Renter ending:** walk away and be filed as a runner who kept renting.
+  * Neither ending is a loss.
+* **The Panel:** VESPER (risk), LEDGER (money) and MOTH (intel) are advisor AIs. They read
+  your meters and vote before each run. They never solve a lock.
+* **Never in this game:** idle income, offline progress, build timers, raids, a second currency, gacha or levelling.
 
 ## Build from source
 
@@ -59,15 +82,16 @@ Useful flags: `--seed N` (world seed), `--fast` (no animations), `--no-color`.
 ## Tests
 
 * `ctest --test-dir build`: tests for the installer's JSON/manifest/file-name validation.
-* `python3 tools/playtest_bot.py build/GhostNet 7 15`: an automated player that plays the real game, solving locks from the on-screen feedback.
-  Add `chaos` at the end for a reckless player that exercises lockouts, emergency attempts, trace-outs and unpaid bills.
+* `python3 tools/playtest_bot.py build/GhostNet 7 15`: an automated player that plays the real game. It solves locks from the on-screen feedback and learns passphrases only by reading memos in-game.
+  * Add `chaos` at the end for a reckless player. It exercises lockouts, trace-outs, decoy sacrifices and unpaid bills.
+  * Add `deep` (e.g. `... 7 70 deep`) and the run fails unless the bot builds a network and beats the deep job. It also makes one doomed early attempt, to check the shortfall readout.
 * `GhostNet-Setup.exe --selftest`: the downloader's offline security self-test.
 
 ## Releasing
 
-Push a tag like `v0.1.1`. `.github/workflows/build.yml` then:
+Push a tag like `v0.2.1`. `.github/workflows/build.yml` then:
 
-1. builds and tests on Linux (including both playtest bots) and on Windows (MSVC, static runtime);
+1. builds and tests on Linux (including the careful, reckless and deep-job playtest bots) and on Windows (MSVC, static runtime);
 2. publishes a release with `GhostNet.exe`, `README.txt`, `ghostnet-manifest.txt` (SHA-256 of every file, signed if a key is configured) and `GhostNet-Setup.exe`;
 3. downloads that published installer on a fresh Windows runner and does a real install → run → verify → uninstall.
 
@@ -77,8 +101,8 @@ Push a tag like `v0.1.1`. `.github/workflows/build.yml` then:
 src/game/        the game (portable C++17)
   balance.h      every tunable number
   network.cpp    owning machines        netscreen.cpp  the rack screen
-  run.cpp        connecting, locks, downloads, stealing, the bill
-  world.cpp      job board, contracts, side routes, shrines
+  run.cpp        connecting, locks, downloads, capture, the reckoning, acts
+  world.cpp      job board, contracts, the deep job, side routes, shrines
   report.cpp     scouting reports       panel.cpp      the advisor AIs
 src/installer/   GhostNet-Setup.exe (WinHTTP + CNG, no third-party code)
 tools/           playtest bot, manifest + signing tools

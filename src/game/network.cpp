@@ -96,13 +96,17 @@ int upkeepOf(const Machine& m) {
     if (m.home) return 0;
     return bal::TIER_UPKEEP[m.tier] + (m.noise - 1) * bal::NOISE_UPKEEP;
 }
+int scrapValue(const Machine& m) {
+    if (m.home) return 0;
+    return m.captured ? bal::SCRAP_CAPTURED[m.tier] : m.price * bal::SCRAP_BOUGHT_PCT / 100;
+}
 int Network::upkeepTotal() const {
     int t = 0;
     for (auto& m : machines) if (m.working() && !m.home) t += upkeepOf(m);
     return t;
 }
-const Machine* Network::bait() const {
-    const Machine* m = find(baitId);
+const Machine* Network::decoy() const {
+    const Machine* m = find(decoyId);
     if (!m || !m->working() || m->job != Job::Proxy || m->home) return nullptr;
     return m;
 }
@@ -117,11 +121,11 @@ std::string describeEffect(const Machine& m) {
             break;
         case Job::Proxy:
             s = "Slows the trace by " + std::to_string(jobValue(m)) + "% (network cap " +
-                std::to_string(bal::PROXY_CAP) + "%). Can be armed as bait.";
+                std::to_string(bal::PROXY_CAP) + "%). The only job that can be armed as a decoy.";
             break;
         case Job::Scout:
             s = "Adds 1 scouting charge; tier " + std::to_string(m.tier) + " reports" +
-                (m.tier >= 3 ? " (full detail)." : m.tier == 2 ? " (security, objective, files)." : " (lock + danger only).");
+                (m.tier >= 3 ? " (full detail)." : m.tier == 2 ? " (security, objective, files)." : " (lock + trace speed only).");
             break;
         case Job::Compute:
             s = "Holds 1 emergency lock attempt per run" +

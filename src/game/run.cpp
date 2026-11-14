@@ -33,6 +33,7 @@ struct Run {
     bool anchoring = false;
     int emergLeft = 0;
     std::vector<int> billIds;      // decided when the run begins
+    int startRelay = 0, startProxy = 0;
     End end = End::None;
     std::string sacrificed;
     std::string stolen;
@@ -46,7 +47,7 @@ struct Run {
         return r;
     }
     int secondsLeft() const {
-        double r = rateNow(anchoring ? bal::ANCHOR_TRACE_MULT : 1.0);
+        double r = rateNow(anchoring ? bal::ANCHOR_TRACE_MULT : 1.0);   // at rest (downloads run x1.25)
         return r <= 0 ? 999 : static_cast<int>((100.0 - trace) / r);
     }
 };
@@ -71,26 +72,26 @@ bool spike(Run& r, double amt) {
 void traced(Run& r) {
     GameState& g = r.g;
     std::cout << "\n";
-    if (const Machine* b = g.net.bait()) {
+    if (const Machine* b = g.net.decoy()) {
         std::string name = b->name;
         int id = b->id;
         plat::soundBurn();
         std::cout << "  " << col::bgRed() << " TRACE COMPLETE " << col::reset() << "\n";
         plat::sleepMs(500);
-        ui::typeOut(std::string("  The hunter follows the bait. ") + col::red() + col::bold() + name + col::reset() +
-                        " screams on the wire and goes silent.", 18);
-        ui::typeOut("  The corporation traced " + name + ". Not you.", 18);
+        ui::typeOut(std::string("  The ticket resolves to the decoy. ") + col::red() + col::bold() + name + col::reset() +
+                        " lights up on HELIOS's board and goes silent.", 18);
+        ui::typeOut("  HELIOS traced " + name + " instead of you.", 18);
         plat::sleepMs(500);
         auto& v = g.net.machines;
         v.erase(std::remove_if(v.begin(), v.end(), [id](const Machine& m) { return m.id == id; }), v.end());
-        g.net.baitId = -1;
+        g.net.decoyId = -1;
         g.net.burnedCount += 1;
         r.sacrificed = name;
         r.end = End::Sacrifice;
     } else {
         plat::soundAlert();
         std::cout << "  " << col::bgRed() << " TRACED " << col::reset() << col::red()
-                  << "  They found you. The connection drops." << col::reset() << "\n";
+                  << "  HELIOS closes the ticket. Your accounts are seized; tonight's haul is gone." << col::reset() << "\n";
         r.end = End::TraceOut;
     }
 }
@@ -102,8 +103,8 @@ void hud(const Run& r) {
               << "s" << col::reset() << "\n";
     if (r.g.netUnlocked) {
         std::cout << "  " << col::dim() << "net: " << n.activeCount() << " running | DL +" << n.relayBonus() << "% | trace -"
-                  << n.proxyBonus() << "% | emergency " << r.emergLeft << " | scout " << n.usableScoutCharges() << " | bait: "
-                  << (n.bait() ? n.bait()->name : std::string("none")) << col::reset() << "\n";
+                  << n.proxyBonus() << "% | emergency " << r.emergLeft << " | scout " << n.usableScoutCharges() << " | decoy: "
+                  << (n.decoy() ? n.decoy()->name : std::string("none")) << col::reset() << "\n";
     }
 }
 
@@ -174,7 +175,7 @@ void doRead(Run& r, int i) {
         std::cout << "  Binary data. Download it with 'get " << (i + 1) << "'.\n";
         return;
     }
-    if (advance(r, bal::COST_CAT)) return;
+    if (advance(r, std::max(1, bal::COST_CAT - r.g.deck.lens))) return;
     f.read = true;
     std::cout << col::cyan();
     std::istringstream is(f.text);
@@ -207,7 +208,8 @@ void doGet(Run& r, int i) {
     if (!f.downloadable()) { std::cout << "  That's text. Read it with 'cat " << (i + 1) << "'.\n"; return; }
     if (f.taken) { std::cout << "  Already taken.\n"; return; }
     int secs = secondsToDownload(r.g, f.size);
-    int res = progress(r, "DL " + ui::pad(f.name, 18), secs, 1.0, false, "(any key: abort)");
+    // Downloading is loud: the trace climbs faster while bytes are moving.
+    int res = progress(r, "DL " + ui::pad(f.name, 18), secs, bal::DOWNLOAD_TRACE_MULT, false, "(any key: abort)");
     if (res == 2) return;
     if (res == 1) { std::cout << "  Download aborted. The time is gone.\n"; return; }
     f.taken = true;
@@ -227,7 +229,7 @@ void doGet(Run& r, int i) {
             r.jobDone = true;
             plat::soundOnline();
             std::cout << "  " << col::green() << col::bold() << "CONTRACT COMPLETE." << col::reset()
-                      << " Disconnect whenever you like - anything else is a bonus.\n";
+                      << " Disconnect to keep it - if the trace fills first, it goes with your seized accounts.\n";
         }
         return;
     }
@@ -263,9 +265,9 @@ void doSteal(Run& r) {
     std::cout << "  Becomes:     " << col::bold() << jobName(hw.def) << " T" << hw.tier << col::reset() << "  (or " << jobName(hw.alt) << " T" << hw.tier << ")\n";
     std::cout << "  Condition:   " << ui::conditionBar(cond) << " " << cond << "%"
               << (r.honeypot ? std::string(col::red()) + "  (still reeling from the bait file)" + col::reset() : "") << "\n";
-    std::cout << "  Noise:       " << ui::noiseStr(noise) << "  -> upkeep ~" << up << "cr per run\n";
-    std::cout << "  Anchor time: " << anchor << "s" << (r.viaPhrase ? " (shorter: you were invited in)" : "") << ", trace x"
-              << bal::ANCHOR_TRACE_MULT << " while it takes root. You have ~" << r.secondsLeft() << "s at normal rate.\n";
+    std::cout << "  Signal:      " << ui::noiseStr(noise) << "  -> upkeep ~" << up << "cr per run\n";
+    std::cout << "  Hold time:   " << anchor << "s" << (r.viaPhrase ? " (shorter: you were invited in)" : "") << ", trace x"
+              << bal::ANCHOR_TRACE_MULT << " while you hold the line. You have ~" << r.secondsLeft() << "s at normal rate.\n";
     std::cout << "  Giving up:   " << col::yellow() << leftCr << "cr" << col::reset() << " unclaimed + " << leftIntel << " unread file(s). The run ends when it's done.\n";
     if (r.t.trail) {
         bool known = std::find(g.sidesRevealed.begin(), g.sidesRevealed.end(), r.t.trailSide) != g.sidesRevealed.end();
@@ -276,11 +278,11 @@ void doSteal(Run& r) {
     Job chosen;
     if (!parseJob(a, chosen) || (chosen != hw.def && chosen != hw.alt)) { std::cout << "  Cancelled.\n"; return; }
 
-    std::cout << "  Planting anchor... " << col::dim() << "disconnecting now aborts the whole thing." << col::reset() << "\n";
+    std::cout << "  Holding the line... " << col::dim() << "disconnecting now aborts the whole thing." << col::reset() << "\n";
     r.anchoring = true;
-    int res = progress(r, "ANCHOR", anchor, bal::ANCHOR_TRACE_MULT, true, "(any key: disconnect)");
+    int res = progress(r, "HOLD  ", anchor, bal::ANCHOR_TRACE_MULT, true, "(any key: disconnect)");
     r.anchoring = res == 2 && r.end != End::None;   // keep the flag for the fine if traced mid-anchor
-    if (res == 2) { std::cout << "  The anchor dies with the run.\n"; return; }
+    if (res == 2) { std::cout << "  The capture dies with the run.\n"; return; }
     if (res == 1) {
         std::cout << "  You pull out. The hardware stays exactly where it was.\n";
         r.end = End::Disconnect;
@@ -294,12 +296,12 @@ void doSteal(Run& r) {
     m.condition = cond;
     m.noise = noise;
     std::string base = r.t.host.substr(0, r.t.host.find_first_of(".-"));
-    m.name = "cap-" + base.substr(0, 8) + "-" + std::to_string(m.id);
-    m.origin = "Taken from " + r.t.name + " (map " + std::to_string(g.mapIndex + 1) + ").";
+    m.name = base.substr(0, 10) + "-" + std::to_string(m.id);
+    m.origin = "Captured from " + r.t.name + " (board " + std::to_string(g.mapIndex + 1) + ").";
     m.active = g.net.activeCount() < g.net.slots;
     g.net.machines.push_back(m);
     plat::soundOnline();
-    std::cout << "  " << col::green() << col::bold() << "ANCHOR HOLDS." << col::reset() << " " << r.t.name
+    std::cout << "  " << col::green() << col::bold() << "CAPTURED." << col::reset() << " " << r.t.name
               << " reboots under your control and goes dark.\n";
     std::cout << "  '" << m.name << "' (" << jobName(m.job) << " T" << m.tier << ") arrives "
               << (m.active ? "in the rack, running." : "in cold storage (rack full).") << "\n";
@@ -307,114 +309,208 @@ void doSteal(Run& r) {
     r.end = End::Steal;
 }
 
+void actCard(const std::string& title, const std::string& text) {
+    std::cout << "\n  " << col::bold() << col::magenta() << title << col::reset() << "\n" << col::cyan();
+    ui::typeOut(text, 8);
+    std::cout << col::reset();
+}
+
+// How far short a failed deep job fell, in plain numbers.
+void deepShortfall(const Run& r) {
+    const GameState& g = r.g;
+    int got = 0, total = 0, mbLeft = 0, secsLeft = 0;
+    for (auto& f : r.t.files) {
+        if (f.kind != FileKind::Objective) continue;
+        ++total;
+        if (f.taken) ++got;
+        else { mbLeft += f.size; secsLeft += secondsToDownload(g, f.size); }
+    }
+    ui::header("THE DEEP JOB - HOW FAR SHORT");
+    std::cout << "  Archives secured:   " << got << "/" << total << "  (" << mbLeft << "MB still on the server)\n";
+    std::cout << "  Connection held:    " << r.secs << "s, trace " << static_cast<int>(r.trace) << "%\n";
+    if (!r.doorOpen) std::cout << "  The door never opened. The maintenance phrase lives somewhere on HELIOS's own facilities.\n";
+    std::cout << "  Still needed:       ~" << secsLeft << "s of downloading at your current speed ("
+              << std::fixed;
+    std::cout.precision(1);
+    std::cout << downloadSpeed(g) << " MB/s)\n";
+    std::cout.unsetf(std::ios::fixed);
+    int pct = r.secs + secsLeft > 0 ? 100 * secsLeft / (r.secs + secsLeft) : 100;
+    std::cout << "  You were roughly " << col::bold() << pct << "% short" << col::reset() << ".\n";
+    std::cout << "  Your gear: deck uplink " << g.deck.uplink << "/" << bal::DECK_MAX << ", shroud " << g.deck.shroud << "/" << bal::DECK_MAX
+              << "; network relay +" << r.startRelay << "% of " << bal::RELAY_CAP << ", proxy -" << r.startProxy
+              << "% of " << bal::PROXY_CAP << ".\n";
+    std::cout << col::dim() << "  No deck alone finishes this. It was tuned that way. Owned machines close the gap." << col::reset() << "\n";
+}
+
 void settle(Run& r) {
     GameState& g = r.g;
-    ui::header("THE BILL");
+    ui::header("THE RECKONING");
     std::vector<std::string> lines;
+    const bool traceOut = r.end == End::TraceOut;
+    const bool sacrifice = r.end == End::Sacrifice;
+    // A trace-out loses the night: the haul and the contract go with the seized accounts.
+    const bool jobCounts = r.jobDone && !traceOut;
+    // [doc] the bill comes due after a completion, a repeat clear, a trace-out, a decoy loss or a capture.
+    const bool billable = jobCounts || r.haul > 0 || traceOut || sacrifice || r.end == End::Steal;
+
     // Haul.
     if (r.haul > 0) {
-        g.credits += r.haul;
-        g.stats.earned += r.haul;
-        lines.push_back("Haul: +" + std::to_string(r.haul) + "cr");
+        if (traceOut) {
+            lines.push_back(std::string(col::red()) + "Accounts seized: tonight's " + std::to_string(r.haul) + "cr haul is gone." + col::reset());
+        } else {
+            g.credits += r.haul;
+            g.stats.earned += r.haul;
+            lines.push_back("Haul: +" + std::to_string(r.haul) + "cr");
+        }
     }
+    if (sacrifice)
+        lines.push_back(std::string(col::red()) + "Escape bought with hardware: " + r.sacrificed + " is gone for good (machines burned, lifetime: " +
+                        std::to_string(g.net.burnedCount) + ")." + col::reset() + " You keep the night.");
+    if (traceOut && r.jobDone) lines.push_back(std::string(col::red()) + "The contract files went with the seized accounts. The job is not done." + col::reset());
     // Fine.
-    if (r.end == End::TraceOut || r.end == End::Sacrifice) {
+    if (traceOut || sacrifice) {
         int fine = baseFine(g, r.t, r.honeypot, r.anchoring);
-        if (r.end == End::Sacrifice) fine = (fine + 1) / 2;   // roughly half, rounded against you
+        if (sacrifice) fine = (fine + 1) / 2;   // halved, rounded up
         fine = std::min(fine, g.credits);
         g.credits -= fine;
         g.stats.finesPaid += fine;
-        lines.push_back("Fine: -" + std::to_string(fine) + "cr" + (r.end == End::Sacrifice ? " (halved by the sacrifice)" : ""));
+        lines.push_back("Fine: -" + std::to_string(fine) + "cr" + (sacrifice ? " (halved: " + r.sacrificed + " took the ticket)" : ""));
     }
     // Contract.
-    if (r.jobDone && r.t.kind == Kind::Story) {
+    if (jobCounts && r.t.kind == Kind::Story) {
         g.credits += r.t.reward;
         g.stats.earned += r.t.reward;
-        g.stats.jobs += 1;
-        lines.push_back("Contract '" + storyInfo(r.t.storyIndex).title + "': +" + std::to_string(r.t.reward) + "cr");
+        if (!r.t.deep) g.stats.jobs += 1;
+        lines.push_back("Contract '" + (r.t.deep ? std::string("THE DEEP JOB") : storyInfo(r.t.storyIndex).title) + "': +" +
+                        std::to_string(r.t.reward) + "cr" + (r.t.infoReward.empty() ? "" : " and information"));
     }
-    // Upkeep, decided when the run began.
+    // Upkeep, fixed when the run began.
     int bill = 0;
-    for (int id : r.billIds)
-        if (const Machine* m = g.net.find(id)) bill += upkeepOf(*m);
+    if (billable)
+        for (int id : r.billIds)
+            if (const Machine* m = g.net.find(id)) bill += upkeepOf(*m);
     if (bill > 0) {
         if (g.credits >= bill) {
             g.credits -= bill;
             g.stats.billsPaid += bill;
-            lines.push_back("Network upkeep: -" + std::to_string(bill) + "cr");
+            lines.push_back("The bill: -" + std::to_string(bill) + "cr");
         } else {
             g.stats.unpaidBills += 1;
             for (auto& m : g.net.machines) if (!m.home) m.active = false;
-            g.net.baitId = -1;
-            lines.push_back(std::string(col::red()) + "Upkeep of " + std::to_string(bill) +
-                            "cr UNPAID. Every external machine is dormant. Bait disarmed. No debt was created." + col::reset());
-            lines.push_back("Earn some credits and switch them back on.");
+            g.net.decoyId = -1;
+            lines.push_back(std::string(col::red()) + "The bill of " + std::to_string(bill) +
+                            "cr went UNPAID. Nothing was taken. Every machine except N0 has gone dark, and the decoy is disarmed." + col::reset());
+            lines.push_back("No debt. Earn credits, then switch them back on.");
         }
     }
-    // Wear.
+    // Wear, after the bill.
     std::vector<std::string> darkNow;
     int worn = 0;
-    for (int id : r.billIds) {
-        Machine* m = g.net.find(id);
-        if (!m || m->home) continue;
-        ++worn;
-        int w = r.end == End::TraceOut ? (m->captured ? bal::WEAR_TRACED_CAPTURED : bal::WEAR_TRACED_BOUGHT)
-                                       : (m->captured ? bal::WEAR_NORMAL_CAPTURED : bal::WEAR_NORMAL_BOUGHT);
-        bool wasDark = m->dark();
-        m->condition = std::max(0, m->condition - w);
-        if (m->dark() && !wasDark) {
-            m->active = false;
-            if (g.net.baitId == m->id) g.net.baitId = -1;
-            darkNow.push_back(m->name);
+    if (billable) {
+        for (int id : r.billIds) {
+            Machine* m = g.net.find(id);
+            if (!m || m->home) continue;
+            ++worn;
+            int w = m->captured ? bal::WEAR_NORMAL_CAPTURED : bal::WEAR_NORMAL_BOUGHT;
+            if (traceOut) w += m->captured ? bal::WEAR_TRACED_EXTRA_CAPTURED : bal::WEAR_TRACED_EXTRA_BOUGHT;
+            bool wasDark = m->dark();
+            m->condition = std::max(0, m->condition - w);
+            if (m->dark() && !wasDark) {
+                m->active = false;
+                if (g.net.decoyId == m->id) g.net.decoyId = -1;
+                darkNow.push_back(m->name);
+            }
         }
     }
     if (worn > 0)
-        lines.push_back(std::string("Wear: ") + (r.end == End::TraceOut ? "HEAVY (traced with no bait)" : "normal") + " on " +
+        lines.push_back(std::string("Wear: ") + (traceOut ? "HEAVY (traced with no decoy)" : "normal") + " on " +
                         std::to_string(worn) + " machine(s)");
     for (auto& n : darkNow) lines.push_back(std::string(col::red()) + n + " wore out and went dark. Repair it, then switch it back on." + col::reset());
 
     // Records.
     g.stats.runs += 1;
+    if (r.t.deep) g.stats.deepAttempts += 1;
     std::string what;
     switch (r.end) {
-        case End::Steal: what = "STEAL (" + r.stolen + ")"; g.stats.steals += 1; break;
+        case End::Steal: what = "CAPTURE (" + r.stolen + ")"; g.stats.captures += 1; break;
         case End::TraceOut: what = "TRACE-OUT"; g.stats.traceouts += 1; break;
-        case End::Sacrifice: what = "SACRIFICE (" + r.sacrificed + ")"; g.stats.sacrifices += 1; break;
+        case End::Sacrifice: what = "ESCAPE BOUGHT WITH HARDWARE (" + r.sacrificed + ")"; g.stats.sacrifices += 1; break;
         default:
-            if (r.haul > 0 || r.jobDone) { what = "ROBBERY"; g.stats.robberies += 1; }
+            if (r.haul > 0 || r.jobDone) { what = "CLEAR"; g.stats.robberies += 1; }
             else { what = "WALK-AWAY"; g.stats.walkaways += 1; }
     }
-    if (r.jobDone) what += " + JOB DONE";
+    if (jobCounts) what += " + CONTRACT";
     g.stats.log.push_back("Run " + std::to_string(g.stats.runs) + ": " + r.t.name + " - " + what + ", haul " +
-                          std::to_string(r.haul) + "cr, bill " + std::to_string(bill) + "cr");
+                          std::to_string(traceOut ? 0 : r.haul) + "cr, bill " + std::to_string(bill) + "cr");
     if (g.stats.log.size() > 30) g.stats.log.erase(g.stats.log.begin());
 
     for (auto& l : lines) std::cout << "  - " << l << "\n";
+    if (!billable) std::cout << "  - " << col::dim() << "Nothing happened worth billing. No bill, no wear." << col::reset() << "\n";
     std::cout << "  Credits now: " << col::yellow() << g.credits << "cr" << col::reset() << "\n";
-    if (r.end == End::TraceOut) std::cout << "  You survive. Poorer and wiser. Go out and try again, more carefully.\n";
+    if (traceOut) std::cout << "  You survive. Poorer and wiser. The rack is still there.\n";
 
-    // Burn the door.
+    // Burn the door. The annex stays open until you have what it holds.
     if (isMapLocal(r.t.id)) g.burned.insert(r.t.id);
-    if (r.t.kind == Kind::Side) g.sidesBurned.insert(r.t.sideIndex);
+    if (r.t.kind == Kind::Side && (r.t.sideIndex != kAnnexSide || g.knownPhrases.count(kDeepId)))
+        g.sidesBurned.insert(r.t.sideIndex);
+
+    // The deep job.
+    if (r.t.deep) {
+        if (jobCounts) {
+            g.deepDone = true;
+            std::cout << "\n" << col::cyan();
+            ui::typeOut("  Three archives. Every ticket HELIOS ever opened - including yours, #48213, still OPEN.\n"
+                        "  You close it yourself. There is nobody left in the city who can reopen it.", 8);
+            std::cout << col::reset();
+        } else {
+            deepShortfall(r);
+        }
+    }
 
     // Contract consequences.
-    if (r.jobDone && r.t.kind == Kind::Story) {
+    if (jobCounts && r.t.kind == Kind::Story && !r.t.deep) {
         int idx = r.t.storyIndex;
         g.story = idx + 1;
         std::cout << "\n" << col::cyan();
         ui::typeOut(storyInfo(idx).outro, 8);
         std::cout << col::reset();
+        if (!r.t.infoReward.empty()) {
+            g.journal.push_back(r.t.infoReward);
+            std::cout << "  " << col::green() << "Paid in information: " << r.t.infoReward << col::reset() << "\n";
+        }
+        if (idx == 2) {   // QUIET FLOOR: the Facilities Annex, where the deep job's phrase is kept
+            if (std::find(g.sidesRevealed.begin(), g.sidesRevealed.end(), kAnnexSide) == g.sidesRevealed.end())
+                g.sidesRevealed.push_back(kAnnexSide);
+            std::cout << "  " << col::magenta() << "THE DEEP JOB is on your board. So is the HELIOS Facilities Annex." << col::reset() << "\n";
+        }
         if (idx == 0 && !g.netUnlocked) unlockNetwork(g);
         if (g.netUnlocked) {
             g.net.refillScout();
             if (g.net.scoutCapacity() > 0) std::cout << "  Scouting charges refilled.\n";
         }
-        if (g.story >= storyCount()) {
-            std::cout << "\n  " << col::green() << col::bold() << "*** CAMPAIGN COMPLETE ***" << col::reset() << "\n";
-        }
+        if (g.story >= storyCount() && !g.deepDone)
+            std::cout << "\n  " << col::magenta() << "No more contracts are coming. Only the deep job is left." << col::reset() << "\n";
     }
 
-    // Map refresh cadence.
+    // The acts.
+    if (traceOut && g.stats.traceouts == 1 && g.act == 1)
+        actCard("END OF ACT ONE - RENTING",
+                "  You were traced. The haul went with the seized accounts and the fine came out of what was left.\n"
+                "  Everything you had tonight was borrowed: borrowed time, borrowed bandwidth, borrowed luck.");
+    if (r.end == End::Steal && g.act < 2) {
+        g.act = 2;
+        actCard("ACT TWO - OWNING",
+                "  A machine that was HELIOS's is yours now. Nobody rents it to you. Nobody can take it back.\n"
+                "  It bills you, it wears, and it is louder than anything you could buy. It is also yours.");
+    }
+    if (sacrifice && g.act < 3) {
+        g.act = 3;
+        actCard("ACT THREE - THE DEEP JOB",
+                "  " + r.sacrificed + " died so you didn't have to. You understand the rack now: it is not decoration.\n"
+                "  Somewhere HELIOS keeps every ticket it ever opened. You know what a network is for.");
+    }
+
+    // Board refresh cadence.
     g.mapRunsLeft -= 1;
     if (g.mapRunsLeft <= 0) {
         g.mapIndex += 1;
@@ -423,8 +519,8 @@ void settle(Run& r) {
         for (auto it = g.reports.begin(); it != g.reports.end();)
             it = isMapLocal(it->first) ? g.reports.erase(it) : std::next(it);
         g.net.refillScout();
-        std::cout << "\n  " << col::magenta() << "The city shuffles its doors. New targets are on the board"
-                  << (g.netUnlocked && g.net.scoutCapacity() ? ", and your scouting charges are full." : ".") << col::reset() << "\n";
+        std::cout << "\n  " << col::magenta() << "The board refreshes. Old listings are gone, and what you knew about them with it"
+                  << (g.netUnlocked && g.net.scoutCapacity() ? ". Scouting charges are full." : ".") << col::reset() << "\n";
     }
     for (auto& m : g.net.machines) m.usedThisRun = false;
 }
@@ -467,9 +563,9 @@ void doorHelp(const Run& r) {
 }
 void insideHelp() {
     std::cout << "  ls          list files (" << bal::COST_LS << "s)\n"
-              << "  cat <n>     read a text file (" << bal::COST_CAT << "s)\n"
-              << "  get <n>     download a file (time depends on size and your relays)\n"
-              << "  steal       quote / steal this server's hardware (if detachable)\n"
+              << "  cat <n>     read a text file (" << bal::COST_CAT << "s, less with LENS)\n"
+              << "  get <n>     download a file (time depends on size and relays; the trace runs x1.25 meanwhile)\n"
+              << "  steal       quote / capture this server's hardware (if detachable)\n"
               << "  status      your network readout\n"
               << "  disconnect  leave with what you have\n";
 }
@@ -484,6 +580,8 @@ void playRun(GameState& g, const Target& target) {
     r.lock = makeLock(target.lock, rng, g.deck.breaker);
     r.doorOpen = target.lock == LockType::None;
     r.emergLeft = g.netUnlocked ? g.net.computeCapacity() : 0;
+    r.startRelay = g.net.relayBonus();
+    r.startProxy = g.net.proxyBonus();
     for (auto& m : g.net.machines) {
         m.usedThisRun = false;
         if (m.working() && !m.home) r.billIds.push_back(m.id);
@@ -492,7 +590,8 @@ void playRun(GameState& g, const Target& target) {
     ui::header("CONNECTING: " + target.name);
     ui::typeOut("  > handshake " + target.host + " ... routed through " +
                     std::to_string(g.netUnlocked ? g.net.activeCount() : 0) + " owned node(s) ... connected.", 4);
-    if (target.kind == Kind::Story) std::cout << "  " << col::magenta() << "Contract: " << storyInfo(target.storyIndex).title << col::reset() << "\n";
+    if (target.deep) std::cout << "  " << col::magenta() << col::bold() << "THE DEEP JOB." << col::reset() << col::magenta() << " Three archives. HELIOS answers this one personally." << col::reset() << "\n";
+    else if (target.kind == Kind::Story) std::cout << "  " << col::magenta() << "Contract: " << storyInfo(target.storyIndex).title << col::reset() << "\n";
     if (target.stealable && g.netUnlocked) std::cout << "  " << col::yellow() << "This server's hardware is detachable." << col::reset() << "\n";
     if (target.watchdog) std::cout << "  " << col::red() << "A watchdog wakes up. It gets faster the longer you stay." << col::reset() << "\n";
 

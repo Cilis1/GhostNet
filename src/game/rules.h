@@ -29,10 +29,11 @@ inline int baseFine(const GameState& g, const Target& t, bool honeypot, bool anc
     return static_cast<int>(std::round(f * risk));
 }
 
+// [doc] proportional to security, shorter if you came in by passphrase, never under ~5s.
 inline int anchorSeconds(const Target& t, bool viaPhrase) {
-    int s = 8 + t.security * 5;
+    int s = t.security * 6;
     if (viaPhrase) s = static_cast<int>(std::ceil(s * 0.6));
-    return s;
+    return std::max(bal::ANCHOR_FLOOR, s);
 }
 
 // Starting condition / noise of the hardware if stolen right now.
@@ -41,10 +42,10 @@ inline void captureQuote(const Target& t, bool honeypotTriggered, int& condition
     int taken = 0;
     for (auto& f : t.files)
         if (f.taken && (f.kind == FileKind::Paydata || f.kind == FileKind::Objective)) ++taken;
-    condition = std::max(20, hw.condition - 8 * taken);
+    condition = std::max(bal::CAPTURE_FLOOR, hw.condition - bal::CAPTURE_PER_FILE * taken);
     noise = hw.noise;
     if (honeypotTriggered) {
-        condition = std::max(15, condition - 15);
+        condition = std::max(10, condition - bal::CAPTURE_BAIT_HIT);
         noise = std::min(bal::MAX_NOISE, noise + 1);
     }
 }

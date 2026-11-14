@@ -35,10 +35,10 @@ struct Machine {
 struct Network {
     std::vector<Machine> machines;   // machines[0] is always the home server once unlocked
     int slots = 3;
-    int baitId = -1;
+    int decoyId = -1;
     int scoutCharges = 0;            // stored charges ("ammunition")
     int nextId = 1;
-    int burnedCount = 0;             // machines lost as bait, forever
+    int burnedCount = 0;             // machines lost as decoys, forever
 
     Machine* find(int id);
     const Machine* find(int id) const;
@@ -53,11 +53,12 @@ struct Network {
     int usableScoutCharges() const;  // min(stored, capacity)
     int bestScoutTier() const;       // 0 if no working scout
     int upkeepTotal() const;
-    const Machine* bait() const;
+    const Machine* decoy() const;    // armed AND currently valid
     void refillScout();              // stored = capacity at this moment
 };
 
 int upkeepOf(const Machine& m);
+int scrapValue(const Machine& m);    // what scrapping it would pay, exactly
 int jobValue(const Machine& m);      // % for relay/proxy, 1 for scout/compute
 std::string describeEffect(const Machine& m);
 
@@ -103,6 +104,9 @@ struct Target {
     int storyIndex = -1;
     int sideIndex = -1;
     int reward = 0;             // contract payment (story)
+    bool deep = false;          // THE DEEP JOB
+    double traceOverride = 0;   // if > 0, replaces the security-based trace rate
+    std::string infoReward;     // contracts that pay in information
     bool hasHoneypot() const;
     int objectiveCount() const;
     std::string objectiveDir() const;
@@ -111,11 +115,11 @@ struct Target {
 // ---------------------------------------------------------------------------
 // Player state
 // ---------------------------------------------------------------------------
-struct Deck { int breaker = 0, uplink = 0, shroud = 0; };
+struct Deck { int breaker = 0, uplink = 0, shroud = 0, lens = 0; };
 
 struct Stats {
     int runs = 0, jobs = 0, robberies = 0, traceouts = 0, sacrifices = 0;
-    int steals = 0, walkaways = 0, unpaidBills = 0;
+    int captures = 0, walkaways = 0, unpaidBills = 0, deepAttempts = 0;
     long long earned = 0, billsPaid = 0, finesPaid = 0, repairsPaid = 0;
     std::vector<std::string> log;    // short run history, newest last
 };
@@ -125,7 +129,10 @@ struct GameState {
     int credits = 0;
     int mapIndex = 0;
     int mapRunsLeft = 3;
-    int story = 0;                   // next contract index
+    int story = 0;                   // contracts completed (= next contract index)
+    int act = 1;                     // 1 RENTING, 2 OWNING, 3 THE DEEP JOB
+    bool deepDone = false;           // retired as an owner
+    bool retired = false;            // walked away (either ending)
     bool netUnlocked = false;
     Network net;
     Deck deck;
@@ -141,3 +148,5 @@ struct GameState {
 };
 
 int storyCount();
+constexpr int kDeepId = 8100;
+constexpr int kAnnexSide = 1000;   // the side route that holds the deep job's maintenance phrase

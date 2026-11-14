@@ -1,72 +1,85 @@
 // GhostNet - every tunable number in one place.
-// Part Thirteen of the design doc: "Build the numbers and the bill before you
-// build anything beautiful." If the game feels wrong, start here.
+// Values marked [doc] are taken directly from the concept's "THE NUMBERS" section.
 #pragma once
 
 namespace bal {
 
 // ---- Rack & archive -------------------------------------------------------
-constexpr int MAX_EXTERNAL      = 10;   // external machines you may own
-constexpr int START_SLOTS       = 3;    // active slots at the start (home counts)
-constexpr int MAX_SLOTS         = 6;
-constexpr int SLOT_COST[3]      = {150, 450, 1000};   // cheap, expensive, serious
-constexpr int HOME_UPGRADE[2]   = {300, 750};         // tier 1->2, 2->3
+constexpr int MAX_EXTERNAL      = 10;                 // [doc] never more than ten external machines
+constexpr int START_SLOTS       = 3;                  // [doc]
+constexpr int MAX_SLOTS         = 6;                  // [doc]
+constexpr int SLOT_COST[3]      = {350, 650, 1000};   // [doc] 4th, 5th, 6th slot
+constexpr int HOME_UPGRADE[2]   = {600, 1000};        // [doc] tier 1->2, 2->3
 
 // ---- Buying & servicing -----------------------------------------------------
 // Indexed by Job: Relay, Proxy, Scout, Compute
-constexpr int BUY_PRICE[4]      = {120, 150, 100, 220};
-constexpr int BUY_TIER          = 2;    // clean machines top out at the middle tier
-constexpr int REIMAGINE_FEE     = 40;
-constexpr int REPAIR_PER_POINT  = 1;    // credits per condition point
-constexpr int SCRAP_BOUGHT_PCT  = 35;   // % of purchase price
-constexpr int SCRAP_CAPTURED[4] = {0, 10, 20, 35};    // flat, by tier
+constexpr int BUY_PRICE[4]      = {400, 500, 450, 550};   // [doc]
+constexpr int BUY_TIER          = 2;                  // [doc] clean machines stop at the middle tier
+constexpr int REIMAGINE_FEE     = 125;                // [doc] changing a job
+constexpr int REPAIR_PER_POINT  = 2;                  // [doc]
+constexpr int SCRAP_BOUGHT_PCT  = 40;                 // a fraction of what you paid
+constexpr int SCRAP_CAPTURED[4] = {0, 40, 80, 140};   // small flat amount by tier
 
 // ---- Job effects (index by tier 1..3) ---------------------------------------
-constexpr int RELAY_BONUS[4]    = {0, 10, 15, 20};    // % download speed
-constexpr int RELAY_CAP         = 40;
-constexpr int PROXY_BONUS[4]    = {0, 6, 9, 12};      // % trace-rate reduction
-constexpr int PROXY_CAP         = 30;                 // lower than relay cap: time > speed
-constexpr int SCOUT_MAX_CHARGES = 3;
-constexpr int COMPUTE_MAX       = 2;                  // emergency attempts per run
-constexpr int COMPUTE_WEAR[4]   = {0, 14, 9, 5};      // better machines wear less
-constexpr int SCOUT_WEAR        = 4;
+constexpr int RELAY_BONUS[4]    = {0, 10, 15, 20};    // [doc] small, ~1.5x, ~2x
+constexpr int RELAY_CAP         = 42;                 // [doc] just above double the top-tier value
+constexpr int PROXY_BONUS[4]    = {0, 6, 9, 12};      // [doc] smaller, same scaling
+constexpr int PROXY_CAP         = 30;                 // [doc] below the relay cap
+constexpr int SCOUT_MAX_CHARGES = 3;                  // [doc]
+constexpr int COMPUTE_MAX       = 2;                  // [doc]
+constexpr int COMPUTE_WEAR[4]   = {0, 14, 9, 5};      // [doc] less at higher tiers, none for home
+constexpr int SCOUT_WEAR        = 3;                  // [doc] "a small amount"
 
-// ---- Upkeep ---------------------------------------------------------------
-// upkeep = TIER_UPKEEP[tier] + (noise-1) * NOISE_UPKEEP
-// clean T2 (noise 1) = 5cr ; trapped corporate T3 (noise 6) = 25cr  (5x)
-constexpr int TIER_UPKEEP[4]    = {0, 2, 5, 10};
-constexpr int NOISE_UPKEEP      = 3;
-constexpr int MAX_NOISE         = 6;
+// ---- Upkeep -----------------------------------------------------------------
+// [doc] tier cost + surcharge per signal step above the minimum, up to three steps.
+// Signal 1 = minimum (all bought machines). Captured hardware is always louder.
+//   clean T2 = 20cr   open T1 capture = 25cr   watched T2 = 50cr   corporate T3 = 90cr
+constexpr int TIER_UPKEEP[4]    = {0, 10, 20, 45};
+constexpr int NOISE_UPKEEP      = 15;
+constexpr int MAX_NOISE         = 4;
 
-// ---- Wear -----------------------------------------------------------------
-constexpr int WEAR_NORMAL_BOUGHT    = 5;
-constexpr int WEAR_NORMAL_CAPTURED  = 7;
-constexpr int WEAR_TRACED_BOUGHT    = 18;
-constexpr int WEAR_TRACED_CAPTURED  = 28;
+// ---- Wear -------------------------------------------------------------------
+constexpr int WEAR_NORMAL_BOUGHT    = 4;
+constexpr int WEAR_NORMAL_CAPTURED  = 5;
+constexpr int WEAR_TRACED_EXTRA_BOUGHT   = 12;        // [doc] ~3x the normal amount on top
+constexpr int WEAR_TRACED_EXTRA_CAPTURED = 18;        // [doc] more for captured hardware
 
-// ---- Runs -----------------------------------------------------------------
-constexpr double BASE_SPEED_MBPS = 4.0;               // download speed before bonuses
-constexpr double TRACE_RATE[6]   = {0, 1.0, 1.5, 2.0, 2.8, 3.6}; // %/s by security
-constexpr int    COST_LS         = 1;                 // seconds of connection time
-constexpr int    COST_CAT        = 2;
+// ---- The connection ---------------------------------------------------------
+constexpr double BASE_SPEED_MBPS = 4.0;
+constexpr double TRACE_RATE[6]   = {0, 1.0, 1.5, 2.0, 2.8, 3.6};   // %/s by security
+constexpr double DEEP_TRACE_RATE = 4.4;               // the deep job: tuned past any deck
+constexpr double DOWNLOAD_TRACE_MULT = 1.25;          // [doc] downloading makes you easier to find
+constexpr int    COST_LS         = 1;                 // seconds
+constexpr int    COST_CAT        = 3;                 // reduced by LENS
 constexpr int    COST_GUESS      = 2;
 constexpr int    COST_PHRASE     = 2;
 constexpr int    COST_EXTRA      = 1;
-constexpr double LOCKOUT_SPIKE   = 10.0;              // trace % when a lock seals
+constexpr double LOCKOUT_SPIKE   = 10.0;
 constexpr double WRONG_PHRASE_SPIKE = 5.0;
 constexpr double HONEYPOT_SPIKE  = 25.0;
-constexpr double ANCHOR_TRACE_MULT = 1.5;             // easier to find while anchoring
+constexpr double ANCHOR_TRACE_MULT = 1.5;             // [doc] noticeably easier to find
+constexpr int    ANCHOR_FLOOR    = 5;                 // [doc] never less than ~5 seconds
 constexpr double WATCHDOG_RAMP   = 0.5;               // +50% trace rate per minute connected
-constexpr int    RUNS_PER_MAP    = 3;                 // map refresh cadence
+constexpr int    RUNS_PER_MAP    = 3;                 // board refresh cadence
 
-constexpr int    FINE_PER_SECURITY = 45;
-constexpr int    START_CREDITS   = 50;
+// ---- Capture ----------------------------------------------------------------
+constexpr int CAPTURE_PER_FILE   = 10;                // [doc] ten points per file already taken
+constexpr int CAPTURE_FLOOR      = 20;
+constexpr int CAPTURE_BAIT_HIT   = 15;                // triggered bait file: worse...
+                                                      // ...and +1 signal step
 
-// ---- Your own deck (tools you buy for yourself; separate from GhostNet) ----
+// ---- Money ------------------------------------------------------------------
+constexpr int    FINE_PER_SECURITY = 110;
+constexpr int    START_CREDITS   = 150;
+constexpr int    PAY_BY_SECURITY[6] = {0, 60, 100, 160, 230, 320};   // per payout file (avg)
+
+// ---- Your own deck (tools you buy for yourself; separate from GhostNet) -----
 constexpr int    DECK_MAX        = 3;
-constexpr int    BREAKER_COST[3] = {200, 450, 900};   // +1 lock guess per level
-constexpr int    UPLINK_COST[3]  = {180, 400, 850};   // +15% base download per level
-constexpr int    SHROUD_COST[3]  = {220, 500, 1000};  // -7% trace, -15% fines per level
+constexpr int    BREAKER_COST[3] = {450, 900, 1600};  // more attempts: +1 guess per level
+constexpr int    UPLINK_COST[3]  = {400, 850, 1500};  // better tools: +15% base download per level
+constexpr int    SHROUD_COST[3]  = {500, 1000, 1800}; // quieter connection: -7% trace, -15% fines
+constexpr int    LENS_MAX        = 2;
+constexpr int    LENS_COST[2]    = {300, 700};        // faster reading: -1s per file read
 constexpr double UPLINK_STEP     = 0.15;
 constexpr double SHROUD_TRACE    = 0.07;
 constexpr double SHROUD_FINE     = 0.15;

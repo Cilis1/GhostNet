@@ -31,7 +31,7 @@ void scanTarget(GameState& g, const Target& t) {
         return;
     }
     if (g.net.usableScoutCharges() <= 0) {
-        std::cout << "  No scouting charges left. They refill when you complete a contract or the map refreshes.\n";
+        std::cout << "  No scouting charges left. They refill when you complete a contract or the board refreshes.\n";
         return;
     }
     // Who answers: the home server answers for free if it scouts; otherwise the best external scout.
@@ -84,7 +84,8 @@ void printReport(const GameState& g, const Target& t) {
     }
     if (q >= 3) {
         double eff = effectiveTraceRate(g, t);
-        std::cout << "  Time before the connection kills you (current gear): ~" << static_cast<int>(100.0 / eff) << "s\n";
+        std::cout << "  Time until trace with your current gear: ~" << static_cast<int>(100.0 / eff) << "s standing still, less while downloading"
+                  << (t.watchdog ? " or lingering" : "") << ".\n";
         std::cout << "  Maintenance way in: " << (t.backdoor ? std::string(col::green()) + "yes - worth looking for the phrase." : "none.")
                   << col::reset() << "\n";
     }
@@ -92,7 +93,8 @@ void printReport(const GameState& g, const Target& t) {
     // World facts, independent of quality.
     std::cout << col::dim() << "  -- what is true about this place --" << col::reset() << "\n";
     bool any = false;
-    if (t.stealable && g.netUnlocked) { std::cout << "  * Detachable hardware: you could steal a server here instead of robbing it.\n"; any = true; }
+    if (t.stealable && g.net.bestScoutTier() > 0) { std::cout << "  * Detachable hardware: you could steal a server here instead of robbing it.\n"; any = true; }
+    if (t.deep) { std::cout << "  * THE DEEP JOB. Tuned past what any deck can do alone. Its maintenance phrase is kept by HELIOS facilities.\n"; any = true; }
     if (t.kind == Kind::Side) { std::cout << "  * Hidden route found through a paper trail: richer haul, real watchdog.\n"; any = true; }
     if (t.kind == Kind::Shrine) { std::cout << "  * Money is poor here but information is rich. It can never be stolen from.\n"; any = true; }
     if (t.trail) { std::cout << "  * Its ordinary maintenance text probably hides a route somewhere else.\n"; any = true; }
@@ -102,7 +104,7 @@ void printReport(const GameState& g, const Target& t) {
                 if (f.kind == FileKind::Honeypot)
                     std::cout << "  * " << col::red() << "Confirmed bait file: " << f.dir << "/" << f.name << col::reset() << "\n";
         } else {
-            std::cout << "  * One of the payout files is " << col::yellow() << "suspected" << col::reset() << " to be bait.\n";
+            std::cout << "  * One of the payout files is " << col::yellow() << "suspected" << col::reset() << " to be a bait file.\n";
         }
         any = true;
     }

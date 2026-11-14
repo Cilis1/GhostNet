@@ -87,7 +87,8 @@ std::string conditionBar(int c, int width) {
 }
 std::string noiseStr(int n) {
     const char* c = n <= 1 ? col::dim() : n <= 3 ? col::yellow() : col::red();
-    return std::string(c) + (n <= 1 ? "quiet" : std::string(static_cast<size_t>(n), ')')) + col::reset();
+    // Signal: how loud the machine is on the wire. Minimum for everything you can buy.
+    return std::string(c) + "sig " + (n <= 1 ? "min" : std::string(static_cast<size_t>(n - 1), '+')) + col::reset();
 }
 std::string pad(const std::string& s, size_t w) {
     if (s.size() >= w) return s.substr(0, w);
@@ -95,30 +96,30 @@ std::string pad(const std::string& s, size_t w) {
 }
 std::string credits(long long c) { return std::to_string(c) + "cr"; }
 
-static std::string light(const Machine& m, bool baited) {
+static std::string light(const Machine& m, bool armed) {
     if (m.dark()) return std::string(col::bgRed()) + "X" + col::reset();
     if (!m.active) return std::string(col::dim()) + "o" + col::reset();
-    if (baited) return std::string(col::red()) + col::bold() + "!" + col::reset();
+    if (armed) return std::string(col::red()) + col::bold() + "!" + col::reset();
     return std::string(col::green()) + col::bold() + "*" + col::reset();
 }
 
 static void rackLine(const Machine& m, const GameState& g) {
-    bool baited = g.net.baitId == m.id;
-    std::cout << "  | " << light(m, baited) << " " << col::bold() << pad("[" + std::to_string(m.id) + "]", 5)
+    bool armed = g.net.decoyId == m.id;
+    std::cout << "  | " << light(m, armed) << " " << col::bold() << pad("[" + std::to_string(m.id) + "]", 5)
               << pad(m.name, 16) << col::reset() << pad(jobName(m.job), 8) << "T" << m.tier << " "
               << pad(m.home ? "home" : m.captured ? "captured" : "bought", 9)
               << (m.home ? std::string(col::cyan()) + "==========" + col::reset() : conditionBar(m.condition))
-              << " " << pad(m.home ? "eternal" : std::to_string(m.condition) + "% " + conditionWord(m.condition), 14)
+              << " " << pad(m.home ? "never wears" : std::to_string(m.condition) + "% " + conditionWord(m.condition), 14)
               << noiseStr(m.noise);
-    if (!m.home) std::cout << col::dim() << "  " << upkeepOf(m) << "cr/run" << col::reset();
-    if (baited) std::cout << "  " << col::bgRed() << " BAIT " << col::reset();
+    if (!m.home) std::cout << col::dim() << "  " << upkeepOf(m) << "cr/run, worth " << scrapValue(m) << "cr" << col::reset();
+    if (armed) std::cout << "  " << col::bgRed() << " DECOY - ARMED TO DIE " << col::reset();
     std::cout << "\n";
     std::cout << "  |     " << col::dim() << describeEffect(m) << " " << m.origin << col::reset() << "\n";
 }
 
 void drawRack(const GameState& g) {
     const Network& n = g.net;
-    std::cout << "  " << col::dim() << ".-- RACK " << std::string(62, '-') << "." << col::reset() << "\n";
+    std::cout << "  " << col::dim() << ".-- THE RACK " << std::string(58, '-') << "." << col::reset() << "\n";
     int shown = 0;
     for (auto& m : n.machines)
         if (m.active) { rackLine(m, g); ++shown; }
