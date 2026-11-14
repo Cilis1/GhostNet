@@ -1,0 +1,138 @@
+name: Build & Release
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*.*.*']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Linux build + automated playtests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure
+      - name: Playtest bot (careful player)
+        run: python3 tools/playtest_bot.py build/GhostNet 7 12
+      - name: Playtest bot (reckless player)
+        run: python3 tools/playtest_bot.py build/GhostNet 11 12 chaos
+
+  windows:
+    name: Windows build (MSVC, static runtime)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Work out version and signing key
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then V="${GITHUB_REF_NAME#v}"; else V="0.0.0-dev"; fi
+          PUB=$(tr -d ' \r\n' < .github/signing-pubkey.txt || true)
+          echo "VERSION=$V" >> "$GITHUB_ENV"
+          echo "PUBKEY=$PUB" >> "$GITHUB_ENV"
+      - name: Configure
+        run: cmake -S . -B build -A x64 -DGHOSTNET_VERSION="$env:VERSION" -DGHOSTNET_REPO="${{ github.repository }}" -DGHOSTNET_SIGNING_PUBKEY_HEX="$env:PUBKEY"
+      - name: Build
+        run: cmake --build build --config Release
+      - name: Tests
+        run: |
+          ctest --test-dir build -C Release --output-on-failure
+          build\Release\GhostNet-Setup.exe --selftest
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          build\Release\GhostNet.exe --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-binaries
+          path: |
+            build/Release/GhostNet.exe
+            build/Release/GhostNet-Setup.exe
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-binaries
+          path: bin
+      - name: Assemble payload and manifest
+        run: |
+          V="${GITHUB_REF_NAME#v}"
+          mkdir payload
+          cp bin/GhostNet.exe payload/
+          cp packaging/README.txt payload/
+          python3 tools/make_manifest.py "$GITHUB_REPOSITORY" "$V" ghostnet-manifest.txt payload/*
+      - name: Sign manifest (if a signing key is configured)
+        env:
+          SIGNING_KEY: ${{ secrets.GHOSTNET_SIGNING_KEY }}
+        run: |
+          PUB=$(tr -d ' \r\n' < .github/signing-pubkey.txt || true)
+          if [ -n "$SIGNING_KEY" ]; then
+            umask 077
+            printf '%s\n' "$SIGNING_KEY" > "$RUNNER_TEMP/key.pem"
+            python3 tools/sign_manifest.py "$RUNNER_TEMP/key.pem" ghostnet-manifest.txt ghostnet-manifest.sig
+            rm -f "$RUNNER_TEMP/key.pem"
+          elif [ -n "$PUB" ]; then
+            echo "::error::.github/signing-pubkey.txt is set but the GHOSTNET_SIGNING_KEY secret is missing; the installer would refuse this release."
+            exit 1
+          else
+            echo "No signing key configured; publishing an unsigned (hash-verified) manifest."
+          fi
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V="${GITHUB_REF_NAME#v}"
+          SETUP_SHA=$(sha256sum bin/GhostNet-Setup.exe | cut -d' ' -f1)
+          {
+            echo "## GhostNet $V"
+            echo
+            echo "**Download \`GhostNet-Setup.exe\` and run it.** It fetches the game from this release over HTTPS,"
+            echo "checks every file against the SHA-256 manifest (and GitHub's own digests), and installs to"
+            echo "\`%LOCALAPPDATA%\\Programs\\GhostNet\` without needing admin rights."
+            echo
+            echo "Windows SmartScreen may warn because the exe is not code-signed: click *More info -> Run anyway*."
+            echo
+            echo "| file | sha256 |"
+            echo "|---|---|"
+            echo "| GhostNet-Setup.exe | \`$SETUP_SHA\` |"
+            tail -n +4 ghostnet-manifest.txt | awk '{print "| " $4 " | `" $2 "` |"}'
+          } > notes.md
+          FILES="payload/GhostNet.exe payload/README.txt ghostnet-manifest.txt bin/GhostNet-Setup.exe"
+          [ -f ghostnet-manifest.sig ] && FILES="$FILES ghostnet-manifest.sig"
+          gh release create "$GITHUB_REF_NAME" $FILES --title "GhostNet $V" --notes-file notes.md --verify-tag
+
+  verify-release:
+    name: End-to-end install test from the published release
+    needs: release
+    runs-on: windows-latest
+    steps:
+      - name: Download the published installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "$env:GITHUB_REF_NAME" -R "$env:GITHUB_REPOSITORY" -p GhostNet-Setup.exe
+      - name: Install, run, verify, uninstall
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'gn'
+          .\GhostNet-Setup.exe --yes --no-shortcut --no-launch --no-color --dir $dir
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          & (Join-Path $dir 'GhostNet.exe') --version
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          .\GhostNet-Setup.exe --yes --check --no-color
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          .\GhostNet-Setup.exe --yes --uninstall --no-color --dir $dir
+          if ($LASTEXITCODE -ne 0) { exit 1 }
