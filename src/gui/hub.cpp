@@ -119,9 +119,9 @@ void App::drawHub() {
         }
         if (on) DrawRectangle(static_cast<int>(r.x), static_cast<int>(r.y + r.height + 3), static_cast<int>(r.width), 2, C_CYAN);
     }
-    if (modals.empty() && !IsKeyDown(KEY_LEFT_CONTROL))
+    if (modals.empty() && !gx::keyDown(KEY_LEFT_CONTROL))
         for (int i = 0; i < 6; ++i)
-            if (IsKeyPressed(KEY_ONE + i)) {
+            if (gx::keyPressed(KEY_ONE + i)) {
                 tab = tabs[i].t;
                 if (tab == Tab::Board) refreshBoard();
             }
@@ -285,7 +285,7 @@ void App::drawRack(Rectangle area) {
             glowText(F::Display, "ARMED TO DIE", p.x, p.y - r - 34, 11, pulse(C_RED, 5), Center);
         }
         if (sel) brackets(Rectangle{p.x - r - 22, p.y - r - 22, 2 * r + 44, 2 * r + 76}, pulse(WHITE, 4, 0.5f), 12, 2);
-        if (hitArea(Rectangle{p.x - r, p.y - r, 2 * r, 2 * r + 36})) {
+        if (hitArea(Rectangle{p.x - r, p.y - r, 2 * r, 2 * r + 36}, m.name)) {
             selMachine = m.id;
             sfx::play(sfx::Click);
         }
@@ -309,14 +309,14 @@ void App::drawRack(Rectangle area) {
         text(F::MonoBold, m.name, r.x + 8, r.y + 8, 13, C_TEXT);
         text(F::Mono, std::string(jobName(m.job)) + " T" + std::to_string(m.tier), r.x + 8, r.y + 26, 11, col);
         progress(Rectangle{r.x + 8, r.y + 46, r.width - 16, 6}, m.condition / 100.0f, mix(C_RED, C_GREEN, m.condition / 100.0f), false);
-        if (hitArea(r)) {
+        if (hitArea(r, m.name)) {
             selMachine = m.id;
             sfx::play(sfx::Click);
         }
     }
     if (stored.size() > 6) text(F::Mono, "+" + std::to_string(stored.size() - 6) + " more", left.x + 760, ty + 50, 13, C_DIM, Right);
     text(F::Mono, "click a machine to manage it", left.x + left.width - 16, left.y + 14, 12, fade(C_DIM, 0.8f), Right);
-    if (hitArea(left)) selMachine = -1;
+    if (hitArea(left, "mesh")) selMachine = -1;
 
     // Right column: what the doc asks the rack screen to show at a glance.
     panel(right, C_MAGENTA, "STATUS");
@@ -531,7 +531,7 @@ void App::drawBoard(Rectangle area) {
             DrawRectangleRec(r, Color{4, 3, 10, 170});
             text(F::Display, "BURNED", x + cw / 2, y + 40, 20, fade(C_RED, 0.8f), Center);
             text(F::Mono, "already hit - gone until the board refreshes", x + cw / 2, y + 68, 12, C_DIM, Center);
-        } else if (y >= area.y && hitArea(r)) {
+        } else if (y >= area.y && hitArea(r, t.name)) {
             brief = t;
             go(Scr::Brief);
         }
@@ -722,11 +722,11 @@ void App::drawBrief() {
         text(F::Mono, "The bill is fixed as you connect: " + std::to_string(g.net.upkeepTotal()) + "cr if anything happens.", l.x + 24, by - 26, 12, C_AMBER);
     if (const Machine* d = g.net.decoy()) text(F::Mono, "Armed to die tonight: " + d->name, l.x + 24, by - 44, 12, C_RED);
     if (button(Rectangle{l.x + 24, by, 300, 50}, "CONNECT", t.deep ? C_RED : C_MAGENTA, !burned, true, 20) ||
-        (modals.empty() && !burned && IsKeyPressed(KEY_ENTER))) {
+        (modals.empty() && !burned && gx::keyPressed(KEY_ENTER))) {
         connect(t);
         return;
     }
-    if (button(Rectangle{l.x + 340, by, 196, 50}, "BACK", C_DIM, true, false, 16) || (modals.empty() && IsKeyPressed(KEY_ESCAPE))) {
+    if (button(Rectangle{l.x + 340, by, 196, 50}, "BACK", C_DIM, true, false, 16) || (modals.empty() && gx::keyPressed(KEY_ESCAPE))) {
         tab = Tab::Board;
         go(Scr::Hub);
         return;

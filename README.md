@@ -81,6 +81,11 @@ all three locks with no trace and no bill.
   your meters and vote before each run. They never solve a lock.
 * **Never in this game:** idle income, offline progress, build timers, raids, a second currency, gacha or levelling.
 
+## Troubleshooting
+
+* **Clicks don't land / the game ignores the mouse:** fixed in 0.3.1. Version 0.3.0 mis-mapped the mouse on Windows displays scaled above 100% (most laptops). Run `GhostNet-Setup.exe` again to update.
+* **The window won't open:** GhostNet needs OpenGL 3.3, so update your graphics driver. The game writes `ghostnet.log` to `%APPDATA%\GhostNet` every time it starts; include it if you report a problem.
+
 ## Build from source
 
 A C++17 compiler and CMake 3.22+. CMake downloads raylib 6.2 (pinned by SHA-256)
@@ -101,13 +106,14 @@ all, for CI. That build only takes `--shots DIR`.
 
 **Command line:** `--windowed` (default), `--fullscreen`, `--mute`,
 `--save-dir DIR`, `--shots DIR` (render a tour of every screen to PNGs and exit),
-`--version`, `--help`.
+`--autoplay` (play the UI with scripted clicks and typing, then exit), `--version`, `--help`.
 
 ## Tests
 
 * `ctest --test-dir build` runs:
   * the installer's JSON / manifest / file-name validation tests;
   * `ghostnet_sim`, an automated player (`tests/sim_bot.cpp`) that plays the real rules end to end. It solves locks only from their feedback and learns passphrases only by reading files. There are three modes: `careful`, `chaos` (lockouts, trace-outs, decoy sacrifices, unpaid bills) and `deep`. Deep fails unless the bot builds a network and beats the deep job, after one doomed early attempt that checks the shortfall readout.
+* `gui_autoplay` (headless builds): the game plays its own UI through a simulated 1600×1000 window using only mouse clicks and typing: practice range, new game, every hub tab, the first contract (lock typed and clicked), the reckoning, naming N0, buying, storing and switching on a machine, save & quit, continue. A dead button or mouse mapping that misses fails the build.
 * `build/GhostNet --shots shots` drives every screen of the actual front end and saves 24 screenshots. CI does this on every push and uploads them as the **screenshots** artifact.
 * `GhostNet-Setup.exe --selftest`: the downloader's offline security self-test.
 

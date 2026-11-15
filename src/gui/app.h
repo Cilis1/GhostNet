@@ -48,6 +48,9 @@ public:
 
     // Headless screenshot tour (CI and docs). Returns the number of failures.
     int screenshotTour(const std::string& dir, const std::function<void()>& render);
+    // Headless autoplay: plays the real UI with scripted mouse clicks and typing only.
+    // Returns the number of failures.
+    int autoplay(const std::function<void()>& render);
 
     // ---- state -----------------------------------------------------------
     GameState g;

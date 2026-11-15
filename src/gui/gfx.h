@@ -35,7 +35,34 @@ extern bool clicked;       // left button pressed this frame (and not yet consum
 extern float wheel;
 extern int layer;          // layer currently being drawn
 extern int topLayer;       // only widgets on this layer react (modals sit on top)
+extern float uiScale;      // window pixels per virtual pixel (fonts rasterise at this scale)
 void beginFrame(int modalDepth);
+
+// ---- input -------------------------------------------------------------------
+// Every bit of game input goes through these, never straight to raylib, so the
+// headless autoplay test (autoplay.cpp) can drive the real UI with scripted
+// mouse moves, clicks and typing.
+struct ScriptInput {
+    Vector2 raw{0, 0};          // mouse in window pixels
+    bool click = false;         // left button pressed this frame
+    std::vector<int> keys;      // keys pressed this frame
+    std::vector<int> chars;     // characters typed this frame
+    int screenW = W, screenH = H;
+};
+extern ScriptInput* script;     // null = real input
+// Letterbox fit of the 1280x720 canvas into a window: scale and offset.
+void fit(int screenW, int screenH, float& scale, float& ox, float& oy);
+Vector2 toVirtual(Vector2 raw, int screenW, int screenH);
+bool keyPressed(int key);
+bool keyRepeat(int key);
+bool keyDown(int key);
+int charPressed();
+// Clickable things on the top layer this frame (for the autoplay test).
+struct Widget {
+    Rectangle r;
+    std::string label;
+};
+extern std::vector<Widget> widgets;
 
 // ---- fonts -----------------------------------------------------------------
 enum class F { Display, Heavy, Mono, MonoBold };
@@ -67,7 +94,7 @@ float tag(float x, float y, const std::string& s, Color c, float size = 12);   /
 // ---- widgets ---------------------------------------------------------------
 bool hovered(Rectangle r);
 bool button(Rectangle r, const std::string& label, Color c, bool enabled = true, bool primary = false, float size = 15);
-bool hitArea(Rectangle r);   // invisible clickable region
+bool hitArea(Rectangle r, const std::string& label = "");   // invisible clickable region
 // Edits `field` from the keyboard. Returns true when Enter is pressed.
 bool textInput(std::string& field, size_t maxLen, int mode);   // mode 0: any, 1: digits, 2: letters, 3: name
 

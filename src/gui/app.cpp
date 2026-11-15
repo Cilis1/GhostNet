@@ -216,7 +216,7 @@ void App::drawTitle() {
     if (titleHelp) {
         panel(Rectangle{60, 40, 1160, 610}, C_CYAN, "HOW TO PLAY");
         drawHelp(Rectangle{80, 64, 1120, 520});
-        if (button(Rectangle{560, 596, 160, 40}, "BACK", C_CYAN) || (modals.empty() && IsKeyPressed(KEY_ESCAPE))) titleHelp = false;
+        if (button(Rectangle{560, 596, 160, 40}, "BACK", C_CYAN) || (modals.empty() && gx::keyPressed(KEY_ESCAPE))) titleHelp = false;
         return;
     }
     float split = 2.0f + (std::fmod(gx::now, 3.7f) < 0.15f ? 8.0f : 0.0f) + glitch * 10;
@@ -260,7 +260,7 @@ void App::drawTitle() {
     text(F::Mono, "STATUS: OPEN  //  ASSIGNED: NOBODY  //  PRIORITY: RISING", 30, H - 50, 13, C_DIM);
     text(F::Mono, std::string("v") + GHOSTNET_VERSION, W - 30, H - 50, 13, C_DIM, Right);
     text(F::Mono, "sound: " + std::string(sfx::enabled ? "on" : "off") + "  [M]", W - 30, H - 70, 13, C_DIM, Right);
-    if (modals.empty() && IsKeyPressed(KEY_M)) sfx::enabled = !sfx::enabled;
+    if (modals.empty() && gx::keyPressed(KEY_M)) sfx::enabled = !sfx::enabled;
 }
 
 void App::drawIntro() {
@@ -282,7 +282,7 @@ void App::drawIntro() {
     text(F::Mono, "Tip: open the JOB BOARD and look for the CONTRACT. Try the practice range if locks are new to you.", 640, 600, 14,
          C_DIM, Center);
     if (button(Rectangle{540, 630, 200, 46}, t > 3 ? "BEGIN" : "SKIP", C_CYAN, true, t > 3, 18) ||
-        (modals.empty() && IsKeyPressed(KEY_ENTER))) {
+        (modals.empty() && gx::keyPressed(KEY_ENTER))) {
         autosave();
         sfx::play(sfx::Boot);
         tab = Tab::Board;
@@ -374,7 +374,7 @@ void App::drawModals() {
             text(F::MonoBold, m.field + (cursor ? "_" : ""), f.x + 12, f.y + 10, 18, WHITE);
             enter = textInput(m.field, 14, 3);
         } else if (gx::layer == gx::topLayer) {
-            enter = IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER);
+            enter = gx::keyPressed(KEY_ENTER) || gx::keyPressed(KEY_KP_ENTER);
         }
         int picked = -1;
         float gap = 14, bh = 42;
@@ -386,7 +386,7 @@ void App::drawModals() {
         }
         if (gx::layer == gx::topLayer) {
             if (enter && picked < 0) picked = 0;
-            if (IsKeyPressed(KEY_ESCAPE) && m.buttons.size() > 1 && picked < 0) picked = static_cast<int>(m.buttons.size()) - 1;
+            if (gx::keyPressed(KEY_ESCAPE) && m.buttons.size() > 1 && picked < 0) picked = static_cast<int>(m.buttons.size()) - 1;
         }
         if (picked >= 0) {
             Modal copy = m;

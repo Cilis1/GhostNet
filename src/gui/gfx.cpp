@@ -35,14 +35,57 @@ Color pulse(Color c, float speed, float lo) {
     return fade(c, lo + (1.0f - lo) * s);
 }
 
+float uiScale = 1.0f;
+ScriptInput* script = nullptr;
+std::vector<Widget> widgets;
+
+void fit(int screenW, int screenH, float& scale, float& ox, float& oy) {
+    scale = std::min(screenW / static_cast<float>(W), screenH / static_cast<float>(H));
+    if (!(scale > 0.01f)) scale = 1.0f;
+    ox = (screenW - W * scale) / 2;
+    oy = (screenH - H * scale) / 2;
+}
+
+Vector2 toVirtual(Vector2 raw, int screenW, int screenH) {
+    float s, ox, oy;
+    fit(screenW, screenH, s, ox, oy);
+    return Vector2{(raw.x - ox) / s, (raw.y - oy) / s};
+}
+
+bool keyPressed(int key) {
+    if (script) return std::find(script->keys.begin(), script->keys.end(), key) != script->keys.end();
+    return IsKeyPressed(key);
+}
+bool keyRepeat(int key) { return script ? false : IsKeyPressedRepeat(key); }
+bool keyDown(int key) { return script ? keyPressed(key) : IsKeyDown(key); }
+int charPressed() {
+    if (script) {
+        if (script->chars.empty()) return 0;
+        int c = script->chars.front();
+        script->chars.erase(script->chars.begin());
+        return c;
+    }
+    return GetCharPressed();
+}
+
 void beginFrame(int modalDepth) {
     now = static_cast<float>(GetTime());
     dt = std::min(GetFrameTime(), 0.1f);
-    mouse = GetMousePosition();
-    clicked = IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
-    wheel = GetMouseWheelMove();
+    // Mouse and screen are both in window pixels (the window is not created with
+    // FLAG_WINDOW_HIGHDPI, so raylib applies no scaling of its own); map to the
+    // 1280x720 canvas with the same letterbox fit main.cpp draws with.
+    if (script) {
+        mouse = toVirtual(script->raw, script->screenW, script->screenH);
+        clicked = script->click;
+        wheel = 0;
+    } else {
+        mouse = toVirtual(GetMousePosition(), GetScreenWidth(), GetScreenHeight());
+        clicked = IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
+        wheel = GetMouseWheelMove();
+    }
     topLayer = modalDepth;
     layer = 0;
+    widgets.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -66,6 +109,7 @@ void loadFamily(F f, const char* name, std::initializer_list<int> sizes) {
 
 const Font& pick(F f, float size) {
     auto& fam = families[static_cast<int>(f)];
+    size *= uiScale;   // rasterised size on screen
     for (auto& s : fam)
         if (s.px >= size - 0.5f) return s.font;
     return fam.back().font;
@@ -78,10 +122,10 @@ float spacingFor(F f, float size) {
 }  // namespace
 
 void loadFonts() {
-    loadFamily(F::Display, "Orbitron-Bold", {16, 24, 40, 64});
-    loadFamily(F::Heavy, "Orbitron-Black", {48, 128});
-    loadFamily(F::Mono, "JetBrainsMono-Regular", {13, 15, 18, 24});
-    loadFamily(F::MonoBold, "JetBrainsMono-Bold", {13, 15, 18, 24, 36});
+    loadFamily(F::Display, "Orbitron-Bold", {16, 24, 32, 40, 64, 96});
+    loadFamily(F::Heavy, "Orbitron-Black", {48, 96, 128, 192});
+    loadFamily(F::Mono, "JetBrainsMono-Regular", {13, 15, 18, 24, 30, 36});
+    loadFamily(F::MonoBold, "JetBrainsMono-Bold", {13, 15, 18, 24, 30, 36, 54});
 }
 
 void unloadFonts() {
@@ -316,7 +360,8 @@ float tag(float x, float y, const std::string& s, Color c, float size) {
 // ---------------------------------------------------------------------------
 bool hovered(Rectangle r) { return layer == topLayer && CheckCollisionPointRec(mouse, r); }
 
-bool hitArea(Rectangle r) {
+bool hitArea(Rectangle r, const std::string& label) {
+    if (layer == topLayer) widgets.push_back({r, label});
     if (clicked && hovered(r)) {
         clicked = false;
         return true;
@@ -326,6 +371,7 @@ bool hitArea(Rectangle r) {
 
 bool button(Rectangle r, const std::string& label, Color c, bool enabled, bool primary, float size) {
     bool hov = enabled && hovered(r);
+    if (enabled && layer == topLayer) widgets.push_back({r, label});
     Color base = enabled ? c : C_DARK;
     float fill = primary ? 0.22f : 0.08f;
     if (hov) fill += 0.16f;
@@ -356,7 +402,7 @@ bool button(Rectangle r, const std::string& label, Color c, bool enabled, bool p
 bool textInput(std::string& field, size_t maxLen, int mode) {
     if (layer != topLayer) return false;
     int ch;
-    while ((ch = GetCharPressed()) > 0) {
+    while ((ch = charPressed()) > 0) {
         if (ch > 126) continue;
         char c = static_cast<char>(ch);
         bool ok = false;
@@ -369,11 +415,11 @@ bool textInput(std::string& field, size_t maxLen, int mode) {
             sfx::play(sfx::Key);
         }
     }
-    if ((IsKeyPressed(KEY_BACKSPACE) || IsKeyPressedRepeat(KEY_BACKSPACE)) && !field.empty()) {
+    if ((keyPressed(KEY_BACKSPACE) || keyRepeat(KEY_BACKSPACE)) && !field.empty()) {
         field.pop_back();
         sfx::play(sfx::Key);
     }
-    return IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER);
+    return keyPressed(KEY_ENTER) || keyPressed(KEY_KP_ENTER);
 }
 
 // ---------------------------------------------------------------------------

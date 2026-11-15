@@ -19,7 +19,7 @@ jobs:
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGHOSTNET_HEADLESS=ON
           cmake --build build -j
-      - name: Unit tests + C++ playtest bots (careful, chaos, deep job on 4 seeds)
+      - name: Unit tests, C++ playtest bots, and a click-and-type autoplay of the real UI
         run: ctest --test-dir build --output-on-failure
       - name: Longer bot sweep (deep job must be beatable on every seed)
         run: |

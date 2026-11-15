@@ -55,6 +55,12 @@ SAVES
   %APPDATA%\GhostNet\ghostnet_save.txt  (kept when you uninstall or update;
   saves from 0.2.x carry straight over)
 
+TROUBLESHOOTING
+  Clicks not registering? Update to 0.3.1 or newer (run GhostNet-Setup.exe
+  again); 0.3.0 mis-mapped the mouse on displays scaled above 100%.
+  Window won't open? Update your graphics driver (OpenGL 3.3 is needed).
+  Every start writes %APPDATA%\GhostNet\ghostnet.log - send it with bug reports.
+
 UPDATING / UNINSTALLING
   Run GhostNet-Setup.exe again to update or repair.
   GhostNet-Setup.exe --uninstall removes the game (your saves stay).

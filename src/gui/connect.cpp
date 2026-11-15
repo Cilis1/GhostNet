@@ -242,7 +242,7 @@ void App::drawRun() {
             handleEvents();
         }
         if (button(Rectangle{mid.x + 470, by, 114, 44}, "JACK OUT", C_RED, true, r.lock.sealed() && !canExtra, 13) ||
-            (modals.empty() && IsKeyPressed(KEY_ESCAPE)))
+            (modals.empty() && gx::keyPressed(KEY_ESCAPE)))
             r.disconnect();
     } else {
         drawFiles(mid);
@@ -273,7 +273,7 @@ void App::drawRun() {
         }
         chromaText(F::Heavy, big, 640, 290, 96, c, Center, 3 + std::max(0.0f, 1.0f - age) * 12);
         text(F::Mono, small, 640, 410, 18, C_TEXT, Center);
-        if (age > 2.2f || (age > 0.5f && (gx::clicked || IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_SPACE)))) {
+        if (age > 2.2f || (age > 0.5f && (gx::clicked || gx::keyPressed(KEY_ENTER) || gx::keyPressed(KEY_SPACE)))) {
             gx::clicked = false;
             finishRun();
         }
@@ -580,7 +580,7 @@ void App::drawFiles(Rectangle a) {
         std::string lbl = hold ? "HOLDING THE LINE " : "DOWNLOADING ";
         text(F::Display, lbl + std::to_string(r.actDone) + "/" + std::to_string(r.actTotal) + "s", a.x + 20, by - 4, 13, c);
         progress(Rectangle{a.x + 20, by + 18, 400, 20}, static_cast<float>(r.actDone) / std::max(1, r.actTotal), c);
-        if (button(Rectangle{a.x + 440, by, 144, 44}, hold ? "PULL OUT" : "ABORT", C_RED, true, false, 13) || (modals.empty() && IsKeyPressed(KEY_ESCAPE)))
+        if (button(Rectangle{a.x + 440, by, 144, 44}, hold ? "PULL OUT" : "ABORT", C_RED, true, false, 13) || (modals.empty() && gx::keyPressed(KEY_ESCAPE)))
             r.abortAction();
         handleEvents();
         return;
@@ -589,7 +589,7 @@ void App::drawFiles(Rectangle a) {
         bool canSteal = g.netUnlocked && r.t.stealable;
         if (button(Rectangle{a.x + 20, by, 250, 44}, "CAPTURE HARDWARE", C_AMBER, canSteal, false, 13)) startCapture();
         std::string out = r.jobDone ? "JACK OUT - KEEP IT" : "JACK OUT";
-        if (button(Rectangle{a.x + 284, by, 300, 44}, out, r.jobDone ? C_GREEN : C_CYAN, true, true, 15) || (modals.empty() && IsKeyPressed(KEY_ESCAPE)))
+        if (button(Rectangle{a.x + 284, by, 300, 44}, out, r.jobDone ? C_GREEN : C_CYAN, true, true, 15) || (modals.empty() && gx::keyPressed(KEY_ESCAPE)))
             r.disconnect();
     }
 }
@@ -708,7 +708,7 @@ void App::drawReckon() {
     }
     if (rk.boardRefreshed) text(F::MonoBold, "THE BOARD REFRESHED - old listings are forgotten", 640, 636, 13, C_AMBER, Center);
     bool done = reveal >= rk.lines.size();
-    if (button(Rectangle{540, 656, 200, 44}, done ? "CONTINUE" : "SKIP", c, true, done, 16) || (modals.empty() && IsKeyPressed(KEY_ENTER))) {
+    if (button(Rectangle{540, 656, 200, 44}, done ? "CONTINUE" : "SKIP", c, true, done, 16) || (modals.empty() && gx::keyPressed(KEY_ENTER))) {
         if (!done) scrBorn -= 30;
         else leaveReckoning();
     }
@@ -814,5 +814,5 @@ void App::drawPractice() {
         y += para(F::Mono, "ROTOR: 4 digits, judged per wheel. GREEN = exact. AMBER = ONE NOTCH AWAY (not misplaced). Dark = further off.", a.x + 30, y, a.width - 60, 15, C_TEXT) + 14;
         para(F::Mono, "CIPHER: a 5-letter word. GREEN = right letter, right place. AMBER = in the word, elsewhere.", a.x + 30, y, a.width - 60, 15, C_TEXT);
     }
-    if (button(Rectangle{560, 656, 160, 42}, "BACK", C_DIM) || (modals.empty() && IsKeyPressed(KEY_ESCAPE))) go(practiceFromHub ? Scr::Hub : Scr::Title);
+    if (button(Rectangle{560, 656, 160, 42}, "BACK", C_DIM) || (modals.empty() && gx::keyPressed(KEY_ESCAPE))) go(practiceFromHub ? Scr::Hub : Scr::Title);
 }
