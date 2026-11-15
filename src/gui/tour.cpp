@@ -125,6 +125,7 @@ int App::screenshotTour(const std::string& dir, const std::function<void()>& ren
     cap.noise = 4;
     cap.active = true;
     cap.origin = "Captured from Kessler-Maru Compute (board 4).";
+    cap.trait = Trait::HotIron;
     g.net.machines.push_back(cap);
     armDecoy(g, g.net.machines.back(), true);
     Machine st = cap;
@@ -135,7 +136,25 @@ int App::screenshotTour(const std::string& dir, const std::function<void()>& ren
     st.condition = 0;
     st.active = false;
     st.origin = "Captured from Transit Turnstile Hub (board 2).";
+    st.trait = Trait::Salvaged;
     g.net.machines.push_back(st);
+    buyMachine(g, Job::Vault);    // rack full: it lands in cold storage
+    buyMachine(g, Job::Jammer);
+    g.programs[0] = Program::Freeze;
+    g.programs[1] = Program::Peek;
+    Memorial plate;
+    plate.name = "PRX-3";
+    plate.job = Job::Proxy;
+    plate.tier = 2;
+    plate.run = 14;
+    plate.where = "Tidewater BioSys Grid";
+    plate.origin = "Bought from a back-room dealer.";
+    g.wall.push_back(plate);
+    plate.name = "vending-12";
+    plate.tier = 1;
+    plate.run = 19;
+    plate.where = "Halcyon Freight Ledger";
+    g.wall.push_back(plate);
     g.act = 2;
     g.deck.breaker = 1;
     g.deck.uplink = 2;
@@ -169,9 +188,14 @@ int App::screenshotTour(const std::string& dir, const std::function<void()>& ren
     connect(cipherT);
     for (const char* w : {"crane", "spine", "ghost"})
         if (run->lock.left() > 1) run->guess(w, err);
-    input = "ro";
+    run->runProgram(1, err);   // PEEK: one letter, ghosted into the input row
+    input.clear();
     handleEvents();
+    floats.clear();
     shot("18-lock-cipher", 1.0f);
+    openPhraseModal();
+    shot("25-phrase-starters", 1.0f);
+    modals.clear();
     run->disconnect();
     run.reset();
 

@@ -27,18 +27,22 @@ THE LOOP  (the rack -> the board -> the connection -> the reckoning)
      the night's haul is lost and a fine comes out of what you have.
 
 LOCKS
-  KEYPAD  4 different digits. HIT = right digit, right place; NEAR = right digit, wrong place.
+  KEYPAD  4 different digits, judged box by box. Green = right box; amber = in
+          the code, another box; dark = not in the code.
   ROTOR   4 digits judged per wheel. Amber "+-1" = ONE NOTCH AWAY (not misplaced!).
   CIPHER  5-letter word. Green = right place, amber = elsewhere in the word.
 
 THE DECK
   Tools you buy for yourself: more attempts, better tools, a quieter
   connection, faster reading. Permanent, never billed.
+  PROGRAMS: two single-use slots - FREEZE, PEEK, SPOOF, BURST. One per lock.
 
 GHOSTNET (after your first contract)
   SAINT's salvaged rack and your home server, N0 (never billed, never worn).
   RELAY speeds downloads, PROXY slows the trace, SCOUT gives reports,
-  COMPUTE holds an emergency extra guess (EMERGENCY +1 at a lock).
+  COMPUTE holds an emergency extra guess (EMERGENCY +1 at a lock),
+  JAMMER holds watchdogs back and softens alarms, VAULT keeps your best file
+  if you're traced. Captured machines carry an origin trait for life.
   Running machines bill you after a run and wear. Can't pay? Nothing is taken:
   everything except N0 goes dark. Arm a PROXY as the DECOY and if the trace
   fills, HELIOS traces it instead of you - it is destroyed, the fine is halved.

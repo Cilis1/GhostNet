@@ -53,6 +53,16 @@ HardwareSpec hardwareFor(Kind k) {
     }
 }
 
+Trait traitFor(Kind k) {
+    switch (k) {
+        case Kind::Open: return Trait::Salvaged;
+        case Kind::Hidden: return Trait::OldNet;
+        case Kind::Guarded: return Trait::HotIron;
+        case Kind::Corporate: return Trait::CorpBuild;
+        default: return Trait::None;
+    }
+}
+
 double baseTraceRate(const Target& t) {
     if (t.traceOverride > 0) return t.traceOverride;
     return bal::TRACE_RATE[std::max(1, std::min(5, t.security))];
@@ -460,3 +470,5 @@ Target* findTarget(std::vector<Target>& board, int id) {
     for (auto& t : board) if (t.id == id) return &t;
     return nullptr;
 }
+
+const std::vector<std::string>& starterPhrases() { return kPhrases; }

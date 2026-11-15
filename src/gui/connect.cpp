@@ -9,7 +9,9 @@
 #include "balance.h"
 #include "gfx.h"
 #include "rules.h"
+#include "intel.h"
 #include "save.h"
+#include "text.h"
 #include "world.h"
 
 using namespace gx;
@@ -26,6 +28,30 @@ std::string fixed1(double v) {
     char b[32];
     std::snprintf(b, sizeof b, "%.1f", v);
     return b;
+}
+
+// Starter phrases for the TRY PHRASE box: every phrase you've read anywhere first (techs
+// reuse them), then the city's stock phrases in an order fixed per door, minus anything
+// that already bounced off this door tonight.
+std::vector<std::string> phraseStarters(const RunSession& r, const GameState& g) {
+    std::vector<std::string> out;
+    auto add = [&](const std::string& raw) {
+        std::string p = txt::upper(txt::trim(raw));
+        if (p.empty() || p == "?") return;
+        if (std::find(out.begin(), out.end(), p) != out.end()) return;
+        if (std::find(r.triedPhrases.begin(), r.triedPhrases.end(), p) != r.triedPhrases.end()) return;
+        out.push_back(p);
+    };
+    for (auto& j : g.journal) {
+        if (j.rfind("Passphrase for ", 0) != 0) continue;
+        size_t c = j.rfind(": ");
+        if (c != std::string::npos) add(j.substr(c + 2));
+    }
+    std::vector<std::string> stock = starterPhrases();
+    std::mt19937_64 mix64(g.worldSeed * 0x9E3779B97F4A7C15ULL + static_cast<uint64_t>(r.t.id) * 7919ULL + 17);
+    std::shuffle(stock.begin(), stock.end(), mix64);
+    for (auto& p : stock) add(p);
+    return out;
 }
 }  // namespace
 
@@ -114,6 +140,16 @@ void App::handleEvents() {
             case Ev::Sacrifice:
                 sfx::play(sfx::Sacrifice);
                 flash = 1.0f, flashColor = C_RED, shake = 1.2f, glitch = 1.0f;
+                break;
+            case Ev::Program:
+                sfx::play(sfx::Boot);
+                flash = 0.35f, flashColor = C_CYAN, glitch = 0.3f;
+                floats.push_back({e.text, C_CYAN, Vector2{636, 380}, gx::now});
+                break;
+            case Ev::Spoofed:
+                sfx::play(sfx::Granted, 0.7f);
+                flash = 0.4f, flashColor = C_MAGENTA;
+                floats.push_back({"SPOOFED", C_MAGENTA, Vector2{636, 380}, gx::now});
                 break;
         }
     }
@@ -206,6 +242,7 @@ void App::drawRun() {
     glowText(F::Display, std::to_string(r.haul) + " CR", W - 24, 30, 20, C_AMBER, Right);
     text(F::Mono, "t+" + std::to_string(r.secs) + "s", W - 200, 36, 12, C_DIM);
 
+    hoverHint.clear();
     drawRoute(Rectangle{20, 84, 296, 604});
     Rectangle mid{332, 84, 604, 604};
     if (!r.doorOpen && !r.over()) {
@@ -220,19 +257,7 @@ void App::drawRun() {
                 r.phrase(r.t.passphrase);
                 handleEvents();
             } else {
-                Modal m;
-                m.title = "MAINTENANCE PHRASE";
-                m.body = "If you've read a maintenance passphrase for this door, type it. A wrong phrase spikes the trace (+" +
-                         std::to_string(static_cast<int>(bal::WRONG_PHRASE_SPIKE)) + "%).";
-                m.buttons = {"SEND", "CANCEL"};
-                m.input = true;
-                m.accent = C_GREEN;
-                m.onPick = [this](int c, const std::string& f) {
-                    if (c != 0 || !run || f.empty()) return;
-                    run->phrase(f);
-                    handleEvents();
-                };
-                pushModal(m);
+                openPhraseModal();
             }
         }
         bool canExtra = r.emergLeft > 0 && !r.lock.extraUsed;
@@ -249,6 +274,15 @@ void App::drawRun() {
     }
     drawTrace(Vector2{1106, 186}, 82);
     drawLog(Rectangle{952, 300, 308, 388});
+
+    if (!hoverHint.empty() && modals.empty()) {
+        auto ls = wrap(F::Mono, hoverHint, 300, 13);
+        float hh = 14 + ls.size() * 18.0f;
+        Rectangle hr{gx::mouse.x + 18, std::min(gx::mouse.y - hh / 2, H - hh - 10.0f), 330, hh};
+        DrawRectangleRec(hr, fade(Color{6, 6, 20, 255}, 0.96f));
+        DrawRectangleLinesEx(hr, 1, fade(C_CYAN, 0.6f));
+        for (size_t k = 0; k < ls.size(); ++k) text(F::Mono, ls[k], hr.x + 12, hr.y + 7 + k * 18, 13, C_TEXT);
+    }
 
     // Floating callouts.
     for (auto& f : floats) {
@@ -280,11 +314,36 @@ void App::drawRun() {
     }
 }
 
+void App::openPhraseModal() {
+    if (!run) return;
+    RunSession& r = *run;
+    Modal m;
+    m.title = "MAINTENANCE PHRASE";
+    m.body = "If you've read a maintenance passphrase for this door, type it. Techs across the city reuse a handful of stock "
+             "phrases, so a starter is worth a shot - but every wrong one costs " + std::to_string(bal::COST_PHRASE) +
+             "s and spikes the trace (+" + std::to_string(static_cast<int>(bal::WRONG_PHRASE_SPIKE)) + "%).";
+    m.buttons = {"SEND", "CANCEL"};
+    m.input = true;
+    m.accent = C_GREEN;
+    m.chips = phraseStarters(r, g);
+    ReportView rv = reportView(g, r.t);
+    if (r.t.deep) m.chipNote = "STARTERS - HELIOS'S DEEP PHRASE IS NOT A STOCK ONE. FIND IT IN THE ANNEX.";
+    else if (rv.exists && rv.quality >= 3) m.chipNote = rv.backdoor ? "STARTERS - YOUR SCOUT SAYS THIS DOOR HAS A MAINTENANCE PORT"
+                                                                    : "STARTERS - YOUR SCOUT SAYS THIS DOOR HAS NO MAINTENANCE PORT";
+    else m.chipNote = "STARTERS - STOCK PHRASES, ROTATING. NOT EVERY DOOR HAS A PORT.";
+    m.onPick = [this](int c, const std::string& f) {
+        if (c != 0 || !run || f.empty()) return;
+        run->phrase(f);
+        handleEvents();
+    };
+    pushModal(m);
+}
+
 void App::drawRoute(Rectangle a) {
     RunSession& r = *run;
     panel(a, C_CYAN, "ROUTE");
     Vector2 top{a.x + a.width / 2, a.y + 70};
-    Vector2 bottom{a.x + a.width / 2, a.y + 350};
+    Vector2 bottom{a.x + a.width / 2, a.y + 290};
     std::vector<const Machine*> nodes;
     if (g.netUnlocked)
         for (auto& m : g.net.machines)
@@ -326,14 +385,17 @@ void App::drawRoute(Rectangle a) {
     text(F::Display, "YOU", bottom.x, bottom.y - 7, 12, WHITE, Center);
     text(F::Mono, "your deck", bottom.x, bottom.y + 32, 12, C_DIM, Center);
 
-    float y = a.y + 410;
+    float y = a.y + 334;
     auto row = [&](const std::string& k, const std::string& v, Color c) {
         text(F::Mono, k, a.x + 20, y, 12, C_DIM);
         text(F::MonoBold, v, a.x + a.width - 20, y, 13, c, Right);
-        y += 22;
+        y += 19;
     };
-    row("DOWNLOAD", fixed1(downloadSpeed(g)) + " MB/s", C_CYAN);
-    row("TRACE RATE", fixed1(r.rateNow(r.act == RunSession::Act::Download ? bal::DOWNLOAD_TRACE_MULT : r.anchoring ? bal::ANCHOR_TRACE_MULT : 1.0)) + " %/s", tc);
+    if (r.burstLeft > 0) row("DOWNLOAD", "BURST x2 (" + std::to_string(r.burstLeft) + "s)", pulse(C_AMBER, 6));
+    else row("DOWNLOAD", fixed1(downloadSpeed(g)) + " MB/s", C_CYAN);
+    if (r.freezeLeft > 0) row("TRACE RATE", "FROZEN (" + std::to_string(r.freezeLeft) + "s)", pulse(C_CYAN, 6));
+    else row("TRACE RATE", fixed1(r.rateNow(r.act == RunSession::Act::Download ? bal::DOWNLOAD_TRACE_MULT * (r.burstLeft > 0 ? bal::BURST_TRACE_MULT : 1.0)
+                                          : r.anchoring ? bal::ANCHOR_TRACE_MULT : 1.0)) + " %/s", tc);
     row("GUESS COSTS", std::to_string(bal::COST_GUESS) + "s", C_TEXT);
     row("EMERGENCY", std::to_string(r.emergLeft), r.emergLeft ? C_AMBER : C_DIM);
     const Machine* d = g.net.decoy();
@@ -342,7 +404,29 @@ void App::drawRoute(Rectangle a) {
     for (int id : r.billIds)
         if (const Machine* m = g.net.find(id)) bill += upkeepOf(*m);
     row("BILL (FIXED)", std::to_string(bill) + "cr", C_AMBER);
-    if (r.t.watchdog) row("WATCHDOG", "ACCELERATING", pulse(C_RED, 4));
+    if (r.t.watchdog) {
+        if (r.secs < r.jamDelay) row("WATCHDOG", "JAMMED " + std::to_string(r.jamDelay - r.secs) + "s", C_PURPLE);
+        else row("WATCHDOG", "ACCELERATING", pulse(C_RED, 4));
+    }
+    if (r.spoofArmed) row("SPOOF", "ARMED", C_GREEN);
+
+    // Deck programs: two single-use slots. Running one costs no time.
+    float py = a.y + a.height - 104;
+    text(F::Display, "DECK PROGRAMS", a.x + 20, py, 11, C_DIM);
+    if (!r.doorOpen) text(F::Mono, r.doorPrograms > 0 ? "lock: used" : "1 per lock", a.x + a.width - 20, py, 11, r.doorPrograms > 0 ? C_AMBER : C_DIM, Right);
+    for (int i = 0; i < kProgramSlots; ++i) {
+        Program p = g.programs[i];
+        Rectangle br{a.x + 20, py + 20 + i * 44, a.width - 40, 38};
+        std::string why;
+        bool ok = r.programUsable(i, &why);
+        Color pc = p == Program::Freeze ? C_CYAN : p == Program::Peek ? C_GREEN : p == Program::Spoof ? C_MAGENTA : p == Program::Burst ? C_AMBER : C_DIM;
+        if (button(br, programName(p), pc, ok && modals.empty(), false, 12)) {
+            std::string err;
+            if (!r.runProgram(i, err)) toast(err, C_AMBER);
+            handleEvents();
+        }
+        if (p != Program::None && gx::hovered(br)) hoverHint = std::string(programText(p)) + (ok ? "" : "\n" + why);
+    }
 }
 
 void App::drawTrace(Vector2 c, float rad) {
@@ -409,7 +493,6 @@ bool App::drawLock(Rectangle a, Lock& lock, std::string& field, bool interactive
     }
     int len = lock.length();
     bool cipher = lock.type == LockType::Cipher;
-    bool keypad = lock.type == LockType::Keypad;
     // Header.
     text(F::Mono, "GUESSES LEFT", a.x, a.y, 12, C_DIM);
     pips(a.x + 110, a.y + 1, std::max(0, lock.left()), lock.maxGuesses, lock.left() <= 1 ? C_RED : C_CYAN, 11, 4);
@@ -417,7 +500,7 @@ bool App::drawLock(Rectangle a, Lock& lock, std::string& field, bool interactive
     para(F::Mono, lock.rule(), a.x, a.y + 22, a.width, 12, fade(C_TEXT, 0.8f), 1.3f, 3);
 
     float tile = cipher ? 46 : 48, gap = 8;
-    float rowW = len * (tile + gap) - gap + (keypad ? 160 : 0);
+    float rowW = len * (tile + gap) - gap;
     float x0 = a.x + (a.width - rowW) / 2;
     float y = a.y + 80;
     int rows = std::max<int>(lock.maxGuesses, static_cast<int>(lock.history.size()) + 1);
@@ -435,28 +518,32 @@ bool App::drawLock(Rectangle a, Lock& lock, std::string& field, bool interactive
                 bool newest = i == static_cast<int>(lock.history.size()) - 1;
                 bool revealed = !newest || gx::now - rowBorn > k * 0.09f;
                 Color c = Color{60, 50, 110, 255};
-                if (!keypad && revealed && k < static_cast<int>(row.marks.size())) {
-                    int mk = row.marks[static_cast<size_t>(k)];
-                    c = mk == 2 ? C_GREEN : mk == 1 ? C_AMBER : Color{40, 44, 66, 255};
-                }
-                DrawRectangleRec(tr, fade(c, keypad ? 0.35f : 0.85f));
-                if (!keypad && revealed && k < static_cast<int>(row.marks.size()) && row.marks[static_cast<size_t>(k)] > 0) {
+                int mk = revealed && k < static_cast<int>(row.marks.size()) ? row.marks[static_cast<size_t>(k)] : -1;
+                if (mk >= 0) c = mk == 2 ? C_GREEN : mk == 1 ? C_AMBER : Color{40, 44, 66, 255};
+                DrawRectangleRec(tr, fade(c, 0.85f));
+                if (mk > 0) {
                     BeginBlendMode(BLEND_ADDITIVE);
                     DrawRectangleRec(Rectangle{tr.x - 3, tr.y - 3, tr.width + 6, tr.height + 6}, fade(c, 0.18f));
                     EndBlendMode();
                 }
                 DrawRectangleLinesEx(tr, 1, fade(WHITE, 0.25f));
                 std::string ch(1, static_cast<char>(std::toupper(static_cast<unsigned char>(row.guess[static_cast<size_t>(k)]))));
-                text(F::MonoBold, ch, tr.x + t / 2, tr.y + (t - 24) / 2, 24, (!keypad && revealed && k < static_cast<int>(row.marks.size()) && row.marks[static_cast<size_t>(k)] > 0) ? C_INK
-                     : (!keypad && revealed) ? fade(WHITE, 0.55f) : WHITE, Center);
-                if (lock.type == LockType::Rotor && revealed && k < static_cast<int>(row.marks.size())) {
-                    int mk = row.marks[static_cast<size_t>(k)];
-                    text(F::MonoBold, mk == 2 ? "=" : mk == 1 ? "+-1" : "", tr.x + t - 3, tr.y + 2, 9, C_INK, Right);
+                text(F::MonoBold, ch, tr.x + t / 2, tr.y + (t - 24) / 2, 24, mk > 0 ? C_INK : mk == 0 ? fade(WHITE, 0.55f) : WHITE, Center);
+                // A corner mark too, so the colours are never the only signal.
+                if (mk >= 0) {
+                    const char* tag = lock.type == LockType::Rotor ? (mk == 2 ? "=" : mk == 1 ? "+-1" : "")
+                                                                    : (mk == 2 ? "OK" : mk == 1 ? "<>" : "");
+                    text(F::MonoBold, tag, tr.x + t - 3, tr.y + 2, 9, C_INK, Right);
                 }
             } else if (cur) {
                 bool has = k < static_cast<int>(field.size());
                 bool caret = k == static_cast<int>(field.size());
+                bool peeked = std::find(lock.peeked.begin(), lock.peeked.end(), k) != lock.peeked.end();
                 DrawRectangleRec(tr, fade(C_CYAN, has ? 0.18f : 0.05f));
+                std::string pc = peeked ? std::string(1, static_cast<char>(std::toupper(static_cast<unsigned char>(lock.secret[static_cast<size_t>(k)])))) : "";
+                if (peeked && !has)   // PEEK: the answer for this box, as a ghost to type over
+                    text(F::MonoBold, pc, tr.x + t / 2, tr.y + (t - 24) / 2, 24, fade(C_GREEN, 0.45f), Center);
+                if (peeked) text(F::MonoBold, "PEEK " + pc, tr.x + t / 2, tr.y + t + 1, 8, C_GREEN, Center);
                 if (caret) glowRect(tr, pulse(C_CYAN, 6, 0.4f), 2, 3);
                 else DrawRectangleLinesEx(tr, 1.5f, fade(C_CYAN, 0.7f));
                 if (has) {
@@ -465,17 +552,6 @@ bool App::drawLock(Rectangle a, Lock& lock, std::string& field, bool interactive
                 }
             } else {
                 DrawRectangleLinesEx(tr, 1, fade(C_DIM, 0.25f));
-            }
-        }
-        if (keypad && hist) {
-            const Lock::Row& row = lock.history[static_cast<size_t>(i)];
-            float fx = x0 + len * (t + gap) + 14;
-            bool revealed = i != static_cast<int>(lock.history.size()) - 1 || gx::now - rowBorn > 0.3f;
-            if (revealed) {
-                text(F::Mono, "HIT", fx, ry + t / 2 - 15, 11, C_DIM);
-                pips(fx + 40, ry + t / 2 - 14, row.hit, 4, C_GREEN, 10, 3);
-                text(F::Mono, "NEAR", fx, ry + t / 2 + 3, 11, C_DIM);
-                pips(fx + 40, ry + t / 2 + 4, row.nearc, 4, C_AMBER, 10, 3);
             }
         }
     }
@@ -810,7 +886,7 @@ void App::drawPractice() {
             text(F::Mono, "Sealed. The answer was " + practice.secret + ".", a.x + a.width / 2, a.y + a.height - 40, 15, C_RED, Center);
     } else {
         float y = a.y + 40;
-        y += para(F::Mono, "KEYPAD: 4 different digits. HIT = right digit, right place. NEAR = right digit, wrong place.", a.x + 30, y, a.width - 60, 15, C_TEXT) + 14;
+        y += para(F::Mono, "KEYPAD: 4 different digits, judged box by box. GREEN = right digit, right box. AMBER = in the code, another box. Dark = not in the code.", a.x + 30, y, a.width - 60, 15, C_TEXT) + 14;
         y += para(F::Mono, "ROTOR: 4 digits, judged per wheel. GREEN = exact. AMBER = ONE NOTCH AWAY (not misplaced). Dark = further off.", a.x + 30, y, a.width - 60, 15, C_TEXT) + 14;
         para(F::Mono, "CIPHER: a 5-letter word. GREEN = right letter, right place. AMBER = in the word, elsewhere.", a.x + 30, y, a.width - 60, 15, C_TEXT);
     }

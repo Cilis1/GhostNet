@@ -49,7 +49,8 @@ bool lockHasOddNearRule(LockType t) { return t == LockType::Rotor; }
 std::string lockRuleText(LockType t) {
     switch (t) {
         case LockType::Keypad:
-            return "KEYPAD: 4 different digits. HIT = right digit, right place. NEAR = right digit, wrong place. You are not told which.";
+            return "KEYPAD: 4 different digits, judged box by box. Green = right digit, right box. Amber = the digit is in the code, "
+                   "in another box. Dark = not in the code.";
         case LockType::Rotor:
             return "ROTOR: 4 digits (repeats allowed), judged per wheel. Green = exact. Amber = the wheel is ONE NOTCH AWAY "
                    "(higher or lower) - NOT misplaced. Dark = further off.";
@@ -100,8 +101,9 @@ bool Lock::guess(const std::string& raw, std::string& err) {
                 if (g[i] == g[j]) { err = "Keypad digits must all be different."; return false; }
         int hit = 0, nearc = 0;
         for (int i = 0; i < 4; ++i) {
-            if (g[i] == secret[i]) ++hit;
-            else if (secret.find(g[i]) != std::string::npos) ++nearc;
+            if (g[i] == secret[i]) { ++hit; row.marks.push_back(2); }
+            else if (secret.find(g[i]) != std::string::npos) { ++nearc; row.marks.push_back(1); }
+            else row.marks.push_back(0);
         }
         row.hit = hit;
         row.nearc = nearc;
@@ -141,3 +143,20 @@ bool Lock::guess(const std::string& raw, std::string& err) {
     return true;
 }
 
+
+bool Lock::known(int pos) const {
+    if (std::find(peeked.begin(), peeked.end(), pos) != peeked.end()) return true;
+    for (auto& r : history)
+        if (pos < static_cast<int>(r.marks.size()) && r.marks[static_cast<size_t>(pos)] == 2) return true;
+    return false;
+}
+
+int Lock::peek() {
+    if (open || type == LockType::None) return -1;
+    for (int i = 0; i < length(); ++i)
+        if (!known(i)) {
+            peeked.push_back(i);
+            return i;
+        }
+    return -1;
+}

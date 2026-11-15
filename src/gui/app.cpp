@@ -10,6 +10,7 @@
 #include "gfx.h"
 #include "rlgl.h"
 #include "save.h"
+#include "text.h"
 #include "world.h"
 
 using namespace gx;
@@ -31,6 +32,8 @@ Color jobColor(Job j) {
         case Job::Proxy: return C_MAGENTA;
         case Job::Scout: return C_AMBER;
         case Job::Compute: return C_GREEN;
+        case Job::Jammer: return C_PURPLE;
+        case Job::Vault: return Color{205, 215, 235, 255};   // vault silver
     }
     return C_TEXT;
 }
@@ -349,7 +352,8 @@ void App::drawModals() {
         float bodySize = m.cinematic ? 18.0f : 15.0f;
         auto lines = wrap(F::Mono, m.body, w - 70, bodySize);
         float bodyH = lines.size() * bodySize * 1.4f;
-        float h = 70 + (m.cinematic ? 40 : 0) + bodyH + (m.input ? 64 : 0) + 80;
+        bool chips = m.input && !m.chips.empty();
+        float h = 70 + (m.cinematic ? 40 : 0) + bodyH + (m.input ? 64 : 0) + (chips ? 78 : 0) + 80;
         Rectangle r{(W - w) / 2, (H - h) / 2, w, h};
         panel(r, m.accent, "", 0.97f);
         float y = r.y + 26;
@@ -373,6 +377,7 @@ void App::drawModals() {
             bool cursor = std::fmod(gx::now, 1.0f) < 0.55f;
             text(F::MonoBold, m.field + (cursor ? "_" : ""), f.x + 12, f.y + 10, 18, WHITE);
             enter = textInput(m.field, 14, 3);
+            y += 52;
         } else if (gx::layer == gx::topLayer) {
             enter = gx::keyPressed(KEY_ENTER) || gx::keyPressed(KEY_KP_ENTER);
         }
@@ -383,6 +388,25 @@ void App::drawModals() {
         for (size_t b = 0; b < m.buttons.size(); ++b) {
             Color c = b == 0 ? m.accent : C_DIM;
             if (button(Rectangle{bx + b * (bw + gap), r.y + h - 66, bw, bh}, m.buttons[b], c, true, b == 0)) picked = static_cast<int>(b);
+        }
+        if (chips) {
+            // Starter phrases: three at a time, rotating every few seconds.
+            const int per = 3;
+            int n = static_cast<int>(m.chips.size());
+            int pages = (n + per - 1) / per;
+            int page = (static_cast<int>(gx::now / 4.0f) + m.chipShift) % std::max(1, pages);
+            float cy = y + 6;
+            text(F::Mono, m.chipNote.empty() ? "TRY ONE OF THESE" : m.chipNote, r.x + 35, cy, 11, C_DIM);
+            float tick = std::fmod(gx::now, 4.0f) / 4.0f;   // a thin timer bar until the next rotation
+            DrawRectangle(static_cast<int>(r.x + 35), static_cast<int>(cy + 16), static_cast<int>((w - 70) * (1 - tick)), 1, fade(m.accent, 0.5f));
+            float cw = (w - 70 - 90 - 3 * 10) / 3;
+            for (int k = 0; k < per; ++k) {
+                int idx = page * per + k;
+                if (idx >= n) break;
+                const std::string& s = m.chips[static_cast<size_t>(idx)];
+                if (button(Rectangle{r.x + 35 + k * (cw + 10), cy + 24, cw, 34}, s, m.accent, true, s == txt::upper(m.field), 12)) m.field = s;
+            }
+            if (button(Rectangle{r.x + w - 35 - 90, cy + 24, 90, 34}, "MORE >", C_DIM, pages > 1, false, 11)) m.chipShift += 1;
         }
         if (gx::layer == gx::topLayer) {
             if (enter && picked < 0) picked = 0;

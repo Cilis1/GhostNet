@@ -21,7 +21,7 @@ struct Line {
 enum class Ev {
     Connected, AccessGranted, PhraseOk, PhraseBad, Guess, Lockout, Extra, MachineDark,
     Read, PhraseLearned, SideFound, DownloadDone, DownloadAborted, Honeypot, Objective,
-    ContractDone, Captured, Traced, Sacrifice
+    ContractDone, Captured, Traced, Sacrifice, Program, Spoofed
 };
 struct Event {
     Ev type;
@@ -35,6 +35,7 @@ struct CaptureQuote {
     int tier = 1, condition = 0, noise = 1, upkeep = 0, holdSecs = 0, secondsLeft = 0;
     int leftCr = 0, leftIntel = 0;
     bool trailWarning = false, rackFull = false, honeypot = false, viaPhrase = false;
+    Trait trait = Trait::None;   // what it would carry for life
 };
 
 struct Shortfall {
@@ -77,8 +78,18 @@ public:
     int emergLeft = 0;
     std::vector<int> billIds;      // fixed when the run begins
     int startRelay = 0, startProxy = 0;
+    int jamDelay = 0, jamCut = 0;  // from working jammers, fixed when the run begins
+    int vaultPct = 0;              // best working vault, fixed when the run begins
+    std::string vaultName;
+    int bestFile = 0;              // most valuable paydata file downloaded tonight
+    // Deck programs.
+    int freezeLeft = 0;            // seconds the trace stands still
+    int burstLeft = 0;             // download seconds at double speed
+    bool spoofArmed = false;
+    int doorPrograms = 0;          // programs run while the lock was closed (max 1)
     End end = End::None;
     std::string sacrificed, stolen;
+    std::vector<std::string> triedPhrases;   // wrong phrases sent this run (upper case)
     std::vector<Line> log;         // the connection's running commentary
     std::vector<Event> events;     // drained by the front end for effects and sound
 
@@ -91,6 +102,9 @@ public:
     bool guess(const std::string& raw, std::string& err);
     bool phrase(const std::string& word);
     bool extra(std::string& err);
+    // Run the program loaded in a deck slot (free: costs no time). Consumes it.
+    bool runProgram(int slot, std::string& err);
+    bool programUsable(int slot, std::string* why = nullptr) const;
     // Inside.
     bool read(int fileIdx);
     bool startDownload(int fileIdx, std::string& err);
@@ -110,6 +124,7 @@ public:
 private:
     bool advance(int seconds, double mult = 1.0);
     bool spike(double amount);
+    int spikeSize(double base) const;   // after jammers, for the log
     void traced();
     void openDoor(bool phrase);
     void finishDownload();
@@ -117,4 +132,5 @@ private:
     void say(const std::string& s, Tone tone = Tone::Normal) { log.push_back({s, tone}); }
     void emit(Ev e, const std::string& s = "") { events.push_back({e, s}); }
     bool settled_ = false;
+    bool decoyHot_ = false;        // the burned decoy was HOT IRON: fine waived
 };

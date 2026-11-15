@@ -23,6 +23,12 @@ struct Modal {
     bool cinematic = false;             // act cards / story beats: big, slow
     bool input = false;                 // shows a text field (names)
     std::string field;
+    // Input helpers: clickable suggestions that fill the field, shown a few at a time and
+    // rotating on their own (MORE skips ahead). They are drawn after the buttons, so the
+    // primary action stays buttons.front().
+    std::vector<std::string> chips;
+    std::string chipNote;
+    int chipShift = 0;
     std::function<void(int choice, const std::string& field)> onPick;
 };
 
@@ -72,6 +78,7 @@ public:
     std::string input;
     float stepClock = 0;
     float traceShown = 0;
+    std::string hoverHint;     // drawn last on the run screen, next to the pointer
     int readFile = -1;
     float endedAt = -1;
     size_t logSeen = 0;
@@ -146,6 +153,7 @@ private:
     void leaveReckoning();
     void showNetworkUnlock();
     void startCapture();
+    void openPhraseModal();
     void refreshBoard();
 };
 

@@ -38,3 +38,9 @@ struct ToolInfo {
 };
 ToolInfo toolInfo(const GameState& g, Tool t);
 Result buyTool(GameState& g, Tool t);
+
+// Deck programs: single use, two slots, bought with credits between runs.
+int programCost(Program p);
+int freeProgramSlot(const GameState& g);    // -1 when both are loaded
+Result buyProgram(GameState& g, Program p);  // loads into the first free slot
+Result unloadProgram(GameState& g, int slot);   // unused programs refund in full

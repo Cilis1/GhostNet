@@ -47,7 +47,7 @@ Result buyMachine(GameState& g, Job j) {
     m.condition = 100;
     m.noise = 1;
     m.price = price;
-    static const char* serial[4] = {"RLY-", "PRX-", "SCT-", "CMP-"};
+    static const char* serial[kJobCount] = {"RLY-", "PRX-", "SCT-", "CMP-", "JAM-", "VLT-"};
     char buf[8];
     std::snprintf(buf, sizeof buf, "%02d", m.id);
     m.name = std::string(serial[static_cast<int>(j)]) + buf;
@@ -81,8 +81,9 @@ Result deactivate(GameState& g, Machine& m) {
 Result rejob(GameState& g, Machine& m, Job j) {
     if (g.net.decoyId == m.id) return {false, m.name + " is armed as the decoy. Disarm it before you change its job."};
     if (m.job == j) return {false, "It already does that."};
-    if (g.credits < bal::REIMAGINE_FEE) return {false, "Re-jobbing costs " + txt::cr(bal::REIMAGINE_FEE) + "."};
-    g.credits -= bal::REIMAGINE_FEE;
+    int fee = rejobFee(m);
+    if (g.credits < fee) return {false, "Re-jobbing " + m.name + " costs " + txt::cr(fee) + "."};
+    g.credits -= fee;
     m.job = j;
     std::string msg = m.name + " is now a " + jobName(j) + ". Same tier, condition, signal, name and history.";
     if (j == Job::Scout) msg += " (Scouting charges are not refilled.)";
@@ -93,10 +94,11 @@ Result repairOne(GameState& g, Machine& m) {
     if (m.home) return {false, m.name + " never wears. Nothing to repair."};
     if (m.condition >= 100) return {false, "Already pristine."};
     int need = 100 - m.condition;
-    int pts = std::min(need, g.credits / bal::REPAIR_PER_POINT);
+    int per = repairPerPoint(m);
+    int pts = std::min(need, g.credits / per);
     if (pts <= 0) return {false, "You can't afford a single point."};
     m.condition += pts;
-    int cost = pts * bal::REPAIR_PER_POINT;
+    int cost = pts * per;
     g.credits -= cost;
     g.stats.repairsPaid += cost;
     std::string msg = m.name + ": +" + std::to_string(pts) + " condition for " + txt::cr(cost) + ".";
@@ -107,7 +109,7 @@ Result repairOne(GameState& g, Machine& m) {
 
 int repairAllCost(const GameState& g) {
     int c = 0;
-    for (auto& m : g.net.machines) if (!m.home) c += (100 - m.condition) * bal::REPAIR_PER_POINT;
+    for (auto& m : g.net.machines) c += repairCost(m);
     return c;
 }
 
@@ -118,7 +120,7 @@ Result repairAll(GameState& g) {
         int before = g.credits;
         if (repairOne(g, m).ok) { total += before - g.credits; ++count; }
     }
-    if (count == 0) return {false, g.credits < bal::REPAIR_PER_POINT ? "Nothing repaired - you're broke." : "Everything is pristine."};
+    if (count == 0) return {false, repairAllCost(g) > 0 ? "Nothing repaired - you're broke." : "Everything is pristine."};
     return {true, "Repaired " + std::to_string(count) + " machine(s) for " + txt::cr(total) + "."};
 }
 
@@ -211,4 +213,35 @@ Result buyTool(GameState& g, Tool t) {
     int* lvl = t == Tool::Breaker ? &g.deck.breaker : t == Tool::Uplink ? &g.deck.uplink : t == Tool::Shroud ? &g.deck.shroud : &g.deck.lens;
     *lvl += 1;
     return {true, std::string(ti.name) + " upgraded to level " + std::to_string(*lvl) + "."};
+}
+
+// ---------------------------------------------------------------------------
+// Deck programs
+// ---------------------------------------------------------------------------
+int programCost(Program p) { return bal::PROGRAM_COST[static_cast<int>(p)]; }
+
+int freeProgramSlot(const GameState& g) {
+    for (int i = 0; i < kProgramSlots; ++i)
+        if (g.programs[i] == Program::None) return i;
+    return -1;
+}
+
+Result buyProgram(GameState& g, Program p) {
+    if (p == Program::None) return {false, "Nothing to load."};
+    int slot = freeProgramSlot(g);
+    if (slot < 0) return {false, "Both program slots are loaded. Unload one first."};
+    int cost = programCost(p);
+    if (g.credits < cost) return {false, std::string(programName(p)) + " costs " + txt::cr(cost) + "."};
+    g.credits -= cost;
+    g.programs[slot] = p;
+    return {true, std::string(programName(p)) + " loaded into slot " + std::to_string(slot + 1) + ". It runs once, then it's gone."};
+}
+
+Result unloadProgram(GameState& g, int slot) {
+    if (slot < 0 || slot >= kProgramSlots || g.programs[slot] == Program::None) return {false, "That slot is empty."};
+    Program p = g.programs[slot];
+    int refund = programCost(p);
+    g.programs[slot] = Program::None;
+    g.credits += refund;
+    return {true, std::string(programName(p)) + " unloaded. Unused, so it's a full refund: +" + txt::cr(refund) + "."};
 }

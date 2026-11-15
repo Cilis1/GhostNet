@@ -13,7 +13,7 @@
 namespace fs = std::filesystem;
 
 namespace {
-constexpr int kVersion = 2;   // v1 saves (0.1.x) still load; new fields default
+constexpr int kVersion = 3;   // v1 (0.1.x) and v2 (0.2-0.3) saves still load; new fields default
 
 std::string esc(const std::string& s) {
     static const char* hex = "0123456789ABCDEF";
@@ -64,7 +64,14 @@ bool saveGame(const GameState& g, std::string* err) {
       << s.repairsPaid << " " << s.deepAttempts << "\n";
     for (auto& m : g.net.machines)
         o << "m " << m.id << " " << esc(m.name) << " " << static_cast<int>(m.job) << " " << m.tier << " " << m.captured << " "
-          << m.home << " " << m.active << " " << m.condition << " " << m.noise << " " << m.price << " " << esc(m.origin) << "\n";
+          << m.home << " " << m.active << " " << m.condition << " " << m.noise << " " << m.price << " " << esc(m.origin) << " "
+          << static_cast<int>(m.trait) << "\n";
+    o << "programs";
+    for (auto p : g.programs) o << " " << static_cast<int>(p);
+    o << "\n";
+    for (auto& w : g.wall)
+        o << "wall " << esc(w.name) << " " << static_cast<int>(w.job) << " " << w.tier << " " << w.run << " " << esc(w.where) << " "
+          << esc(w.origin) << "\n";
     for (int id : g.burned) o << "burned " << id << "\n";
     for (auto& kv : g.reports) o << "report " << kv.first << " " << kv.second << "\n";
     for (int id : g.knownPhrases) o << "phrase " << id << "\n";
@@ -144,9 +151,12 @@ bool loadGame(GameState& g, std::string* err) {
             long long id = 0, tier = 1, cond = 100, noise = 1, price = 0;
             is >> id >> name >> job >> tier >> cap >> home >> act >> cond >> noise >> price >> origin;
             if (!is && !is.eof()) continue;
+            int trait = 0;
+            if (!(is >> trait)) trait = 0;   // v2 saves: no traits
+            m.trait = static_cast<Trait>(clampi(trait, 0, kTraitCount - 1));
             m.id = clampi(id, 0, 1000000000);
             m.name = unesc(name).substr(0, 24);
-            m.job = static_cast<Job>(clampi(job, 0, 3));
+            m.job = static_cast<Job>(clampi(job, 0, kJobCount - 1));
             m.tier = clampi(tier, 1, 3);
             m.captured = cap != 0;
             m.home = home != 0;
@@ -159,6 +169,25 @@ bool loadGame(GameState& g, std::string* err) {
             if (m.home) m.active = true;
             n.net.machines.push_back(m);
             n.net.nextId = std::max(n.net.nextId, m.id + 1);
+        } else if (k == "programs") {
+            for (auto& p : n.programs) {
+                int v = 0;
+                if (!(is >> v)) break;
+                p = static_cast<Program>(clampi(v, 0, kProgramCount - 1));
+            }
+        } else if (k == "wall") {
+            Memorial w;
+            std::string name, where, origin;
+            int job = 1;
+            long long tier = 1, run = 0;
+            if (!(is >> name >> job >> tier >> run >> where >> origin)) continue;
+            w.name = unesc(name).substr(0, 24);
+            w.job = static_cast<Job>(clampi(job, 0, kJobCount - 1));
+            w.tier = clampi(tier, 1, 3);
+            w.run = clampi(run, 0, 1000000);
+            w.where = unesc(where).substr(0, 60);
+            w.origin = unesc(origin).substr(0, 120);
+            if (n.wall.size() < 200) n.wall.push_back(w);
         } else if (k == "burned") { int v; if (is >> v) n.burned.insert(v); }
         else if (k == "report") { int a, b; if (is >> a >> b) n.reports[a] = clampi(b, 1, 3); }
         else if (k == "phrase") { int v; if (is >> v) n.knownPhrases.insert(v); }

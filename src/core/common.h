@@ -9,7 +9,15 @@
 // ---------------------------------------------------------------------------
 // Machines & the network
 // ---------------------------------------------------------------------------
-enum class Job { Relay = 0, Proxy = 1, Scout = 2, Compute = 3 };
+enum class Job { Relay = 0, Proxy = 1, Scout = 2, Compute = 3, Jammer = 4, Vault = 5 };
+constexpr int kJobCount = 6;
+
+// Fixed for life the moment a machine joins your rack, decided by where it came
+// from. Traits never change or improve (that would be levelling).
+enum class Trait { None = 0, Salvaged = 1, OldNet = 2, HotIron = 3, CorpBuild = 4 };
+constexpr int kTraitCount = 5;
+const char* traitName(Trait t);   // "SALVAGED"
+const char* traitText(Trait t);   // what it does, both sides of the trade
 
 const char* jobName(Job j);    // "RELAY"
 const char* jobLower(Job j);   // "relay"
@@ -26,6 +34,7 @@ struct Machine {
     int condition = 100;        // 0..100, 0 = dark
     int noise = 1;              // 1..6
     int price = 0;              // what you paid (bought machines)
+    Trait trait = Trait::None;  // fixed for life
     std::string origin;         // where it came from
     bool usedThisRun = false;   // compute favour already given this run
     bool dark() const { return condition <= 0; }
@@ -52,6 +61,9 @@ struct Network {
     int scoutCapacity() const;       // max scout charges right now (capped)
     int usableScoutCharges() const;  // min(stored, capacity)
     int bestScoutTier() const;       // 0 if no working scout
+    int jamDelay() const;            // seconds a watchdog's acceleration is held back (capped)
+    int jamSpikeCut() const;         // % taken off alarm spikes (capped)
+    const Machine* bestVault() const;   // the working vault that keeps the most on a trace-out
     int upkeepTotal() const;
     const Machine* decoy() const;    // armed AND currently valid
     void refillScout();              // stored = capacity at this moment
@@ -59,6 +71,10 @@ struct Network {
 
 int upkeepOf(const Machine& m);
 int scrapValue(const Machine& m);    // what scrapping it would pay, exactly
+int repairPerPoint(const Machine& m);
+int repairCost(const Machine& m);    // back to 100 condition
+int rejobFee(const Machine& m);
+int conditionAfterRun(const Machine& m, bool traced);   // wear after a billable run, traits included
 int jobValue(const Machine& m);      // % for relay/proxy, 1 for scout/compute
 std::string describeEffect(const Machine& m);
 
@@ -117,6 +133,21 @@ struct Target {
 // ---------------------------------------------------------------------------
 struct Deck { int breaker = 0, uplink = 0, shroud = 0, lens = 0; };
 
+// Deck programs: single-use tricks bought between runs and loaded into the deck.
+enum class Program { None = 0, Freeze = 1, Peek = 2, Spoof = 3, Burst = 4 };
+constexpr int kProgramCount = 5;
+constexpr int kProgramSlots = 2;
+const char* programName(Program p);   // "FREEZE"
+const char* programText(Program p);   // one line: what it does
+
+// A nameplate on the memorial wall: every machine that died as a decoy.
+struct Memorial {
+    std::string name, origin, where;
+    Job job = Job::Proxy;
+    int tier = 1;
+    int run = 0;                     // the run it died on
+};
+
 struct Stats {
     int runs = 0, jobs = 0, robberies = 0, traceouts = 0, sacrifices = 0;
     int captures = 0, walkaways = 0, unpaidBills = 0, deepAttempts = 0;
@@ -137,6 +168,8 @@ struct GameState {
     Network net;
     Deck deck;
     Stats stats;
+    Program programs[kProgramSlots] = {Program::None, Program::None};
+    std::vector<Memorial> wall;      // decoys that died for you, oldest first
     std::set<int> burned;            // map-local targets already hit this cycle
     std::map<int, int> reports;      // target id -> report quality (1..3)
     std::set<int> knownPhrases;      // target ids whose passphrase you have read

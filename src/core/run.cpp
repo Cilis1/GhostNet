@@ -18,6 +18,14 @@ RunSession::RunSession(GameState& gs, const Target& tg, uint64_t entropy) : g(gs
     emergLeft = g.netUnlocked ? g.net.computeCapacity() : 0;
     startRelay = g.net.relayBonus();
     startProxy = g.net.proxyBonus();
+    if (g.netUnlocked) {
+        jamDelay = g.net.jamDelay();
+        jamCut = g.net.jamSpikeCut();
+        if (const Machine* v = g.net.bestVault()) {
+            vaultPct = bal::VAULT_KEEP[v->tier];
+            vaultName = v->name;
+        }
+    }
     for (auto& m : g.net.machines) {
         m.usedThisRun = false;
         if (m.working() && !m.home) billIds.push_back(m.id);
@@ -30,7 +38,10 @@ RunSession::RunSession(GameState& gs, const Target& tg, uint64_t entropy) : g(gs
     if (t.deep) say("THE DEEP JOB. Three archives. HELIOS answers this one personally.", Tone::Story);
     else if (t.kind == Kind::Story) say("Contract: " + storyInfo(t.storyIndex).title, Tone::Story);
     if (t.stealable && g.netUnlocked) say("This server's hardware is detachable.", Tone::Warn);
-    if (t.watchdog) say("A watchdog wakes up. It gets faster the longer you stay.", Tone::Bad);
+    if (t.watchdog) {
+        say("A watchdog wakes up. It gets faster the longer you stay.", Tone::Bad);
+        if (jamDelay > 0) say("Your jammers hold it back for the first " + std::to_string(jamDelay) + "s.", Tone::Info);
+    }
     emit(Ev::Connected);
     if (doorOpen) {
         say("No lock. The door is open.", Tone::Good);
@@ -40,7 +51,7 @@ RunSession::RunSession(GameState& gs, const Target& tg, uint64_t entropy) : g(gs
 
 double RunSession::rateNow(double mult) const {
     double r = effectiveTraceRate(g, t) * mult;
-    if (t.watchdog) r *= 1.0 + bal::WATCHDOG_RAMP * secs / 60.0;
+    if (t.watchdog) r *= 1.0 + bal::WATCHDOG_RAMP * std::max(0, secs - jamDelay) / 60.0;
     return r;
 }
 
@@ -51,15 +62,20 @@ int RunSession::secondsLeft() const {
 
 bool RunSession::advance(int seconds, double mult) {
     for (int i = 0; i < seconds; ++i) {
-        trace += rateNow(mult);
+        if (freezeLeft > 0) --freezeLeft;   // FREEZE: the clock runs, the trace doesn't
+        else trace += rateNow(mult);
         secs += 1;
         if (trace >= 100.0) { trace = 100.0; traced(); return true; }
     }
     return false;
 }
 
+int RunSession::spikeSize(double base) const {
+    return static_cast<int>(std::lround(base * (100 - jamCut) / 100.0));
+}
+
 bool RunSession::spike(double amount) {
-    trace += amount;
+    trace += amount * (100 - jamCut) / 100.0;
     if (trace >= 100.0) { trace = 100.0; traced(); return true; }
     return false;
 }
@@ -69,6 +85,15 @@ void RunSession::traced() {
     if (const Machine* b = g.net.decoy()) {
         std::string name = b->name;
         int id = b->id;
+        decoyHot_ = b->trait == Trait::HotIron;
+        Memorial plate;
+        plate.name = b->name;
+        plate.origin = b->origin;
+        plate.job = b->job;
+        plate.tier = b->tier;
+        plate.where = t.name;
+        plate.run = g.stats.runs + 1;
+        g.wall.push_back(plate);
         auto& v = g.net.machines;
         v.erase(std::remove_if(v.begin(), v.end(), [id](const Machine& m) { return m.id == id; }), v.end());
         g.net.decoyId = -1;
@@ -101,7 +126,7 @@ bool RunSession::guess(const std::string& raw, std::string& err) {
         say("ACCESS GRANTED.", Tone::Good);
         openDoor(false);
     } else if (lock.sealed()) {
-        say("LOCKOUT. The lock seals and an alarm pings the trace (+" + std::to_string(static_cast<int>(bal::LOCKOUT_SPIKE)) + "%).",
+        say("LOCKOUT. The lock seals and an alarm pings the trace (+" + std::to_string(spikeSize(bal::LOCKOUT_SPIKE)) + "%).",
             Tone::Bad);
         emit(Ev::Lockout);
         if (spike(bal::LOCKOUT_SPIKE)) return true;
@@ -119,7 +144,8 @@ bool RunSession::phrase(const std::string& word) {
         openDoor(true);
         return true;
     }
-    say("The maintenance port rejects '" + ph + "' (+" + std::to_string(static_cast<int>(bal::WRONG_PHRASE_SPIKE)) + "% trace).", Tone::Bad);
+    if (!ph.empty() && std::find(triedPhrases.begin(), triedPhrases.end(), ph) == triedPhrases.end()) triedPhrases.push_back(ph);
+    say("The maintenance port rejects '" + ph + "' (+" + std::to_string(spikeSize(bal::WRONG_PHRASE_SPIKE)) + "% trace).", Tone::Bad);
     emit(Ev::PhraseBad);
     spike(bal::WRONG_PHRASE_SPIKE);
     return false;
@@ -153,6 +179,73 @@ bool RunSession::extra(std::string& err) {
         }
     }
     advance(bal::COST_EXTRA);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Deck programs
+// ---------------------------------------------------------------------------
+bool RunSession::programUsable(int slot, std::string* why) const {
+    auto no = [&](const std::string& s) { if (why) *why = s; return false; };
+    if (slot < 0 || slot >= kProgramSlots) return no("No such slot.");
+    Program p = g.programs[slot];
+    if (p == Program::None) return no("That slot is empty.");
+    if (over()) return no("The connection is closed.");
+    const bool atDoor = !doorOpen;
+    if (atDoor && doorPrograms >= 1) return no("One program per lock. This lock has had its one.");
+    switch (p) {
+        case Program::Freeze:
+            if (freezeLeft > 0) return no("The trace is already frozen.");
+            break;
+        case Program::Peek:
+            if (!atDoor || lock.type == LockType::None) return no("PEEK needs a closed lock in front of you.");
+            {
+                bool any = false;
+                for (int i = 0; i < lock.length(); ++i) if (!lock.known(i)) any = true;
+                if (!any) return no("You already know every position.");
+            }
+            break;
+        case Program::Spoof:
+            if (spoofArmed) return no("SPOOF is already armed.");
+            if (honeypot) return no("Too late - the honeypot already went off.");
+            break;
+        case Program::Burst:
+            if (atDoor) return no("BURST speeds up downloads. Get inside first.");
+            if (burstLeft > 0) return no("BURST is already running.");
+            break;
+        default: break;
+    }
+    return true;
+}
+
+bool RunSession::runProgram(int slot, std::string& err) {
+    if (!programUsable(slot, &err)) return false;
+    Program p = g.programs[slot];
+    g.programs[slot] = Program::None;   // single use, gone the moment it runs
+    if (!doorOpen) ++doorPrograms;
+    switch (p) {
+        case Program::Freeze:
+            freezeLeft = bal::FREEZE_SECS;
+            say("FREEZE. The trace stands still for " + std::to_string(bal::FREEZE_SECS) + " seconds.", Tone::Info);
+            break;
+        case Program::Peek: {
+            int pos = lock.peek();
+            std::string ch = pos >= 0 ? txt::upper(lock.secret.substr(static_cast<size_t>(pos), 1)) : "?";
+            say("PEEK. Position " + std::to_string(pos + 1) + " is '" + ch + "'.", Tone::Info);
+            break;
+        }
+        case Program::Spoof:
+            spoofArmed = true;
+            say("SPOOF armed. The next bait file you take answers with a ghost.", Tone::Info);
+            break;
+        case Program::Burst:
+            burstLeft = bal::BURST_SECS;
+            say("BURST. The next " + std::to_string(bal::BURST_SECS) + " download seconds run at double speed. So does the trace, almost.",
+                Tone::Warn);
+            break;
+        default: break;
+    }
+    emit(Ev::Program, programName(p));
     return true;
 }
 
@@ -203,9 +296,15 @@ void RunSession::finishDownload() {
     File& f = t.files[static_cast<size_t>(actFile)];
     act = Act::None;
     f.taken = true;
+    if (f.kind == FileKind::Honeypot && spoofArmed) {
+        spoofArmed = false;
+        say("BAIT FILE - but SPOOF answers for you. The honeypot logs a ghost and goes back to sleep. No alarm.", Tone::Good);
+        emit(Ev::Spoofed, f.name);
+        return;
+    }
     if (f.kind == FileKind::Honeypot) {
         honeypot = true;
-        say("BAIT FILE. It was a honeypot. ICE floods the channel (+" + std::to_string(static_cast<int>(bal::HONEYPOT_SPIKE)) + "% trace).",
+        say("BAIT FILE. It was a honeypot. ICE floods the channel (+" + std::to_string(spikeSize(bal::HONEYPOT_SPIKE)) + "% trace).",
             Tone::Bad);
         emit(Ev::Honeypot, f.name);
         spike(bal::HONEYPOT_SPIKE);
@@ -224,6 +323,7 @@ void RunSession::finishDownload() {
         return;
     }
     haul += f.credits;
+    bestFile = std::max(bestFile, f.credits);
     say("+" + std::to_string(f.credits) + "cr  " + f.name + "  (haul so far: " + std::to_string(haul) + "cr)", Tone::Good);
     emit(Ev::DownloadDone, f.name);
 }
@@ -243,6 +343,8 @@ CaptureQuote RunSession::quote() const {
     Machine probe;
     probe.tier = hw.tier;
     probe.noise = q.noise;
+    probe.trait = traitFor(t.kind);
+    q.trait = probe.trait;
     q.possible = true;
     q.def = hw.def;
     q.alt = hw.alt;
@@ -288,6 +390,7 @@ void RunSession::finishCapture() {
     m.captured = true;
     m.condition = cond;
     m.noise = noise;
+    m.trait = traitFor(t.kind);
     std::string base = t.host.substr(0, t.host.find_first_of(".-"));
     m.name = base.substr(0, 10) + "-" + std::to_string(m.id);
     m.origin = "Captured from " + t.name + " (board " + std::to_string(g.mapIndex + 1) + ").";
@@ -297,6 +400,7 @@ void RunSession::finishCapture() {
     say("'" + m.name + "' (" + jobName(m.job) + " T" + std::to_string(m.tier) + ") arrives " +
             (m.active ? "in the rack, running." : "in cold storage (rack full)."),
         Tone::Good);
+    if (m.trait != Trait::None) say(std::string("It carries a trait for life: ") + traitName(m.trait) + ". " + traitText(m.trait), Tone::Info);
     stolen = m.name;
     end = End::Steal;
     emit(Ev::Captured, m.name);
@@ -305,8 +409,11 @@ void RunSession::finishCapture() {
 void RunSession::step() {
     if (over()) { act = Act::None; return; }
     if (act == Act::Download) {
-        if (advance(1, bal::DOWNLOAD_TRACE_MULT)) return;
-        if (++actDone >= actTotal) finishDownload();
+        bool burst = burstLeft > 0;
+        if (advance(1, bal::DOWNLOAD_TRACE_MULT * (burst ? bal::BURST_TRACE_MULT : 1.0))) return;
+        actDone += burst ? 2 : 1;
+        if (burst) --burstLeft;
+        if (actDone >= actTotal) finishDownload();
     } else if (act == Act::Hold) {
         if (++actDone >= actTotal) { finishCapture(); return; }
         advance(1, bal::ANCHOR_TRACE_MULT);   // if this traces you, the anchoring flag raises the fine
@@ -352,7 +459,17 @@ Reckoning RunSession::settle() {
     auto line = [&](const std::string& s, Tone tone = Tone::Normal) { rk.lines.push_back({s, tone}); };
 
     if (haul > 0) {
-        if (traceOut) line("Accounts seized: tonight's " + std::to_string(haul) + "cr haul is gone.", Tone::Bad);
+        if (traceOut) {
+            line("Accounts seized: tonight's " + std::to_string(haul) + "cr haul is gone.", Tone::Bad);
+            int kept = bestFile * vaultPct / 100;
+            if (kept > 0) {
+                g.credits += kept;
+                g.stats.earned += kept;
+                line("...except what " + vaultName + " was holding offline: your best file, +" + std::to_string(kept) + "cr kept (VAULT, " +
+                         std::to_string(vaultPct) + "%).",
+                     Tone::Good);
+            }
+        }
         else {
             g.credits += haul;
             g.stats.earned += haul;
@@ -363,14 +480,18 @@ Reckoning RunSession::settle() {
         line("Escape bought with hardware: " + sacrificed + " is gone for good (machines burned, lifetime: " +
                  std::to_string(g.net.burnedCount) + "). You keep the night.",
              Tone::Bad);
+    if (sacrifice) line("Its nameplate goes up on the MEMORIAL WALL (records).", Tone::Dim);
     if (traceOut && jobDone) line("The contract files went with the seized accounts. The job is not done.", Tone::Bad);
     if (traceOut || sacrifice) {
         int fine = baseFine(g, t, honeypot, anchoring);
-        if (sacrifice) fine = (fine + 1) / 2;
+        if (sacrifice) fine = decoyHot_ ? 0 : (fine + 1) / 2;
         fine = std::min(fine, g.credits);
         g.credits -= fine;
         g.stats.finesPaid += fine;
-        line("Fine: -" + std::to_string(fine) + "cr" + (sacrifice ? " (halved: " + sacrificed + " took the ticket)" : ""), Tone::Bad);
+        if (sacrifice && decoyHot_)
+            line("Fine: waived. " + sacrificed + " was HOT IRON - HELIOS got its own hardware back and called it even.", Tone::Info);
+        else
+            line("Fine: -" + std::to_string(fine) + "cr" + (sacrifice ? " (halved: " + sacrificed + " took the ticket)" : ""), Tone::Bad);
     }
     if (jobCounts && t.kind == Kind::Story) {
         g.credits += t.reward;
@@ -407,10 +528,8 @@ Reckoning RunSession::settle() {
             Machine* m = g.net.find(id);
             if (!m || m->home) continue;
             ++worn;
-            int w = m->captured ? bal::WEAR_NORMAL_CAPTURED : bal::WEAR_NORMAL_BOUGHT;
-            if (traceOut) w += m->captured ? bal::WEAR_TRACED_EXTRA_CAPTURED : bal::WEAR_TRACED_EXTRA_BOUGHT;
             bool wasDark = m->dark();
-            m->condition = std::max(0, m->condition - w);
+            m->condition = conditionAfterRun(*m, traceOut);
             if (m->dark() && !wasDark) {
                 m->active = false;
                 if (g.net.decoyId == m->id) g.net.decoyId = -1;

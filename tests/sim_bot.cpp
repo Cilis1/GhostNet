@@ -88,12 +88,12 @@ struct Solver {
         if (kind == LockType::Keypad) {
             std::vector<std::string> keep;
             for (auto& c : cands) {
-                int hit = 0, nearc = 0;
-                for (int i = 0; i < 4; ++i) {
-                    if (g[i] == c[i]) ++hit;
-                    else if (c.find(g[i]) != std::string::npos) ++nearc;
+                bool ok = true;
+                for (int i = 0; i < 4 && ok; ++i) {
+                    int mk = g[i] == c[i] ? 2 : c.find(g[i]) != std::string::npos ? 1 : 0;
+                    ok = mk == row.marks[static_cast<size_t>(i)];
                 }
-                if (hit == row.hit && nearc == row.nearc) keep.push_back(c);
+                if (ok) keep.push_back(c);
             }
             cands.swap(keep);
         } else if (kind == LockType::Rotor) {
@@ -150,8 +150,12 @@ void roundTrip(const GameState& g) {
     GameState h;
     if (!loadGame(h, &err)) { fail("load failed: " + err); return; }
     if (h.credits != g.credits || h.net.machines.size() != g.net.machines.size() || h.story != g.story || h.act != g.act ||
-        h.deepDone != g.deepDone || h.net.decoyId != g.net.decoyId || h.deck.lens != g.deck.lens || h.knownPhrases != g.knownPhrases)
+        h.deepDone != g.deepDone || h.net.decoyId != g.net.decoyId || h.deck.lens != g.deck.lens || h.knownPhrases != g.knownPhrases ||
+        h.wall.size() != g.wall.size() || h.programs[0] != g.programs[0] || h.programs[1] != g.programs[1])
         fail("save/load round trip changed the game");
+    for (size_t i = 0; i < h.net.machines.size() && i < g.net.machines.size(); ++i)
+        if (h.net.machines[i].trait != g.net.machines[i].trait || h.net.machines[i].job != g.net.machines[i].job)
+            fail("save/load lost a machine's job or trait");
 }
 
 void solveDoor(RunSession& r) {
@@ -312,6 +316,167 @@ void manage(GameState& g) {
 
 }  // namespace
 
+// ---------------------------------------------------------------------------
+// Rule checks for the 0.4 systems: keypad marks, programs, jammer/vault, traits.
+// ---------------------------------------------------------------------------
+#define CHECK(cond, msg) do { if (!(cond)) fail(std::string("selftest: ") + (msg)); } while (0)
+
+Target testTarget(LockType lock) {
+    Target t;
+    t.id = 900;
+    t.name = "Test Rig";
+    t.host = "test.rig";
+    t.kind = Kind::Guarded;
+    t.security = 3;
+    t.lock = lock;
+    File pay;
+    pay.name = "pay.db";
+    pay.size = 40;
+    pay.credits = 300;
+    File small = pay;
+    small.name = "small.db";
+    small.credits = 100;
+    File bait = pay;
+    bait.name = "bait.db";
+    bait.kind = FileKind::Honeypot;
+    t.files = {pay, small, bait};
+    return t;
+}
+
+void selfTest() {
+    // Keypad: one mark per box, consistent with the hit/near counts.
+    {
+        Lock k;
+        k.type = LockType::Keypad;
+        k.secret = "1234";
+        k.maxGuesses = 6;
+        std::string err;
+        CHECK(k.guess("1325", err), "keypad guess accepted");
+        const auto& row = k.history.back();
+        CHECK((row.marks == std::vector<int>{2, 1, 1, 0}), "keypad marks are per box (1325 vs 1234 -> 2,1,1,0)");
+        CHECK(row.hit == 1 && row.nearc == 2, "keypad counts still match the marks");
+        CHECK(k.peek() == 1, "PEEK skips a box already shown green");
+        CHECK(k.known(0) && k.known(1) && !k.known(2), "known() tracks green boxes and peeks");
+    }
+    GameState g;
+    g.worldSeed = 3;
+    g.credits = 5000;
+    unlockNetwork(g);
+    // Programs: buy, refund, two slots only.
+    CHECK(buyProgram(g, Program::Freeze).ok && buyProgram(g, Program::Peek).ok, "load two programs");
+    CHECK(!buyProgram(g, Program::Burst).ok, "a third program is refused");
+    int before = g.credits;
+    CHECK(unloadProgram(g, 1).ok && g.credits == before + programCost(Program::Peek), "unloading refunds in full");
+    buyProgram(g, Program::Peek);
+    {
+        RunSession r(g, testTarget(LockType::Keypad), 1);
+        std::string err;
+        double t0 = r.trace;
+        CHECK(r.runProgram(0, err), "FREEZE runs at the door");
+        CHECK(g.programs[0] == Program::None, "a program is consumed when it runs");
+        CHECK(!r.programUsable(1), "only one program per lock");
+        r.guess(r.lock.secret.substr(0, 3) + (r.lock.secret[3] == '9' ? "8" : "9"), err);   // 2s while frozen
+        CHECK(r.trace == t0, "FREEZE holds the trace still");
+        CHECK(r.programUsable(1) == false, "the limit holds after a guess");
+    }
+    {
+        g.programs[0] = Program::Spoof;
+        g.programs[1] = Program::Burst;
+        Target t = testTarget(LockType::None);
+        RunSession r(g, t, 2);
+        std::string err;
+        CHECK(r.doorOpen, "unlocked test door");
+        CHECK(r.runProgram(0, err) && r.spoofArmed, "SPOOF arms");
+        CHECK(r.startDownload(2, err), "take the bait");
+        while (r.busy() && !r.over()) r.step();
+        CHECK(!r.honeypot && !r.spoofArmed, "SPOOF defuses the honeypot once");
+        CHECK(r.runProgram(1, err), "BURST runs inside");
+        CHECK(r.startDownload(0, err), "download with BURST");
+        int total = r.actTotal, steps = 0;
+        while (r.busy() && !r.over()) { r.step(); ++steps; }
+        CHECK(steps < total, "BURST finishes the download in fewer seconds");
+    }
+    // Jammer + vault.
+    {
+        GameState h;
+        h.worldSeed = 4;
+        h.credits = 5000;
+        unlockNetwork(h);
+        h.net.slots = bal::MAX_SLOTS;
+        buyMachine(h, Job::Jammer);
+        buyMachine(h, Job::Vault);
+        CHECK(h.net.jamDelay() == bal::JAM_DELAY[2] && h.net.jamSpikeCut() == bal::JAM_SPIKE[2], "a T2 jammer counts");
+        CHECK(h.net.bestVault() != nullptr, "a vault is found");
+        Target t = testTarget(LockType::None);
+        t.watchdog = true;
+        RunSession r(h, t, 3);
+        CHECK(r.jamDelay > 0 && r.vaultPct == bal::VAULT_KEEP[2], "the run picks up jammer and vault");
+        std::string err;
+        r.startDownload(0, err);
+        while (r.busy() && !r.over()) r.step();
+        int credits = h.credits;
+        r.trace = 99.9;
+        r.startDownload(1, err);
+        while (!r.over()) { if (!r.busy()) r.startDownload(1, err); r.step(); }
+        CHECK(r.end == End::TraceOut, "traced with no decoy");
+        Reckoning rk = r.settle();
+        (void)rk;
+        int kept = 300 * bal::VAULT_KEEP[2] / 100;
+        CHECK(h.credits >= credits - 10000 && h.stats.earned >= kept, "the vault keeps part of the best file");
+    }
+    // Traits.
+    {
+        Machine m;
+        m.captured = true;
+        m.tier = 2;
+        m.noise = 2;
+        m.condition = 50;
+        Machine s = m;
+        s.trait = Trait::Salvaged;
+        CHECK(conditionAfterRun(s, false) == conditionAfterRun(m, false) - bal::SALVAGED_EXTRA_WEAR, "SALVAGED wears faster");
+        CHECK(repairCost(s) == 50 * bal::SALVAGED_REPAIR, "SALVAGED repairs cheap");
+        Machine o = m;
+        o.trait = Trait::OldNet;
+        o.condition = 31;
+        CHECK(conditionAfterRun(o, false) == 30, "OLD NET has a wear floor");
+        CHECK(conditionAfterRun(o, true) < 30, "...but not on a trace-out");
+        CHECK(rejobFee(o) == 2 * bal::REIMAGINE_FEE, "OLD NET re-jobs at double");
+        Machine c = m;
+        c.trait = Trait::CorpBuild;
+        CHECK(upkeepOf(c) > upkeepOf(m) && conditionAfterRun(c, false) > conditionAfterRun(m, false), "CORPORATE bills more, wears less");
+        CHECK(traitFor(Kind::Guarded) == Trait::HotIron && traitFor(Kind::Shrine) == Trait::None, "traits come from the kind");
+    }
+    // A burned HOT IRON decoy: memorial nameplate, no fine.
+    {
+        GameState h;
+        h.worldSeed = 5;
+        h.credits = 3000;
+        unlockNetwork(h);
+        Machine d;
+        d.id = h.net.nextId++;
+        d.name = "hot-1";
+        d.job = Job::Proxy;
+        d.tier = 2;
+        d.captured = true;
+        d.active = true;
+        d.trait = Trait::HotIron;
+        h.net.machines.push_back(d);
+        CHECK(armDecoy(h, h.net.machines.back(), true).ok, "arm the hot decoy");
+        RunSession r(h, testTarget(LockType::None), 4);
+        r.trace = 99.95;
+        std::string err;
+        r.startDownload(0, err);
+        while (!r.over()) r.step();
+        CHECK(r.end == End::Sacrifice, "the decoy burns");
+        long long fines = h.stats.finesPaid;
+        r.settle();
+        CHECK(h.wall.size() == 1 && h.wall[0].name == "hot-1", "the decoy's nameplate goes on the wall");
+        CHECK(h.stats.finesPaid == fines, "HOT IRON decoys waive the fine");
+        roundTrip(h);
+    }
+    if (!problems) std::printf("selftest: keypad marks, programs, jammer/vault, traits, memorial - OK\n");
+}
+
 int main(int argc, char** argv) {
     uint64_t seed = argc > 1 ? std::strtoull(argv[1], nullptr, 10) : 7;
     int runs = argc > 2 ? std::atoi(argv[2]) : 25;
@@ -320,6 +485,7 @@ int main(int argc, char** argv) {
     std::srand(static_cast<unsigned>(seed));
     auto dir = std::filesystem::temp_directory_path() / ("ghostnet-sim-" + std::to_string(seed) + "-" + mode);
     paths::overrideSaveDir(dir.string());
+    selfTest();
 
     GameState g;
     g.worldSeed = seed;

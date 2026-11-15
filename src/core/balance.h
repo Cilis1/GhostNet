@@ -12,8 +12,8 @@ constexpr int SLOT_COST[3]      = {350, 650, 1000};   // [doc] 4th, 5th, 6th slo
 constexpr int HOME_UPGRADE[2]   = {600, 1000};        // [doc] tier 1->2, 2->3
 
 // ---- Buying & servicing -----------------------------------------------------
-// Indexed by Job: Relay, Proxy, Scout, Compute
-constexpr int BUY_PRICE[4]      = {400, 500, 450, 550};   // [doc]
+// Indexed by Job: Relay, Proxy, Scout, Compute, Jammer, Vault
+constexpr int BUY_PRICE[6]      = {400, 500, 450, 550, 425, 475};   // [doc] for the first four
 constexpr int BUY_TIER          = 2;                  // [doc] clean machines stop at the middle tier
 constexpr int REIMAGINE_FEE     = 125;                // [doc] changing a job
 constexpr int REPAIR_PER_POINT  = 2;                  // [doc]
@@ -29,6 +29,22 @@ constexpr int SCOUT_MAX_CHARGES = 3;                  // [doc]
 constexpr int COMPUTE_MAX       = 2;                  // [doc]
 constexpr int COMPUTE_WEAR[4]   = {0, 14, 9, 5};      // [doc] less at higher tiers, none for home
 constexpr int SCOUT_WEAR        = 3;                  // [doc] "a small amount"
+// JAMMER: holds back a watchdog's acceleration and softens alarm spikes.
+constexpr int JAM_DELAY[4]      = {0, 20, 30, 45};    // seconds before a watchdog starts to ramp
+constexpr int JAM_DELAY_CAP     = 60;
+constexpr int JAM_SPIKE[4]      = {0, 20, 30, 40};    // % off lockout / wrong-phrase / honeypot spikes
+constexpr int JAM_SPIKE_CAP     = 50;
+// VAULT: on a trace-out, the best working vault keeps part of your single most valuable file.
+constexpr int VAULT_KEEP[4]     = {0, 60, 80, 100};   // % of that one file's value
+
+// ---- Origin traits (fixed for life) -------------------------------------------
+constexpr int SALVAGED_EXTRA_WEAR  = 2;               // wears a little faster...
+constexpr int SALVAGED_REPAIR      = 1;               // ...but repairs cost 1cr a point, not 2
+constexpr int OLDNET_FLOOR         = 30;              // normal wear never takes it below this
+constexpr int OLDNET_REJOB_MULT    = 2;               // old firmware fights a re-image
+constexpr int HOTIRON_UPKEEP_PCT   = 10;              // HELIOS wants it back: louder on the bill...
+constexpr int CORP_UPKEEP_PCT      = 20;              // corporate build: bills more...
+constexpr int CORP_WEAR_PCT        = 60;              // ...and wears at 60% of the normal rate
 
 // ---- Upkeep -----------------------------------------------------------------
 // [doc] tier cost + surcharge per signal step above the minimum, up to three steps.
@@ -83,5 +99,12 @@ constexpr int    LENS_COST[2]    = {300, 700};        // faster reading: -1s per
 constexpr double UPLINK_STEP     = 0.15;
 constexpr double SHROUD_TRACE    = 0.07;
 constexpr double SHROUD_FINE     = 0.15;
+
+// ---- Deck programs (single use, bought between runs) ---------------------------
+// Indexed by Program: None, Freeze, Peek, Spoof, Burst
+constexpr int    PROGRAM_COST[5] = {0, 120, 90, 80, 70};
+constexpr int    FREEZE_SECS     = 4;                 // the trace stands still
+constexpr int    BURST_SECS      = 5;                 // download seconds at double speed
+constexpr double BURST_TRACE_MULT = 1.5;              // ...while the trace climbs faster
 
 }  // namespace bal

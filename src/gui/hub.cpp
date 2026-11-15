@@ -26,6 +26,8 @@ const char* jobLetter(Job j) {
         case Job::Proxy: return "P";
         case Job::Scout: return "S";
         case Job::Compute: return "C";
+        case Job::Jammer: return "J";
+        case Job::Vault: return "V";
     }
     return "?";
 }
@@ -36,6 +38,8 @@ const char* jobPitch(Job j) {
         case Job::Proxy: return "slower trace, can be the decoy";
         case Job::Scout: return "scouting reports (charges)";
         case Job::Compute: return "one emergency guess per lock";
+        case Job::Jammer: return "holds watchdogs back, softens alarms";
+        case Job::Vault: return "keeps your best file if you're traced";
     }
     return "";
 }
@@ -74,16 +78,17 @@ const HelpSection kHelp[] = {
                  "and downloading (which also runs the trace 25% faster)."},
     {"TRACE-OUT", "Accounts seized: the night's haul is lost, a fine comes out of what you have (never more than you have), the bill "
                   "still comes due and your machines wear hard."},
-    {"LOCKS", "Limited guesses with feedback. Type on the keyboard and press Enter. GREEN = right in that spot. AMBER = keypad/cipher: "
-              "right but elsewhere; ROTOR: one notch away. A known maintenance PASSPHRASE opens a door without breaking it."},
-    {"THE DECK", "Tools you buy for yourself: BREAKER (more attempts), UPLINK (faster downloads), SHROUD (quieter: slower trace, "
-                 "smaller fines), LENS (faster reading). Permanent, never billed, separate from the network."},
+    {"LOCKS", "Limited guesses, judged box by box. Type and press Enter. GREEN = right in that box. AMBER = keypad/cipher: in the "
+              "code but another box; ROTOR: one notch away. TRY PHRASE offers rotating stock starters - wrong ones spike the trace."},
+    {"THE DECK", "Permanent tools: BREAKER, UPLINK, SHROUD, LENS. Plus two single-use PROGRAM slots: FREEZE (trace stops 4s), PEEK "
+                 "(reveal one box), SPOOF (defuse the next bait), BURST (download x2). One program per lock."},
     {"GHOSTNET", "After your first contract: SAINT's salvaged rack and your home server N0. RELAY speeds downloads, PROXY slows the "
-                 "trace (and can be the decoy), SCOUT writes reports, COMPUTE holds one emergency guess. Configure it only between runs."},
+                 "trace (and can be the decoy), SCOUT writes reports, COMPUTE holds an emergency guess, JAMMER holds watchdogs back and "
+                 "softens alarms, VAULT keeps your best file if you're traced. Captured machines carry a trait for life."},
     {"THE BILL", "Every running machine except N0 bills you after any run that does something, then wears. Can't pay? Nothing is "
                  "taken: everything but N0 goes dark and the decoy is disarmed. No debt. Earn credits, switch them back on."},
     {"THE DECOY", "Arm a running PROXY as the decoy. If the trace fills, HELIOS traces it instead of you: it is destroyed, the fine is "
-                  "halved, and you keep the night."},
+                  "halved, and you keep the night. Its nameplate goes on the MEMORIAL WALL in Records."},
     {"CAPTURE", "With a scout running, listings marked HW carry detachable hardware. Inside, CAPTURE HARDWARE shows a quote. Take "
                 "files first and it arrives more damaged. Corporate iron is tier 3."},
     {"THE DEEP JOB", "A HELIOS archive tuned so no deck alone can finish it. You can try it the moment it appears; if you fall short "
@@ -316,6 +321,13 @@ void App::drawRack(Rectangle area) {
     }
     if (stored.size() > 6) text(F::Mono, "+" + std::to_string(stored.size() - 6) + " more", left.x + 760, ty + 50, 13, C_DIM, Right);
     text(F::Mono, "click a machine to manage it", left.x + left.width - 16, left.y + 14, 12, fade(C_DIM, 0.8f), Right);
+    if (!g.wall.empty()) {
+        Rectangle mr{left.x + left.width - 236, ty - 40, 220, 22};
+        bool hov = hovered(mr);
+        text(F::Mono, "MEMORIAL WALL: " + std::to_string(g.wall.size()) + (g.wall.size() == 1 ? " nameplate" : " nameplates") + "  >",
+             mr.x + mr.width, mr.y + 4, 12, hov ? C_TEXT : fade(C_RED, 0.8f), Right);
+        if (hitArea(mr, "memorial")) tab = Tab::Records;
+    }
     if (hitArea(left, "mesh")) selMachine = -1;
 
     // Right column: what the doc asks the rack screen to show at a glance.
@@ -329,15 +341,19 @@ void App::drawRack(Rectangle area) {
                    {"NEXT RUN COSTS", cr(n.upkeepTotal()), n.upkeepTotal() > g.credits ? C_RED : C_TEXT},
                    {"ARMED TO DIE", decoy ? decoy->name : std::string("nobody"), decoy ? C_RED : C_DIM}};
     for (int i = 0; i < 4; ++i) {
-        float y = right.y + 22 + i * 30;
+        float y = right.y + 20 + i * 26;
         text(F::Mono, rows[i].k, right.x + 20, y, 13, C_DIM);
         text(F::MonoBold, rows[i].v, right.x + right.width - 20, y, 14, rows[i].c, Right);
     }
     std::string fx = "DL +" + std::to_string(n.relayBonus()) + "%   TRACE -" + std::to_string(n.proxyBonus()) + "%   SCOUT " +
                      std::to_string(n.usableScoutCharges()) + "   EMERG " + std::to_string(n.computeCapacity());
-    text(F::Mono, fx, right.x + 20, right.y + 146, 12, fade(C_CYAN, 0.9f));
-    DrawRectangle(static_cast<int>(right.x + 16), static_cast<int>(right.y + 168), static_cast<int>(right.width - 32), 1, fade(C_MAGENTA, 0.4f));
-    Rectangle body{right.x + 16, right.y + 180, right.width - 32, right.height - 192};
+    text(F::Mono, fx, right.x + 20, right.y + 126, 12, fade(C_CYAN, 0.9f));
+    const Machine* vault = n.bestVault();
+    std::string fx2 = "JAM " + std::to_string(n.jamDelay()) + "s / -" + std::to_string(n.jamSpikeCut()) + "% SPIKES   VAULT " +
+                      (vault ? std::to_string(bal::VAULT_KEEP[vault->tier]) + "%" : std::string("none"));
+    text(F::Mono, fx2, right.x + 20, right.y + 144, 12, fade(C_PURPLE, 0.95f));
+    DrawRectangle(static_cast<int>(right.x + 16), static_cast<int>(right.y + 164), static_cast<int>(right.width - 32), 1, fade(C_MAGENTA, 0.4f));
+    Rectangle body{right.x + 16, right.y + 172, right.width - 32, right.height - 182};
     Machine* sel = n.find(selMachine);
     if (sel) drawMachinePanel(body, *sel);
     else {
@@ -353,7 +369,13 @@ void App::drawMachinePanel(Rectangle a, Machine& m) {
                        (m.home ? "HOME" : m.captured ? "CAPTURED" : "BOUGHT") + (m.active ? "" : "  //  STORED");
     text(F::Mono, kind, a.x + 4, a.y + 30, 12, C_TEXT);
     float y = a.y + 50;
-    y += para(F::Mono, m.origin, a.x + 4, y, a.width - 8, 12, C_DIM, 1.3f, 2) + 6;
+    if (m.trait != Trait::None) {
+        Color tc = m.trait == Trait::HotIron ? C_RED : m.trait == Trait::OldNet ? C_PURPLE : m.trait == Trait::CorpBuild ? C_CYAN : C_AMBER;
+        float tw = tag(a.x + 4, y, traitName(m.trait), tc, 11);
+        para(F::Mono, traitText(m.trait), a.x + tw + 12, y, a.width - tw - 16, 11, fade(tc, 0.9f), 1.25f, 2);
+        y += 30;
+    }
+    y += para(F::Mono, m.origin, a.x + 4, y, a.width - 8, 12, C_DIM, 1.3f, m.trait != Trait::None ? 1 : 2) + 6;
     if (!m.home) {
         text(F::Mono, "CONDITION " + std::to_string(m.condition), a.x + 4, y, 12, C_TEXT);
         progress(Rectangle{a.x + 120, y + 2, a.width - 124, 10}, m.condition / 100.0f, mix(C_RED, C_GREEN, m.condition / 100.0f), false);
@@ -374,7 +396,7 @@ void App::drawMachinePanel(Rectangle a, Machine& m) {
         } else if (button(at(i++), "SWITCH ON", C_GREEN, !m.dark())) {
             result(activate(g, m));
         }
-        int cost = (100 - m.condition) * bal::REPAIR_PER_POINT;
+        int cost = repairCost(m);
         if (button(at(i++), m.condition >= 100 ? "PRISTINE" : "REPAIR " + std::to_string(cost) + "cr", C_CYAN, m.condition < 100))
             result(repairOne(g, m));
         if (g.net.decoyId == m.id) {
@@ -423,14 +445,14 @@ void App::drawMachinePanel(Rectangle a, Machine& m) {
         pushModal(md);
     }
     y += ((i + 1) / 2) * (bh + 8) + 8;
-    text(F::Display, "RE-JOB  " + std::to_string(bal::REIMAGINE_FEE) + "cr", a.x + 4, y, 12, C_DIM);
-    text(F::Mono, "keeps tier, condition, noise, name", a.x + a.width - 4, y + 1, 11, fade(C_DIM, 0.8f), Right);
+    text(F::Display, "RE-JOB  " + std::to_string(rejobFee(m)) + "cr", a.x + 4, y, 12, C_DIM);
+    text(F::Mono, "keeps tier, condition, noise, name, trait", a.x + a.width - 4, y + 1, 11, fade(C_DIM, 0.8f), Right);
     y += 20;
-    float jw = (a.width - 18) / 4;
-    for (int j = 0; j < 4; ++j) {
+    float jw = (a.width - 5 * 4) / kJobCount;
+    for (int j = 0; j < kJobCount; ++j) {
         Job job = static_cast<Job>(j);
         bool ok = job != m.job && g.net.decoyId != m.id;
-        if (button(Rectangle{a.x + j * (jw + 6), y, jw, 30}, jobName(job), jobColor(job), ok, false, 11)) result(rejob(g, m, job));
+        if (button(Rectangle{a.x + j * (jw + 4), y, jw, 30}, jobName(job), jobColor(job), ok, false, 10)) result(rejob(g, m, job));
     }
     if (button(Rectangle{a.x, a.y + a.height - 34, a.width, 32}, "BACK TO HARDWARE", C_DIM, true, false, 12)) selMachine = -1;
 }
@@ -438,41 +460,41 @@ void App::drawMachinePanel(Rectangle a, Machine& m) {
 void App::drawShop(Rectangle a) {
     text(F::Display, "BUY HARDWARE", a.x + 4, a.y, 14, C_CYAN);
     text(F::Mono, "arrives tier 2, perfect condition, quiet", a.x + a.width - 4, a.y + 2, 11, C_DIM, Right);
-    float y = a.y + 26;
-    for (int j = 0; j < 4; ++j) {
+    float y = a.y + 24;
+    for (int j = 0; j < kJobCount; ++j) {
         Job job = static_cast<Job>(j);
         Color col = jobColor(job);
-        hexNode(Vector2{a.x + 18, y + 18}, 13, col, 0.2f);
-        text(F::Display, jobLetter(job), a.x + 18, y + 11, 13, WHITE, Center);
-        text(F::MonoBold, jobName(job), a.x + 42, y + 4, 14, col);
-        text(F::Mono, jobPitch(job), a.x + 42, y + 22, 11, C_DIM);
+        hexNode(Vector2{a.x + 16, y + 16}, 12, col, 0.2f);
+        text(F::Display, jobLetter(job), a.x + 16, y + 9, 12, WHITE, Center);
+        text(F::MonoBold, jobName(job), a.x + 38, y + 2, 13, col);
+        text(F::Mono, jobPitch(job), a.x + 38, y + 19, 11, C_DIM);
         int price = bal::BUY_PRICE[j];
-        if (button(Rectangle{a.x + a.width - 120, y + 2, 120, 32}, std::to_string(price) + " CR", col, g.credits >= price, false, 13)) {
+        if (button(Rectangle{a.x + a.width - 110, y + 2, 110, 30}, std::to_string(price) + " CR", col, g.credits >= price, false, 13)) {
             Result r = buyMachine(g, job);
             result(r);
             if (r.ok) sfx::play(sfx::Boot, 0.6f);
         }
-        y += 46;
+        y += 38;
     }
-    y += 8;
+    y += 4;
     DrawRectangle(static_cast<int>(a.x), static_cast<int>(y), static_cast<int>(a.width), 1, fade(C_MAGENTA, 0.3f));
-    y += 14;
+    y += 10;
     text(F::Display, "THE ROOM", a.x + 4, y, 14, C_MAGENTA);
-    y += 26;
+    y += 22;
     Network& n = g.net;
     bool canSlot = n.slots < bal::MAX_SLOTS;
     std::string sl = canSlot ? "EXPAND RACK  " + std::to_string(bal::SLOT_COST[n.slots - bal::START_SLOTS]) + "cr" : "RACK MAXED (6)";
-    if (button(Rectangle{a.x, y, a.width, 34}, sl, C_MAGENTA, canSlot)) result(expandRack(g));
-    y += 42;
+    float hw = (a.width - 8) / 2;
+    if (button(Rectangle{a.x, y, hw, 34}, sl, C_MAGENTA, canSlot, false, 12)) result(expandRack(g));
+    int rc = repairAllCost(g);
+    if (button(Rectangle{a.x + hw + 8, y, hw, 34}, rc > 0 ? "REPAIR ALL  " + std::to_string(rc) + "cr" : "ALL PRISTINE", C_CYAN, rc > 0, false, 12))
+        result(repairAll(g));
+    y += 40;
     Machine* h = n.home();
     bool canUp = h && h->tier < 3;
     std::string ul = canUp ? "UPGRADE " + h->name + " TO T" + std::to_string(h->tier + 1) + "  " + std::to_string(bal::HOME_UPGRADE[h->tier - 1]) + "cr"
                            : (h ? h->name : std::string("N0")) + " IS TOP TIER";
     if (button(Rectangle{a.x, y, a.width, 34}, ul, C_AMBER, canUp)) result(upgradeHome(g));
-    y += 42;
-    int rc = repairAllCost(g);
-    if (button(Rectangle{a.x, y, a.width, 34}, rc > 0 ? "REPAIR ALL  " + std::to_string(rc) + "cr" : "EVERYTHING PRISTINE", C_CYAN, rc > 0))
-        result(repairAll(g));
 }
 
 // ---------------------------------------------------------------------------
@@ -550,13 +572,13 @@ void App::drawDeck(Rectangle area) {
     float cw = 296, gap = 16;
     for (int i = 0; i < 4; ++i) {
         ToolInfo ti = toolInfo(g, tools[i]);
-        Rectangle r{area.x + i * (cw + gap), area.y + 30, cw, 470};
+        Rectangle r{area.x + i * (cw + gap), area.y + 24, cw, 350};
         Color c = cols[i];
         panel(r, c, "");
-        Vector2 ic{r.x + cw / 2, r.y + 120};
+        Vector2 ic{r.x + cw / 2, r.y + 78};
         float spin = gx::now * (20 + i * 7);
-        for (int k = 0; k < 3; ++k) DrawRing(ic, 62 + k * 10, 64 + k * 10, spin * (k % 2 ? -1 : 1) + k * 40, spin * (k % 2 ? -1 : 1) + k * 40 + 120 + 40 * ti.level, 32, fade(c, 0.6f - k * 0.15f));
-        hexNode(ic, 44, c, 0.15f, spin * 0.2f);
+        for (int k = 0; k < 3; ++k) DrawRing(ic, 50 + k * 8, 52 + k * 8, spin * (k % 2 ? -1 : 1) + k * 40, spin * (k % 2 ? -1 : 1) + k * 40 + 120 + 40 * ti.level, 32, fade(c, 0.6f - k * 0.15f));
+        hexNode(ic, 38, c, 0.15f, spin * 0.2f);
         // glyphs
         if (i == 0) {   // breaker: a key
             DrawCircleLinesV(Vector2{ic.x - 12, ic.y}, 10, c);
@@ -573,16 +595,52 @@ void App::drawDeck(Rectangle area) {
             DrawCircleLinesV(ic, 18, c);
             glowDot(Vector2{ic.x + std::sin(gx::now) * 6, ic.y}, 6, c);
         }
-        glowText(F::Display, ti.name, r.x + cw / 2, r.y + 210, 24, c, Center);
-        para(F::Mono, ti.effect, r.x + 24, r.y + 250, cw - 48, 14, C_TEXT);
-        text(F::Mono, "LEVEL " + std::to_string(ti.level) + " / " + std::to_string(ti.max), r.x + 24, r.y + 320, 13, C_DIM);
-        pips(r.x + 24, r.y + 342, ti.level, ti.max, c, 22, 6);
+        glowText(F::Display, ti.name, r.x + cw / 2, r.y + 150, 22, c, Center);
+        para(F::Mono, ti.effect, r.x + 22, r.y + 184, cw - 44, 13, C_TEXT, 1.3f, 4);
+        text(F::Mono, "LEVEL " + std::to_string(ti.level) + " / " + std::to_string(ti.max), r.x + 22, r.y + 262, 13, C_DIM);
+        pips(r.x + 130, r.y + 260, ti.level, ti.max, c, 18, 5);
         bool maxed = ti.nextCost < 0;
-        if (button(Rectangle{r.x + 24, r.y + r.height - 70, cw - 48, 44}, maxed ? "MAXED" : "UPGRADE  " + std::to_string(ti.nextCost) + " CR", c,
+        if (button(Rectangle{r.x + 22, r.y + r.height - 58, cw - 44, 42}, maxed ? "MAXED" : "UPGRADE  " + std::to_string(ti.nextCost) + " CR", c,
                    !maxed && g.credits >= ti.nextCost, !maxed && g.credits >= ti.nextCost, 15)) {
             Result res = buyTool(g, tools[i]);
             result(res);
             if (res.ok) flash = 0.3f, flashColor = c;
+        }
+    }
+
+    // Programs: two single-use slots, loaded between runs, run from the connection screen.
+    Rectangle pr{area.x, area.y + 390, area.width, area.height - 390};
+    panel(pr, C_PURPLE, "DECK PROGRAMS  //  SINGLE USE");
+    para(F::Mono,
+         "Two slots. A program runs once, costs no time, then it's gone. Only one may run against any lock. Unload an unused one "
+         "for a full refund.",
+         pr.x + 20, pr.y + 22, 280, 12, C_DIM, 1.3f, 5);
+    for (int i = 0; i < kProgramSlots; ++i) {
+        Program p = g.programs[i];
+        Rectangle sr{pr.x + 20, pr.y + 96 + i * 36, 280, 30};
+        DrawRectangleRec(sr, fade(p == Program::None ? C_DIM : C_PURPLE, p == Program::None ? 0.05f : 0.14f));
+        DrawRectangleLinesEx(sr, 1, fade(p == Program::None ? C_DIM : C_PURPLE, 0.6f));
+        text(F::MonoBold, "SLOT " + std::to_string(i + 1) + "  " + programName(p), sr.x + 10, sr.y + 8, 12, p == Program::None ? C_DIM : WHITE);
+        if (p != Program::None && button(Rectangle{sr.x + sr.width - 96, sr.y + 3, 92, 24}, "UNLOAD", C_DIM, true, false, 10))
+            result(unloadProgram(g, i));
+    }
+    const Program progs[4] = {Program::Freeze, Program::Peek, Program::Spoof, Program::Burst};
+    const Color pcols[4] = {C_CYAN, C_GREEN, C_MAGENTA, C_AMBER};
+    float pw = (pr.width - 340 - 3 * 12) / 4;
+    bool slotFree = freeProgramSlot(g) >= 0;
+    for (int i = 0; i < 4; ++i) {
+        Rectangle cr{pr.x + 320 + i * (pw + 12), pr.y + 20, pw, pr.height - 34};
+        Color c = pcols[i];
+        DrawRectangleRec(cr, fade(c, 0.06f));
+        DrawRectangleLinesEx(cr, 1, fade(c, 0.5f));
+        glowText(F::Display, programName(progs[i]), cr.x + 14, cr.y + 10, 16, c, Left, 0.6f);
+        para(F::Mono, programText(progs[i]), cr.x + 14, cr.y + 36, pw - 28, 12, C_TEXT, 1.3f, 3);
+        int cost = programCost(progs[i]);
+        bool ok = slotFree && g.credits >= cost;
+        if (button(Rectangle{cr.x + 14, cr.y + cr.height - 42, cr.width - 28, 32}, "LOAD  " + std::to_string(cost) + " CR", c, ok, false, 12)) {
+            Result res = buyProgram(g, progs[i]);
+            result(res);
+            if (res.ok) sfx::play(sfx::Boot, 0.5f);
         }
     }
 }
@@ -642,10 +700,36 @@ void App::drawRecords(Rectangle area) {
                {"unpaid bills", std::to_string(s.unpaidBills), C_AMBER},
                {"machines burned as decoys, forever", std::to_string(g.net.burnedCount), C_RED}};
     for (size_t i = 0; i < sizeof kv / sizeof kv[0]; ++i) {
-        float y = l.y + 64 + i * 26.0f;
-        text(F::Mono, kv[i].k, l.x + 24, y, 14, C_DIM);
-        text(F::MonoBold, kv[i].v, l.x + l.width - 24, y, 14, kv[i].c, Right);
-        DrawRectangle(static_cast<int>(l.x + 24), static_cast<int>(y + 20), static_cast<int>(l.width - 48), 1, fade(C_DIM, 0.12f));
+        float y = l.y + 58 + i * 21.0f;
+        text(F::Mono, kv[i].k, l.x + 24, y, 13, C_DIM);
+        text(F::MonoBold, kv[i].v, l.x + l.width - 24, y, 13, kv[i].c, Right);
+        DrawRectangle(static_cast<int>(l.x + 24), static_cast<int>(y + 17), static_cast<int>(l.width - 48), 1, fade(C_DIM, 0.12f));
+    }
+    // The memorial wall: a nameplate for every machine that died as your decoy.
+    float wy = l.y + 58 + 14 * 21.0f + 8;
+    DrawRectangle(static_cast<int>(l.x + 24), static_cast<int>(wy), static_cast<int>(l.width - 48), 1, fade(C_RED, 0.5f));
+    glowText(F::Display, "MEMORIAL WALL", l.x + 24, wy + 10, 13, C_RED, Left, 0.6f);
+    text(F::Mono, "they took the ticket so you didn't have to", l.x + l.width - 24, wy + 12, 11, C_DIM, Right);
+    if (g.wall.empty()) {
+        text(F::Mono, "(no nameplates yet - nothing has died for you)", l.x + 24, wy + 40, 12, fade(C_DIM, 0.7f));
+    } else {
+        size_t from = g.wall.size() > 6 ? g.wall.size() - 6 : 0;
+        float pw = (l.width - 48 - 2 * 8) / 3;
+        for (size_t i = from; i < g.wall.size(); ++i) {
+            const Memorial& w = g.wall[i];
+            size_t k = i - from;
+            Rectangle pr{l.x + 24 + (k % 3) * (pw + 8), wy + 34 + (k / 3) * 52.0f, pw, 46};
+            DrawRectangleRec(pr, fade(Color{60, 40, 30, 255}, 0.55f));
+            DrawRectangleLinesEx(pr, 1, fade(C_AMBER, 0.45f));
+            text(F::MonoBold, w.name, pr.x + pw / 2, pr.y + 6, 13, Color{235, 205, 150, 255}, Center);
+            text(F::Mono, std::string(jobName(w.job)) + " T" + std::to_string(w.tier) + "  //  RUN " + std::to_string(w.run), pr.x + pw / 2, pr.y + 22,
+                 10, fade(C_AMBER, 0.8f), Center);
+            text(F::Mono, w.where.substr(0, 28), pr.x + pw / 2, pr.y + 33, 9, C_DIM, Center);
+            if (hovered(pr)) {
+                DrawRectangleLinesEx(pr, 1.5f, C_AMBER);
+            }
+        }
+        if (from > 0) text(F::Mono, "+" + std::to_string(from) + " older", l.x + l.width - 24, l.y + l.height - 18, 11, C_DIM, Right);
     }
     panel(r, C_MAGENTA, "RECENT RUNS & JOURNAL");
     float y = r.y + 24;

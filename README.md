@@ -57,21 +57,36 @@ all three locks with no trace and no bill.
 * **Trace-out:** your accounts are seized, so the night's haul is lost. You pay a fine
   (never more than you have), the bill still comes due, and your machines wear hard.
 * **Downloading** takes time and makes you easier to find: the trace runs ×1.25 while bytes move.
-* **Locks:** Keypad (hit/near), Rotor (amber `+-1` = one notch away, *not* misplaced) and
-  Cipher (word feedback, green/amber). A passphrase opens a door without breaking it.
+* **Locks:** every lock is judged box by box. Keypad and Cipher: green = right box,
+  amber = in the code but another box. Rotor: amber `+-1` = one notch away, *not* misplaced.
+  A passphrase opens a door without breaking it. **TRY PHRASE** shows rotating stock
+  starter phrases (and any phrase you've read) to click; each wrong one still costs 2s and +5% trace.
 * **The deck:** tools you buy for yourself (Breaker, Uplink, Shroud, Lens). They are
   permanent, never billed, and separate from the network.
+  * **Programs:** two single-use slots, loaded between runs and run from the connection
+    screen at no time cost. Only one may run against a given lock; unused ones refund in full.
+    FREEZE 120 (trace stands still 4s), PEEK 90 (reveal one box of the lock), SPOOF 80
+    (the next bait file is defused), BURST 70 (next 5 download seconds at ×2, trace ×1.5).
 * **GhostNet** (unlocks after your first contract): N0 plus up to 10 machines.
   * **Relay** speeds downloads.
   * **Proxy** slows the trace.
   * **Scout** gives target reports and reveals `[HW]` listings.
   * **Compute** holds one emergency extra guess.
-  * Bought machines are clean tier 2: Relay 400, Scout 450, Proxy 500, Compute 550.
+  * **Jammer** holds a watchdog's acceleration back (20/30/45s by tier, network cap 60s)
+    and softens lockout, wrong-phrase and honeypot spikes (20/30/40%, cap 50%).
+  * **Vault**: if you're traced out, your best working vault keeps 60/80/100% of your
+    single most valuable downloaded file.
+  * Bought machines are clean tier 2: Relay 400, Jammer 425, Scout 450, Vault 475, Proxy 500, Compute 550.
+  * **Origin traits** are fixed for life on captured machines: *Salvaged* (open servers:
+    repairs 1cr/pt, +2 wear), *Old Net* (hidden: wear never drops it below 30 except on a
+    trace-out, re-jobs cost double), *Hot Iron* (guarded: fine waived if it dies as your
+    decoy, bills +10%), *Corporate Build* (corporate: 60% wear, bills +20%).
   * Tier 3 comes only from upgrading N0 or stealing corporate iron.
 * **The bill:** running machines bill you after a run that does something. If you can't
   pay, nothing is taken and everything except N0 goes dark. There is never debt.
 * **Decoy:** arm a Proxy. If the trace fills, HELIOS traces it instead of you. The decoy
-  is destroyed, the fine is halved, and you keep the night.
+  is destroyed, the fine is halved, and you keep the night. Its nameplate goes on the
+  **Memorial Wall** in Records.
 * **The deep job** is tuned so that no deck alone can finish it. You can try it as soon
   as it appears. If you fall short, the game tells you by how much.
   * **Owner ending:** finish the deep job and retire as an owner.
