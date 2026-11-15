@@ -11,25 +11,30 @@ permissions:
 
 jobs:
   linux:
-    name: Linux build + automated playtests
+    name: Linux - rules, playtest bots, headless screenshot tour
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build
+      - name: Build (headless software renderer, no display needed)
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGHOSTNET_HEADLESS=ON
           cmake --build build -j
-      - name: Unit tests
+      - name: Unit tests + C++ playtest bots (careful, chaos, deep job on 4 seeds)
         run: ctest --test-dir build --output-on-failure
-      - name: Playtest bot (careful player)
-        run: python3 tools/playtest_bot.py build/GhostNet 7 12
-      - name: Playtest bot (reckless player)
-        run: python3 tools/playtest_bot.py build/GhostNet 11 12 chaos
-      - name: Playtest bot (deep job must be beatable with a built network)
-        run: python3 tools/playtest_bot.py build/GhostNet 7 70 deep
+      - name: Longer bot sweep (deep job must be beatable on every seed)
+        run: |
+          for s in 1 2 3 4 5 6 8 9 10 12 13 14 15; do build/ghostnet_sim $s 70 deep > /dev/null || { echo "seed $s failed"; exit 1; }; done
+          for s in 1 2 3 4 5; do build/ghostnet_sim $s 50 chaos > /dev/null || { echo "chaos seed $s failed"; exit 1; }; done
+      - name: Screenshot tour (drives every screen of the real front end)
+        run: build/GhostNet --shots shots
+      - uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: shots/*.png
+          if-no-files-found: error
 
   windows:
-    name: Windows build (MSVC, static runtime)
+    name: Windows build (MSVC, static runtime, raylib + GLFW)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -49,7 +54,11 @@ jobs:
           ctest --test-dir build -C Release --output-on-failure
           build\Release\GhostNet-Setup.exe --selftest
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          build\Release\GhostNet.exe --version
+          # GhostNet.exe is a GUI-subsystem app, so wait for it explicitly and capture its output.
+          $p = Start-Process build\Release\GhostNet.exe -ArgumentList '--version' -Wait -PassThru -NoNewWindow -RedirectStandardOutput version.txt
+          Get-Content version.txt
+          if ($p.ExitCode -ne 0) { exit 1 }
+          if (-not (Select-String -Path version.txt -Pattern 'GhostNet')) { exit 1 }
       - uses: actions/upload-artifact@v4
         with:
           name: windows-binaries
@@ -77,6 +86,7 @@ jobs:
           mkdir payload
           cp bin/GhostNet.exe payload/
           cp packaging/README.txt payload/
+          cp packaging/THIRD-PARTY-NOTICES.txt payload/
           python3 tools/make_manifest.py "$GITHUB_REPOSITORY" "$V" ghostnet-manifest.txt payload/*
       - name: Sign manifest (if a signing key is configured)
         env:
@@ -114,7 +124,7 @@ jobs:
             echo "| GhostNet-Setup.exe | \`$SETUP_SHA\` |"
             tail -n +4 ghostnet-manifest.txt | awk '{print "| " $4 " | `" $2 "` |"}'
           } > notes.md
-          FILES="payload/GhostNet.exe payload/README.txt ghostnet-manifest.txt bin/GhostNet-Setup.exe"
+          FILES="payload/GhostNet.exe payload/README.txt payload/THIRD-PARTY-NOTICES.txt ghostnet-manifest.txt bin/GhostNet-Setup.exe"
           [ -f ghostnet-manifest.sig ] && FILES="$FILES ghostnet-manifest.sig"
           gh release create "$GITHUB_REF_NAME" $FILES --title "GhostNet $V" --notes-file notes.md --verify-tag
 
@@ -132,8 +142,9 @@ jobs:
           $dir = Join-Path $env:RUNNER_TEMP 'gn'
           .\GhostNet-Setup.exe --yes --no-shortcut --no-launch --no-color --dir $dir
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          & (Join-Path $dir 'GhostNet.exe') --version
-          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $p = Start-Process (Join-Path $dir 'GhostNet.exe') -ArgumentList '--version' -Wait -PassThru -NoNewWindow -RedirectStandardOutput version.txt
+          Get-Content version.txt
+          if ($p.ExitCode -ne 0) { exit 1 }
           .\GhostNet-Setup.exe --yes --check --no-color
           if ($LASTEXITCODE -ne 0) { exit 1 }
           .\GhostNet-Setup.exe --yes --uninstall --no-color --dir $dir

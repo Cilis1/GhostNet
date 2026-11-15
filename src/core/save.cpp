@@ -8,7 +8,7 @@
 #include <sstream>
 
 #include "balance.h"
-#include "platform.h"
+#include "paths.h"
 
 namespace fs = std::filesystem;
 
@@ -42,7 +42,7 @@ std::string unesc(const std::string& s) {
 int clampi(long long v, int lo, int hi) { return static_cast<int>(std::max<long long>(lo, std::min<long long>(hi, v))); }
 }  // namespace
 
-std::string savePath() { return (fs::path(plat::saveDir()) / "ghostnet_save.txt").string(); }
+std::string savePath() { return (fs::path(paths::saveDir()) / "ghostnet_save.txt").string(); }
 bool saveExists() { std::error_code ec; return fs::exists(savePath(), ec); }
 
 bool saveGame(const GameState& g, std::string* err) {

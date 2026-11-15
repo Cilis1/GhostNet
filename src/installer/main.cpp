@@ -699,7 +699,7 @@ int wmain(int argc, wchar_t** argv) {
         si.cb = sizeof si;
         PROCESS_INFORMATION pi{};
         std::wstring cmd = L"\"" + exe.wstring() + L"\"";
-        if (CreateProcessW(exe.c_str(), &cmd[0], nullptr, nullptr, FALSE, CREATE_NEW_CONSOLE, nullptr, dir.c_str(), &si, &pi)) {
+        if (CreateProcessW(exe.c_str(), &cmd[0], nullptr, nullptr, FALSE, 0, nullptr, dir.c_str(), &si, &pi)) {
             CloseHandle(pi.hThread);
             CloseHandle(pi.hProcess);
         } else {

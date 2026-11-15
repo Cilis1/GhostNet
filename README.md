@@ -2,14 +2,24 @@
 
 > *A game about a runner who stops renting and starts owning.*
 
-**GHOSTNET** is a terminal hacking game written in C++17. In this city, server
-space is real estate. You rent a room called THE RACK, take jobs off the board,
-and break into servers before HELIOS (the maintenance corp whose trace meter is
-"how long you've been an open ticket") closes your ticket. Then you find what the
-dead courier SAINT left behind: a salvaged 3-slot rack and a home server, **N0**.
-From there you build a network you own, and every machine in it bills you, wears
-out, and can die in your place. The goal is to survive, then pull off **the deep
-job**.
+**GHOSTNET** is a neon hacking game for Windows, written in C++17 on raylib. In
+this city, server space is real estate. You rent a room called THE RACK, take
+jobs off the board, and break into servers before HELIOS (the maintenance corp
+whose trace meter is "how long you've been an open ticket") closes your ticket.
+Then you find what the dead courier SAINT left behind: a salvaged 3-slot rack
+and a home server, **N0**. From there you build a network you own, and every
+machine in it bills you, wears out, and can die in your place. The goal is to
+survive, then pull off **the deep job**.
+
+It runs in its own window: a rain-soaked skyline, a live mesh graph of your
+machines, lock grids that light up green and amber, a trace ring that turns red
+as HELIOS closes in, and synthesised sound. Every screen is clickable, and
+everything you type can be typed.
+
+| | |
+|---|---|
+| ![Title screen](docs/screenshots/title.jpg) | ![The rack: your server mesh](docs/screenshots/rack.jpg) |
+| ![A rotor lock with the trace running hot](docs/screenshots/lock.jpg) | ![TRACED](docs/screenshots/traced.jpg) |
 
 It is built from the concept doc *"GHOSTNET: A game about a runner who stops
 renting and starts owning"*. A [design panel of AI reviewers](DESIGN_PANEL.md)
@@ -30,19 +40,25 @@ the release notes, then click *More info → Run anyway*. See
 ## How it plays
 
 ```
-THE RACK -> JOB BOARD -> pick a listing -> scan it / ask the Panel -> CONNECT
-  door>   break the lock in limited guesses   (or: phrase <word>)
-  inside> ls / cat <n> / get <n> / steal / disconnect
+THE RACK -> JOB BOARD -> pick a listing -> briefing (scan it, hear the Panel) -> CONNECT
+  the door   break the lock in limited guesses, or TRY PHRASE if you've read one
+  inside     OPEN to read a file, GET to download it, CAPTURE HARDWARE, JACK OUT
 THE RECKONING -> haul, fines, the bill, wear, machines going dark
 ```
+
+**Controls:** mouse for everything. At a lock, type digits or letters and press
+**Enter**; **Backspace** fixes. **Esc** opens the menu (save & quit, practice,
+retire) or closes a dialog. **F11** toggles borderless fullscreen. **M** on the
+title screen mutes. The **Practice range** on the title screen lets you learn
+all three locks with no trace and no bill.
 
 * **Three acts.** *Renting* ends at your first trace-out. *Owning* starts with
   your first captured machine. *The Deep Job* starts when a decoy first dies for you.
 * **Trace-out:** your accounts are seized, so the night's haul is lost. You pay a fine
   (never more than you have), the bill still comes due, and your machines wear hard.
 * **Downloading** takes time and makes you easier to find: the trace runs ×1.25 while bytes move.
-* **Locks:** Keypad (hit/near), Rotor (`~` = one notch away, *not* misplaced) and
-  Cipher (word feedback). A passphrase opens a door without breaking it.
+* **Locks:** Keypad (hit/near), Rotor (amber `+-1` = one notch away, *not* misplaced) and
+  Cipher (word feedback, green/amber). A passphrase opens a door without breaking it.
 * **The deck:** tools you buy for yourself (Breaker, Uplink, Shroud, Lens). They are
   permanent, never billed, and separate from the network.
 * **GhostNet** (unlocks after your first contract): N0 plus up to 10 machines.
@@ -67,7 +83,8 @@ THE RECKONING -> haul, fines, the bill, wear, machines going dark
 
 ## Build from source
 
-Any C++17 compiler and CMake 3.15+:
+A C++17 compiler and CMake 3.22+. CMake downloads raylib 6.2 (pinned by SHA-256)
+the first time.
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -75,37 +92,56 @@ cmake --build build --config Release
 ./build/GhostNet          # build\Release\GhostNet.exe on Windows
 ```
 
-On Windows this also builds `GhostNet-Setup.exe`. The game itself also runs on Linux and macOS.
+On Windows this also builds `GhostNet-Setup.exe`. Linux needs the usual X11/GL
+development packages for raylib (`libx11-dev libxrandr-dev libxinerama-dev
+libxcursor-dev libxi-dev libgl1-mesa-dev`).
 
-Useful flags: `--seed N` (world seed), `--fast` (no animations), `--no-color`.
+`-DGHOSTNET_HEADLESS=ON` builds on raylib's software renderer with no window at
+all, for CI. That build only takes `--shots DIR`.
+
+**Command line:** `--windowed` (default), `--fullscreen`, `--mute`,
+`--save-dir DIR`, `--shots DIR` (render a tour of every screen to PNGs and exit),
+`--version`, `--help`.
 
 ## Tests
 
-* `ctest --test-dir build`: tests for the installer's JSON/manifest/file-name validation.
-* `python3 tools/playtest_bot.py build/GhostNet 7 15`: an automated player that plays the real game. It solves locks from the on-screen feedback and learns passphrases only by reading memos in-game.
-  * Add `chaos` at the end for a reckless player. It exercises lockouts, trace-outs, decoy sacrifices and unpaid bills.
-  * Add `deep` (e.g. `... 7 70 deep`) and the run fails unless the bot builds a network and beats the deep job. It also makes one doomed early attempt, to check the shortfall readout.
+* `ctest --test-dir build` runs:
+  * the installer's JSON / manifest / file-name validation tests;
+  * `ghostnet_sim`, an automated player (`tests/sim_bot.cpp`) that plays the real rules end to end. It solves locks only from their feedback and learns passphrases only by reading files. There are three modes: `careful`, `chaos` (lockouts, trace-outs, decoy sacrifices, unpaid bills) and `deep`. Deep fails unless the bot builds a network and beats the deep job, after one doomed early attempt that checks the shortfall readout.
+* `build/GhostNet --shots shots` drives every screen of the actual front end and saves 24 screenshots. CI does this on every push and uploads them as the **screenshots** artifact.
 * `GhostNet-Setup.exe --selftest`: the downloader's offline security self-test.
 
 ## Releasing
 
-Push a tag like `v0.2.1`. `.github/workflows/build.yml` then:
+Push a tag like `v0.3.1`. `.github/workflows/build.yml` then:
 
-1. builds and tests on Linux (including the careful, reckless and deep-job playtest bots) and on Windows (MSVC, static runtime);
-2. publishes a release with `GhostNet.exe`, `README.txt`, `ghostnet-manifest.txt` (SHA-256 of every file, signed if a key is configured) and `GhostNet-Setup.exe`;
+1. on Linux, builds the headless game, runs the tests and a 17-seed bot sweep, and renders the screenshot tour; on Windows, builds with MSVC and the static runtime, so there are no DLLs;
+2. publishes a release with `GhostNet.exe`, `README.txt`, `THIRD-PARTY-NOTICES.txt`, `ghostnet-manifest.txt` (SHA-256 of every file, signed if a key is configured) and `GhostNet-Setup.exe`;
 3. downloads that published installer on a fresh Windows runner and does a real install → run → verify → uninstall.
 
 ## Layout
 
 ```
-src/game/        the game (portable C++17)
+src/core/        the rules: pure C++17, no I/O, no graphics
   balance.h      every tunable number
-  network.cpp    owning machines        netscreen.cpp  the rack screen
-  run.cpp        connecting, locks, downloads, capture, the reckoning, acts
+  run.cpp        a connection: locks, reading, downloads, capture, decoy, the reckoning
+  rack.cpp       owning machines: buy, store, re-job, repair, scrap, decoy, the deck
   world.cpp      job board, contracts, the deep job, side routes, shrines
-  report.cpp     scouting reports       panel.cpp      the advisor AIs
+  intel.cpp      scouting reports and the Panel's advisor AIs
+src/gui/         the windowed game (raylib)
+  gfx.cpp        palette, fonts, glow text, panels, the city, the CRT pass
+  app.cpp        title, intro, endings, dialogs    hub.cpp  rack / board / deck / panel tabs
+  connect.cpp    the connection and the reckoning  audio.cpp synthesised sound
+  tour.cpp       the scripted screenshot tour
 src/installer/   GhostNet-Setup.exe (WinHTTP + CNG, no third-party code)
-tools/           playtest bot, manifest + signing tools
-packaging/       README.txt shipped with the game
-res/             icon, version info, asInvoker manifest
+tests/           installer tests, the playtest bot
+tools/           manifest + signing tools
+packaging/       README.txt and third-party notices shipped with the game
+res/             fonts (OFL), icon, version info, asInvoker manifest
 ```
+
+## Credits
+
+Built on [raylib](https://www.raylib.com/) (zlib licence). Fonts: Orbitron by
+Matt McInerney and JetBrains Mono, both under the SIL Open Font License 1.1.
+Full texts in [`packaging/THIRD-PARTY-NOTICES.txt`](packaging/THIRD-PARTY-NOTICES.txt).

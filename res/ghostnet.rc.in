@@ -2,6 +2,7 @@
 #include <winver.h>
 #define IDI_APP 101
 IDI_APP ICON "@GN_RES_DIR@/ghostnet.ico"
+GLFW_ICON ICON "@GN_RES_DIR@/ghostnet.ico"
 #ifdef GHOSTNET_RC_MANIFEST
 1 24 "@GN_RES_DIR@/asinvoker.manifest"
 #endif
