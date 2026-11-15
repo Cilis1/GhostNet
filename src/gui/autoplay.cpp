@@ -67,8 +67,11 @@ struct Driver {
 
     // Move onto the nth widget with this label and click it, like a person:
     // one frame hovering, one frame pressing.
-    bool click(const std::string& label, size_t nth = 0, int patience = 40) {
-        for (int i = 0; i < patience; ++i) {
+    // Patience is in real seconds, not frames: CI machines render much faster
+    // than a laptop running the software renderer, and the UI's animations are timed.
+    bool click(const std::string& label, size_t nth = 0, double patience = 8.0) {
+        double until = GetTime() + patience;
+        while (GetTime() < until) {
             auto ws = find(label);
             if (ws.size() > nth) {
                 Rectangle r = ws[nth].r;
@@ -84,12 +87,13 @@ struct Driver {
     }
 
     template <class Pred>
-    bool waitFor(Pred pred, const std::string& what, int patience = 60) {
-        for (int i = 0; i < patience; ++i) {
+    bool waitFor(Pred pred, const std::string& what, double patience = 10.0) {
+        double until = GetTime() + patience;
+        while (GetTime() < until) {
             if (pred()) return true;
             frame();
         }
-        return fail("timed out waiting for " + what);
+        return pred() || fail("timed out waiting for " + what);
     }
 
     void type(const std::string& s) {
@@ -202,22 +206,24 @@ int App::autoplay(const std::function<void()>& render) {
     d.step = "inside";
     if (!d.waitFor([&] { return !d.find("READ").empty() || !d.find("OPEN").empty(); }, "the file list")) return bad();
     if (!d.click(d.find("READ").empty() ? "OPEN" : "READ")) return bad();
-    if (!d.waitFor([&] { return readFile >= 0 || !run->busy(); }, "the file to open", 200)) return bad();
+    if (!d.waitFor([&] { return readFile >= 0 || !run->busy(); }, "the file to open", 30.0)) return bad();
     for (int i = 0; i < 4; ++i) {
         if (d.find("GET").empty()) break;
         if (!d.click("GET")) return bad();
-        if (!d.waitFor([&] { return !run->busy(); }, "the download", 200)) return bad();
+        if (!d.waitFor([&] { return !run->busy(); }, "the download", 30.0)) return bad();
     }
     if (!d.waitFor([&] { return run->jobDone; }, "the objective")) return bad();
     if (!d.click("JACK OUT - KEEP IT")) return bad();
     if (!d.waitFor([&] { return run && run->over(); }, "the disconnect")) return bad();
-    d.waitFor([&] { return gx::now - endedAt > 0.6f; }, "the overlay", 30);
-    d.in.click = true;
-    d.frame();
+    if (!d.waitFor([&] { return gx::now - endedAt > 0.6f || scr == Scr::Reckon; }, "the overlay")) return bad();
+    if (scr == Scr::Run) {   // click through the JACKED OUT card
+        d.in.click = true;
+        d.frame();
+    }
     if (!d.waitFor([&] { return scr == Scr::Reckon; }, "the reckoning")) return bad();
 
     d.step = "reckoning";
-    for (int i = 0; i < 6 && scr == Scr::Reckon; ++i) {
+    for (double until = GetTime() + 10.0; GetTime() < until && scr == Scr::Reckon;) {
         if (!d.find("CONTINUE").empty()) d.click("CONTINUE");
         else if (!d.find("SKIP").empty()) d.click("SKIP");
         else d.frame();
