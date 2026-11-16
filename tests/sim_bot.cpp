@@ -11,9 +11,11 @@
 //   tower  beat the deep job, open Act IV and climb the corp towers; then kit trials: a build matched to each
 //          tower's doctrine must take all of it, and a single build facing the wrong doctrine must fail
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <map>
 #include <set>
@@ -916,8 +918,20 @@ void selfTest() {
         CHECK(r.end == End::Sacrifice, "the subnet takes the ticket");
         CHECK(h.net.machines.size() == before - 2 && !h.net.find(pId) && !h.net.find(gwId), "the gateway's subnet is lost as a group");
         long long fines = h.stats.finesPaid;
-        r.settle();
+        // Only survivors are billed and worn: the burned subnet's machines are gone, not charged.
+        int expectBill = 0;
+        std::map<int, int> condBefore;
+        for (auto& m : h.net.machines) {
+            if (h.net.online(m) && !m.home) expectBill += upkeepOf(m);
+            condBefore[m.id] = m.condition;
+        }
+        Reckoning rk = r.settle();
         CHECK(h.wall.size() == 2 && h.stats.finesPaid == fines, "two nameplates; the fine is waived");
+        CHECK(rk.bill == expectBill, "a burned subnet is never billed; the survivors are");
+        bool survivorsOk = true;
+        for (auto& m : h.net.machines)
+            if (!condBefore.count(m.id) || (!m.home && h.net.online(m) && m.condition > condBefore[m.id])) survivorsOk = false;
+        CHECK(survivorsOk && !h.net.find(pId) && !h.net.find(gwId), "settling touches only machines that still exist");
         roundTrip(h);
     }
     // Prototypes: the only real tier 4.
@@ -964,6 +978,102 @@ void selfTest() {
         r.settle();
         roundTrip(h);
         CHECK(upgradeHome(h).ok || h.net.home()->tier <= 3, "N0 never passes tier 3");
+    }
+    // 0.6.1 - a capture hold charges every second it shows, the last one included.
+    {
+        Target t = testTarget(LockType::None);
+        t.kind = Kind::Corporate;
+        t.id = 1037;
+        t.stealable = true;
+        // Two identical holds: the first measures the trace on the final second, the second starts
+        // high enough that the final second (and only that one) fills the trace.
+        double before = 0, after = 0;
+        int holdSecs = 0;
+        for (int pass = 0; pass < 2; ++pass) {
+            GameState h;
+            h.worldSeed = 8;
+            h.credits = 20000;
+            unlockNetwork(h);
+            h.net.slots = bal::MAX_SLOTS;
+            size_t owned = h.net.machines.size();
+            RunSession r(h, t, 13);
+            CaptureQuote q = r.quote();
+            std::string err;
+            if (pass == 1) r.trace += 100.0 - after + (after - before) / 2;
+            int s0 = r.secs;
+            CHECK(q.possible && r.startHold(q.def, err), "start a capture hold");
+            holdSecs = q.holdSecs;
+            while (r.busy() && !r.over()) {
+                if (pass == 0) before = r.trace;
+                r.step();
+            }
+            if (pass == 0) {
+                after = r.trace;
+                CHECK(r.end == End::Steal, "an unhurried hold captures the hardware");
+                CHECK(r.secs - s0 == holdSecs, "a capture costs exactly the seconds it shows");
+                CHECK(after > before, "the final held second runs the trace too");
+            } else {
+                CHECK(r.end == End::TraceOut && r.secs - s0 == holdSecs, "a trace that fills on the last held second wins");
+                CHECK(h.net.machines.size() == owned, "no hardware arrives if the last second traces you");
+            }
+        }
+    }
+    // 0.6.1 - lock input is judged against the game's ASCII alphabets; high-bit bytes are refused.
+    {
+        Rng rr(5);
+        const std::string hi(1, static_cast<char>(0xFF)), e9(1, static_cast<char>(0xE9));
+        for (LockType lt : {LockType::Keypad, LockType::Rotor, LockType::Cipher, LockType::Composite}) {
+            Lock L = makeLock(lt, rr, 0);
+            std::string err;
+            int used = L.used;
+            std::string bad = lt == LockType::Cipher ? "caf" + e9 + "s" : "12" + hi + "4";
+            CHECK(!L.guess(bad, err) && !err.empty() && L.used == used, "a high-bit byte is refused without spending a guess");
+            CHECK(!L.guess(hi + hi + hi + hi + (lt == LockType::Cipher ? hi : ""), err) && L.used == used, "all high-bit input is refused");
+        }
+        Lock c = makeLock(LockType::Cipher, rr, 0);
+        std::string err, up = txt::upper(c.secret);
+        CHECK(c.guess(up, err) && c.open, "cipher guesses are still case-insensitive");
+    }
+    // 0.6.1 - a save that can't be moved into place never costs the old one.
+    {
+        namespace fs = std::filesystem;
+        GameState a;
+        a.credits = 111;
+        std::string err;
+        CHECK(saveGame(a, &err), "first save");
+        // A finished write left in the temp file (its move failed) is newer than the main save:
+        // main holds 111, the temp file 222. It loads, and is promoted into place.
+        GameState b;
+        b.credits = 222;
+        CHECK(saveGame(b, &err), "second save");
+        const std::string keep = saveTempPath() + ".keep";
+        fs::copy_file(savePath(), keep, fs::copy_options::overwrite_existing);
+        CHECK(saveGame(a, &err), "rewrite the older save");
+        std::error_code ec;
+        fs::rename(keep, saveTempPath(), ec);
+        fs::last_write_time(saveTempPath(), fs::last_write_time(savePath()) + std::chrono::seconds(5), ec);
+        GameState l;
+        CHECK(loadGame(l, &err) && l.credits == 222 && !fs::exists(saveTempPath()), "a newer complete temp save loads and is promoted");
+        // A write cut short (no end line) never shadows the real save.
+        { std::ofstream f(saveTempPath(), std::ios::trunc); f << "GHOSTNET 5\ncredits 999\n"; }
+        fs::last_write_time(saveTempPath(), fs::last_write_time(savePath()) + std::chrono::seconds(5), ec);
+        GameState m;
+        CHECK(loadGame(m, &err) && m.credits == 222, "a half-written temp file falls back to the real save");
+        // The real save gone, a complete temp save is still found by Continue and loads.
+        CHECK(saveGame(b, &err), "save again");
+        fs::copy_file(savePath(), saveTempPath(), fs::copy_options::overwrite_existing);
+        fs::remove(savePath());
+        GameState n;
+        CHECK(saveExists() && loadGame(n, &err) && n.credits == 222 && fs::exists(savePath()), "a lone temp save is recovered");
+        // A failed replace leaves the old save alone: make the destination a directory so rename must fail.
+        fs::remove(savePath());
+        fs::create_directories(fs::path(savePath()) / "blocker");
+        GameState f;
+        f.credits = 333;
+        CHECK(!saveGame(f, &err) && err.find("untouched") != std::string::npos, "a failed replace reports an error");
+        CHECK(fs::exists(fs::path(savePath()) / "blocker"), "a failed replace deletes nothing");
+        fs::remove_all(savePath());
+        fs::remove(saveTempPath(), ec);
     }
     // 0.6 - the composite lock: keypad marks carry into the rotor's start; each stage judges itself.
     {
@@ -1101,7 +1211,7 @@ void selfTest() {
             roundTrip(o);
         }
     }
-    if (!problems) std::printf("selftest: keypad marks, programs, jammer/vault, traits, memorial, subnets, strikes, prototypes, composite, ledger - OK\n");
+    if (!problems) std::printf("selftest: keypad marks, programs, jammer/vault, traits, memorial, subnets, strikes, prototypes, composite, ledger, capture timing, lock input, save recovery - OK\n");
 }
 
 int main(int argc, char** argv) {

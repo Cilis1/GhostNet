@@ -124,6 +124,14 @@ std::string Lock::rule() const {
            " in the same box. Green = exact. Amber = ONE NOTCH AWAY. Dark = further off.";
 }
 
+namespace {
+// The lock alphabets are plain ASCII. Checking the ranges directly rejects high-bit bytes
+// (which <cctype> would see as negative chars - undefined behaviour) and keeps cipher
+// letters inside 'a'..'z' for the counts[26] index.
+bool asciiDigit(char c) noexcept { return c >= '0' && c <= '9'; }
+bool asciiLower(char c) noexcept { return c >= 'a' && c <= 'z'; }
+}  // namespace
+
 bool Lock::guess(const std::string& raw, std::string& err) {
     std::string g = txt::lower(txt::trim(raw));
     Row row;
@@ -131,7 +139,7 @@ bool Lock::guess(const std::string& raw, std::string& err) {
     if (sealed()) { err = "The lock has sealed. No guesses remain."; return false; }
     const LockType kind = cur();
     if (kind == LockType::Keypad) {
-        if (g.size() != 4 || !std::all_of(g.begin(), g.end(), ::isdigit)) { err = "Keypad wants " + format() + "."; return false; }
+        if (g.size() != 4 || !std::all_of(g.begin(), g.end(), asciiDigit)) { err = "Keypad wants " + format() + "."; return false; }
         for (int i = 0; i < 4; ++i)
             for (int j = i + 1; j < 4; ++j)
                 if (g[i] == g[j]) { err = "Keypad digits must all be different."; return false; }
@@ -145,7 +153,7 @@ bool Lock::guess(const std::string& raw, std::string& err) {
         row.nearc = nearc;
         if (hit == 4 && !composite()) open = true;
     } else if (kind == LockType::Rotor) {
-        if (g.size() != 4 || !std::all_of(g.begin(), g.end(), ::isdigit)) { err = "Rotor wants " + format() + "."; return false; }
+        if (g.size() != 4 || !std::all_of(g.begin(), g.end(), asciiDigit)) { err = "Rotor wants " + format() + "."; return false; }
         int exact = 0;
         for (int i = 0; i < 4; ++i) {
             int d = std::abs(g[i] - secret[i]);
@@ -155,7 +163,7 @@ bool Lock::guess(const std::string& raw, std::string& err) {
         }
         if (exact == 4) open = true;
     } else if (kind == LockType::Cipher) {
-        if (g.size() != 5 || !std::all_of(g.begin(), g.end(), ::isalpha)) { err = "Cipher wants " + format() + "."; return false; }
+        if (g.size() != 5 || !std::all_of(g.begin(), g.end(), asciiLower)) { err = "Cipher wants " + format() + "."; return false; }
         std::string res(5, '.');
         int counts[26] = {0};
         for (int i = 0; i < 5; ++i) {

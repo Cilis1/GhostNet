@@ -150,6 +150,7 @@ all four locks with no trace and no bill.
 ## Troubleshooting
 
 * **Clicks don't land / the game ignores the mouse:** fixed in 0.3.1. Version 0.3.0 mis-mapped the mouse on Windows displays scaled above 100% (most laptops). Run `GhostNet-Setup.exe` again to update.
+* **"Save failed" toast:** something (usually a virus scanner) held the save file while the game replaced it. Since 0.6.1 the game retries, never deletes your previous save to make room, and keeps the new one in `ghostnet_save.txt.tmp`, which it loads automatically if it's the newest complete save.
 * **The window won't open:** GhostNet needs OpenGL 3.3, so update your graphics driver. The game writes `ghostnet.log` to `%APPDATA%\GhostNet` every time it starts; include it if you report a problem.
 
 ## Build from source

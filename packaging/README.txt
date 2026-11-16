@@ -77,7 +77,9 @@ THE PANEL
 
 SAVES
   %APPDATA%\GhostNet\ghostnet_save.txt  (kept when you uninstall or update;
-  saves from 0.2.x carry straight over)
+  saves from 0.2.x carry straight over). If a save can't replace the old
+  one (a virus scanner holding the file), the previous save is never
+  deleted; the new one waits in ghostnet_save.txt.tmp and loads next time.
 
 TROUBLESHOOTING
   Clicks not registering? Update to 0.3.1 or newer (run GhostNet-Setup.exe

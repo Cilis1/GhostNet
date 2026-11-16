@@ -563,8 +563,10 @@ void RunSession::step() {
         if (burst) --burstLeft;
         if (actDone >= actTotal) finishDownload();
     } else if (act == Act::Hold) {
-        if (++actDone >= actTotal) { finishCapture(); return; }
-        advance(1, bal::ANCHOR_TRACE_MULT);   // if this traces you, the anchoring flag raises the fine
+        // Every held second costs trace, the last one included: the clock runs first, and the
+        // hardware is yours only if you survive it. (If this traces you, anchoring raises the fine.)
+        if (advance(1, bal::ANCHOR_TRACE_MULT)) return;
+        if (++actDone >= actTotal) finishCapture();
     }
 }
 

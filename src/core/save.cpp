@@ -2,10 +2,12 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <thread>
 
 #include "balance.h"
 #include "paths.h"
@@ -43,7 +45,12 @@ int clampi(long long v, int lo, int hi) { return static_cast<int>(std::max<long 
 }  // namespace
 
 std::string savePath() { return (fs::path(paths::saveDir()) / "ghostnet_save.txt").string(); }
-bool saveExists() { std::error_code ec; return fs::exists(savePath(), ec); }
+std::string saveTempPath() { return savePath() + ".tmp"; }
+// A finished write that couldn't be moved into place still counts: loadGame recovers it.
+bool saveExists() {
+    std::error_code ec;
+    return fs::exists(savePath(), ec) || fs::exists(saveTempPath(), ec);
+}
 
 bool saveGame(const GameState& g, std::string* err) {
     std::ostringstream o;
@@ -84,25 +91,64 @@ bool saveGame(const GameState& g, std::string* err) {
     o << "end\n";
 
     std::string path = savePath();
-    std::string tmp = path + ".tmp";
+    std::string tmp = saveTempPath();
     {
         std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
         if (!f) { if (err) *err = "cannot write " + tmp; return false; }
         f << o.str();
         if (!f) { if (err) *err = "write failed"; return false; }
     }
+    // rename replaces the old save in one step (POSIX rename; MoveFileExW with REPLACE_EXISTING
+    // under MSVC). It can fail for a moment while something else holds the file - a virus
+    // scanner, a backup tool - so retry briefly. Never delete the old save to make room: if the
+    // move still fails, the old save stays loadable and the new one waits in the temp file,
+    // which loadGame falls back to.
     std::error_code ec;
-    fs::rename(tmp, path, ec);
-    if (ec) {   // some platforms refuse to rename over an existing file
-        fs::remove(path, ec);
+    for (int attempt = 0; attempt < 5; ++attempt) {
+        if (attempt) std::this_thread::sleep_for(std::chrono::milliseconds(40 * attempt));
         fs::rename(tmp, path, ec);
-        if (ec) { if (err) *err = ec.message(); return false; }
+        if (!ec) return true;
     }
-    return true;
+    if (err) *err = "could not replace the save (" + ec.message() + "); the previous save is untouched";
+    return false;
 }
 
+namespace {
+bool loadFrom(const std::string& file, GameState& g, std::string* err);
+}
+
+// A temp file left behind is either a finished write whose move into place failed (the newest
+// save there is) or a write cut short (no "end" line, so it fails to load). Try the newer file
+// first; whichever loads, the other is the fallback.
 bool loadGame(GameState& g, std::string* err) {
-    std::ifstream f(savePath(), std::ios::binary);
+    std::error_code ec;
+    const std::string mainF = savePath(), tmpF = saveTempPath();
+    bool tmpFirst = false;
+    if (fs::exists(tmpF, ec)) {
+        if (!fs::exists(mainF, ec)) tmpFirst = true;
+        else {
+            std::error_code e1, e2;
+            auto tm = fs::last_write_time(tmpF, e1), mm = fs::last_write_time(mainF, e2);
+            tmpFirst = !e1 && !e2 && tm >= mm;
+        }
+    }
+    const std::string order[2] = {tmpFirst ? tmpF : mainF, tmpFirst ? mainF : tmpF};
+    std::string firstErr;
+    for (int i = 0; i < 2; ++i) {
+        std::string e;
+        if (loadFrom(order[i], g, &e)) {
+            if (order[i] == tmpF) fs::rename(tmpF, mainF, ec);   // promote it; harmless if this fails too
+            return true;
+        }
+        if (order[i] == mainF || firstErr.empty()) firstErr = e;
+    }
+    if (err) *err = firstErr;
+    return false;
+}
+
+namespace {
+bool loadFrom(const std::string& file, GameState& g, std::string* err) {
+    std::ifstream f(file, std::ios::binary);
     if (!f) { if (err) *err = "no save file"; return false; }
     GameState n;
     std::string line;
@@ -242,3 +288,4 @@ bool loadGame(GameState& g, std::string* err) {
     g = n;
     return true;
 }
+}  // namespace
