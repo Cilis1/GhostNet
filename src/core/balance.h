@@ -5,37 +5,39 @@
 namespace bal {
 
 // ---- Rack & archive -------------------------------------------------------
-constexpr int MAX_EXTERNAL      = 10;                 // [doc] never more than ten external machines
+constexpr int MAX_EXTERNAL      = 14;                 // [doc] said ten; 0.5 adds two 3-slot subnet bays
 constexpr int START_SLOTS       = 3;                  // [doc]
 constexpr int MAX_SLOTS         = 6;                  // [doc]
 constexpr int SLOT_COST[3]      = {350, 650, 1000};   // [doc] 4th, 5th, 6th slot
 constexpr int HOME_UPGRADE[2]   = {600, 1000};        // [doc] tier 1->2, 2->3
 
 // ---- Buying & servicing -----------------------------------------------------
-// Indexed by Job: Relay, Proxy, Scout, Compute, Jammer, Vault
-constexpr int BUY_PRICE[6]      = {400, 500, 450, 550, 425, 475};   // [doc] for the first four
+// Indexed by Job: Relay, Proxy, Scout, Compute, Jammer, Vault, Gateway
+constexpr int BUY_PRICE[7]      = {400, 500, 450, 550, 425, 475, 700};   // [doc] for the first four
 constexpr int BUY_TIER          = 2;                  // [doc] clean machines stop at the middle tier
 constexpr int REIMAGINE_FEE     = 125;                // [doc] changing a job
 constexpr int REPAIR_PER_POINT  = 2;                  // [doc]
 constexpr int SCRAP_BOUGHT_PCT  = 40;                 // a fraction of what you paid
-constexpr int SCRAP_CAPTURED[4] = {0, 40, 80, 140};   // small flat amount by tier
+constexpr int SCRAP_CAPTURED[6] = {0, 40, 80, 140, 260, 260};   // small flat amount by tier
 
-// ---- Job effects (index by tier 1..3) ---------------------------------------
-constexpr int RELAY_BONUS[4]    = {0, 10, 15, 20};    // [doc] small, ~1.5x, ~2x
+// ---- Job effects (index by tier 1..5; T4 = prototype, T5 = a cluster of T4s) ---
+constexpr int RELAY_BONUS[6]    = {0, 10, 15, 20, 26, 32};    // [doc] small, ~1.5x, ~2x for 1..3
 constexpr int RELAY_CAP         = 42;                 // [doc] just above double the top-tier value
-constexpr int PROXY_BONUS[4]    = {0, 6, 9, 12};      // [doc] smaller, same scaling
+constexpr int PROXY_BONUS[6]    = {0, 6, 9, 12, 16, 20};      // [doc] smaller, same scaling for 1..3
 constexpr int PROXY_CAP         = 30;                 // [doc] below the relay cap
 constexpr int SCOUT_MAX_CHARGES = 3;                  // [doc]
 constexpr int COMPUTE_MAX       = 2;                  // [doc]
-constexpr int COMPUTE_WEAR[4]   = {0, 14, 9, 5};      // [doc] less at higher tiers, none for home
+constexpr int COMPUTE_WEAR[6]   = {0, 14, 9, 5, 3, 2};      // [doc] less at higher tiers, none for home
 constexpr int SCOUT_WEAR        = 3;                  // [doc] "a small amount"
 // JAMMER: holds back a watchdog's acceleration and softens alarm spikes.
-constexpr int JAM_DELAY[4]      = {0, 20, 30, 45};    // seconds before a watchdog starts to ramp
-constexpr int JAM_DELAY_CAP     = 60;
-constexpr int JAM_SPIKE[4]      = {0, 20, 30, 40};    // % off lockout / wrong-phrase / honeypot spikes
-constexpr int JAM_SPIKE_CAP     = 50;
+constexpr int JAM_DELAY[6]      = {0, 20, 30, 45, 60, 75};    // seconds before a watchdog starts to ramp
+constexpr int JAM_DELAY_CAP     = 75;
+constexpr int JAM_SPIKE[6]      = {0, 20, 30, 40, 50, 60};    // % off lockout / wrong-phrase / honeypot spikes
+constexpr int JAM_SPIKE_CAP     = 60;
 // VAULT: on a trace-out, the best working vault keeps part of your single most valuable file.
-constexpr int VAULT_KEEP[4]     = {0, 60, 80, 100};   // % of that one file's value
+constexpr int VAULT_KEEP[6]     = {0, 60, 80, 100, 100, 100};   // % of each kept file's value
+constexpr int VAULT_FILES[6]    = {0, 1, 1, 1, 2, 3};           // how many of your best files it keeps
+constexpr int SCOUT_CHARGES[6]  = {0, 1, 1, 1, 2, 2};           // charges each scout adds
 
 // ---- Origin traits (fixed for life) -------------------------------------------
 constexpr int SALVAGED_EXTRA_WEAR  = 2;               // wears a little faster...
@@ -45,12 +47,32 @@ constexpr int OLDNET_REJOB_MULT    = 2;               // old firmware fights a r
 constexpr int HOTIRON_UPKEEP_PCT   = 10;              // HELIOS wants it back: louder on the bill...
 constexpr int CORP_UPKEEP_PCT      = 20;              // corporate build: bills more...
 constexpr int CORP_WEAR_PCT        = 60;              // ...and wears at 60% of the normal rate
+constexpr int UNSTABLE_WEAR_MULT   = 2;               // prototype iron: wears double...
+constexpr int UNSTABLE_REPAIR      = 3;               // ...repairs cost 3cr a point...
+constexpr int UNSTABLE_UPKEEP_PCT  = 40;              // ...and bills 40% more
+
+// ---- Subnets ----------------------------------------------------------------
+constexpr int MAX_BAYS          = 2;                  // working gateways that open a bay
+constexpr int BAY_SLOTS         = 3;
+constexpr int POWER_DRAW[6]     = {0, 1, 2, 3, 5, 5};          // by a member's real tier
+constexpr int GATEWAY_POWER[6]  = {0, 5, 7, 9, 12, 12};        // a bay's budget, by gateway tier
+constexpr int BAY_RELAY_CAP     = 30;                 // each bay has its own caps...
+constexpr int BAY_PROXY_CAP     = 18;
+constexpr int RELAY_HARD_CAP    = 90;                 // ...under a hard ceiling for everything
+constexpr int PROXY_HARD_CAP    = 50;
+constexpr int SPEED_BONUS[6]    = {0, 8, 12, 16, 22, 22};      // SPEED role: + download %, by gateway tier
+constexpr int STEALTH_BONUS[6]  = {0, 4, 6, 8, 11, 11};        // STEALTH role: - trace %
+constexpr int SIEGE_SPIKE[6]    = {0, 10, 15, 20, 25, 25};     // SIEGE role: % off alarm spikes (+1 emergency attempt)
+constexpr int STRIKE_WEAR       = 8;                  // every machine in the bay, after the run
+constexpr int STRIKE_BLACKOUT   = 8;                  // STEALTH strike: seconds the trace stands still
+constexpr int STRIKE_MIRROR     = 12;                 // SPEED strike: download seconds done instantly
+constexpr int STRIKE_CRACK      = 2;                  // SIEGE strike: lock boxes revealed
 
 // ---- Upkeep -----------------------------------------------------------------
 // [doc] tier cost + surcharge per signal step above the minimum, up to three steps.
 // Signal 1 = minimum (all bought machines). Captured hardware is always louder.
 //   clean T2 = 20cr   open T1 capture = 25cr   watched T2 = 50cr   corporate T3 = 90cr
-constexpr int TIER_UPKEEP[4]    = {0, 10, 20, 45};
+constexpr int TIER_UPKEEP[6]    = {0, 10, 20, 45, 80, 80};
 constexpr int NOISE_UPKEEP      = 15;
 constexpr int MAX_NOISE         = 4;
 

@@ -160,4 +160,5 @@ private:
 const char* actName(int act);
 Color jobColor(Job j);
 Color kindColor(Kind k);
+Color roleColor(BayRole r);
 Color toneColor(Tone t);

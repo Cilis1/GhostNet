@@ -29,6 +29,13 @@ Result expandRack(GameState& g);
 Result upgradeHome(GameState& g);
 Result renameMachine(GameState& g, Machine& m, const std::string& name);
 
+// Subnets: a working GATEWAY in the main rack opens a bay of BAY_SLOTS machines.
+bool canPlug(const GameState& g, const Machine& m, const Machine& gw, std::string* why = nullptr);
+Result plugIn(GameState& g, Machine& m, Machine& gw);   // from storage or the main rack
+Result unplug(GameState& g, Machine& m);                // back to cold storage
+Result setRole(GameState& g, Machine& gw, BayRole r);
+Result toggleBay(GameState& g, Machine& gw);
+
 // The deck: tools you buy for yourself.
 enum class Tool { Breaker = 0, Uplink = 1, Shroud = 2, Lens = 3 };
 struct ToolInfo {

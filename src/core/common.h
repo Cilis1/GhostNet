@@ -9,13 +9,22 @@
 // ---------------------------------------------------------------------------
 // Machines & the network
 // ---------------------------------------------------------------------------
-enum class Job { Relay = 0, Proxy = 1, Scout = 2, Compute = 3, Jammer = 4, Vault = 5 };
-constexpr int kJobCount = 6;
+enum class Job { Relay = 0, Proxy = 1, Scout = 2, Compute = 3, Jammer = 4, Vault = 5, Gateway = 6 };
+constexpr int kJobCount = 7;
+constexpr int kMaxTier = 5;   // T4 is captured from prototype sites; T5 exists only as a cluster of T4s
+
+// A GATEWAY opens a subnet bay. The bay's role is set between runs.
+enum class BayRole { Stealth = 0, Speed = 1, Siege = 2 };
+constexpr int kRoleCount = 3;
+const char* roleName(BayRole r);     // "STEALTH"
+const char* roleText(BayRole r);     // the passive, one line
+const char* strikeName(BayRole r);   // "BLACKOUT"
+const char* strikeText(BayRole r);   // the once-per-run strike, one line
 
 // Fixed for life the moment a machine joins your rack, decided by where it came
 // from. Traits never change or improve (that would be levelling).
-enum class Trait { None = 0, Salvaged = 1, OldNet = 2, HotIron = 3, CorpBuild = 4 };
-constexpr int kTraitCount = 5;
+enum class Trait { None = 0, Salvaged = 1, OldNet = 2, HotIron = 3, CorpBuild = 4, Unstable = 5 };
+constexpr int kTraitCount = 6;
 const char* traitName(Trait t);   // "SALVAGED"
 const char* traitText(Trait t);   // what it does, both sides of the trade
 
@@ -27,7 +36,7 @@ struct Machine {
     int id = 0;
     std::string name;
     Job job = Job::Relay;
-    int tier = 1;               // 1..3
+    int tier = 1;               // 1..4 (4 only from prototype sites)
     bool captured = false;
     bool home = false;
     bool active = false;        // in the rack (running) vs cold storage
@@ -36,6 +45,9 @@ struct Machine {
     int price = 0;              // what you paid (bought machines)
     Trait trait = Trait::None;  // fixed for life
     std::string origin;         // where it came from
+    int bay = -1;               // id of the gateway whose subnet it's plugged into (-1 = main rack / storage)
+    BayRole role = BayRole::Speed;   // gateways only: what the bay does
+    bool bayOn = true;          // gateways only: the whole subnet's power switch
     bool usedThisRun = false;   // compute favour already given this run
     bool dark() const { return condition <= 0; }
     bool working() const { return active && !dark(); }
@@ -54,7 +66,18 @@ struct Network {
     Machine* home();
     const Machine* home() const;
     int externalCount() const;
-    int activeCount() const;
+    int activeCount() const;         // main-rack slots in use (subnet members don't take one)
+    // Subnets.
+    bool online(const Machine& m) const;          // actually doing its job right now
+    bool bayOpen(const Machine& gw) const;        // a working gateway within the subnet limit
+    bool bayOnline(const Machine& gw) const;      // open, switched on and within its power budget
+    std::vector<const Machine*> bayMembers(int gatewayId) const;
+    std::vector<const Machine*> openBays() const;
+    int bayPower(int gatewayId) const;            // power drawn by its members
+    int bayBudget(const Machine& gw) const;
+    int bayUpkeep(int gatewayId) const;           // its own bill
+    int clusterBonus(int gatewayId) const;        // +1 tier for three matching T3+ machines
+    int effTier(const Machine& m) const;          // tier it acts at (clusters included)
     int relayBonus() const;          // % (capped)
     int proxyBonus() const;          // % (capped)
     int computeCapacity() const;     // emergency attempts per run (capped)
@@ -75,13 +98,13 @@ int repairPerPoint(const Machine& m);
 int repairCost(const Machine& m);    // back to 100 condition
 int rejobFee(const Machine& m);
 int conditionAfterRun(const Machine& m, bool traced);   // wear after a billable run, traits included
-int jobValue(const Machine& m);      // % for relay/proxy, 1 for scout/compute
-std::string describeEffect(const Machine& m);
+int jobValue(const Machine& m, int tier = 0);   // % for relay/proxy, 1 for others (tier 0 = its own)
+std::string describeEffect(const Machine& m, int tier = 0);
 
 // ---------------------------------------------------------------------------
 // World
 // ---------------------------------------------------------------------------
-enum class Kind { Open, Hidden, Guarded, Corporate, Shrine, Story, Side };
+enum class Kind { Open, Hidden, Guarded, Corporate, Shrine, Story, Side, Prototype };
 enum class LockType { None, Keypad, Rotor, Cipher };
 enum class FileKind { Paydata, Intel, Objective, Honeypot, Log };
 

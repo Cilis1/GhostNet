@@ -43,6 +43,11 @@ GHOSTNET (after your first contract)
   COMPUTE holds an emergency extra guess (EMERGENCY +1 at a lock),
   JAMMER holds watchdogs back and softens alarms, VAULT keeps your best file
   if you're traced. Captured machines carry an origin trait for life.
+  SUBNETS: a GATEWAY opens 3 extra slots with their own power, bill and role
+  (STEALTH, SPEED, SIEGE). Once per run each subnet can STRIKE (BLACKOUT,
+  MIRROR, CRACK) - it wears every machine in it. Three matching T3+ machines
+  in one subnet act a tier higher while together. Rare HELIOS PROTOTYPE labs
+  hold the only real tier 4: UNSTABLE, loud and costly.
   Running machines bill you after a run and wear. Can't pay? Nothing is taken:
   everything except N0 goes dark. Arm a PROXY as the DECOY and if the trace
   fills, HELIOS traces it instead of you - it is destroyed, the fine is halved.

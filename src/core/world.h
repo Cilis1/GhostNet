@@ -22,6 +22,7 @@ const char* dangerWord(double ratePerSec);
 // What kind of machine a place yields: default job, alternative job, tier, base condition, base noise.
 struct HardwareSpec { Job def, alt; int tier, condition, noise; };
 HardwareSpec hardwareFor(Kind k);
+HardwareSpec hardwareFor(const Target& t);   // per listing (prototype labs vary)
 // The stock maintenance phrases HELIOS techs reuse across the city (never the deep job's).
 const std::vector<std::string>& starterPhrases();
 Trait traitFor(Kind k);                      // what a captured machine carries for life

@@ -32,6 +32,7 @@
 namespace {
 
 bool CHAOS = false;
+bool SUBNET = false;   // "subnet" mode: build subnets early, hunt prototypes, never take the deep job
 int problems = 0;
 void fail(const std::string& s) {
     std::cerr << "PROBLEM: " << s << "\n";
@@ -128,18 +129,35 @@ struct Solver {
 struct SimStats {
     int runs = 0, captures = 0, steals = 0, traceouts = 0, sacrifices = 0, phrases = 0, extra = 0, honeypots = 0;
     int bought = 0, decoys = 0, deepAttempts = 0, shortfalls = 0, deepWon = 0, annex = 0, contracts = 0, unpaid = 0;
+    int gateways = 0, plugged = 0, strikes = 0, clusters = 0, protos = 0, protoSeen = 0, protoTries = 0;
 } st;
+
+// Fire any subnet strike that is usable right now (the bot is greedy with them).
+void useStrikes(RunSession& r) {
+    for (int id : r.strikeBays) {
+        std::string err;
+        if (r.strikeUsable(id) && r.strike(id, err)) ++st.strikes;
+    }
+}
 
 void checkInvariants(const GameState& g) {
     if (g.credits < 0) fail("negative credits");
     if (g.net.activeCount() > g.net.slots) fail("more machines running than slots");
-    if (g.net.externalCount() > bal::MAX_EXTERNAL) fail("more than 10 external machines");
+    if (g.net.externalCount() > bal::MAX_EXTERNAL) fail("more external machines than MAX_EXTERNAL");
     if (g.net.decoyId >= 0 && !g.net.decoy()) fail("decoy id points at an invalid machine");
     for (auto& m : g.net.machines) {
         if (m.condition < 0 || m.condition > 100) fail("condition out of range");
         if (m.dark() && m.active) fail(m.name + " is dark but active");
         if (m.home && (m.condition != 100 || !m.active)) fail("N0 damaged or stored");
     }
+    for (auto& m : g.net.machines) {
+        if (m.bay < 0) continue;
+        const Machine* gw = g.net.find(m.bay);
+        if (!gw || gw->job != Job::Gateway || gw->bay >= 0) fail(m.name + " is plugged into something that isn't a gateway");
+        if (!m.active || m.home || m.job == Job::Gateway) fail(m.name + " sits in a subnet it can't be in");
+        if (gw && static_cast<int>(g.net.bayMembers(gw->id).size()) > bal::BAY_SLOTS) fail("a subnet holds more than its slots");
+    }
+    if (g.net.relayBonus() > bal::RELAY_HARD_CAP || g.net.proxyBonus() > bal::PROXY_HARD_CAP) fail("a bonus passed its hard cap");
     if (g.netUnlocked && !g.net.home()) fail("network unlocked without N0");
     if (g.act < 1 || g.act > 3) fail("act out of range");
 }
@@ -156,6 +174,13 @@ void roundTrip(const GameState& g) {
     for (size_t i = 0; i < h.net.machines.size() && i < g.net.machines.size(); ++i)
         if (h.net.machines[i].trait != g.net.machines[i].trait || h.net.machines[i].job != g.net.machines[i].job)
             fail("save/load lost a machine's job or trait");
+    for (auto& m : g.net.machines) {
+        const Machine* k = h.net.find(m.id);
+        if (!k || k->bay != m.bay || k->role != m.role || k->bayOn != m.bayOn || k->tier != m.tier || k->active != m.active)
+            fail("save/load lost a machine's subnet, role or tier");
+    }
+    if (h.net.relayBonus() != g.net.relayBonus() || h.net.proxyBonus() != g.net.proxyBonus() || h.net.upkeepTotal() != g.net.upkeepTotal())
+        fail("save/load changed the network's numbers");
 }
 
 void solveDoor(RunSession& r) {
@@ -165,6 +190,7 @@ void solveDoor(RunSession& r) {
         if (r.phrase(r.t.passphrase)) return;
         if (r.over()) return;
     }
+    if (!CHAOS) useStrikes(r);
     Solver s(r.lock.type);
     for (int i = 0; i < 16 && !r.doorOpen && !r.over(); ++i) {
         if (r.lock.sealed()) {
@@ -186,7 +212,10 @@ void solveDoor(RunSession& r) {
 
 void runTimed(RunSession& r) {
     int guard = 0;
-    while (r.busy() && !r.over() && ++guard < 1000) r.step();
+    while (r.busy() && !r.over() && ++guard < 1000) {
+        if (!CHAOS) useStrikes(r);
+        r.step();
+    }
 }
 
 void playInside(RunSession& r, bool wantSteal, bool deep, const ReportView& rep) {
@@ -309,6 +338,34 @@ void manage(GameState& g) {
             if (to == Job::Proxy && g.net.proxyBonus() >= bal::PROXY_CAP) break;
             Result res = rejob(g, m, to);
             if (!res.ok) fail("re-job refused: " + res.msg);
+        }
+    }
+    // Subnets, once the main rack is maxed: buy a gateway and plug stored machines into it.
+    if (g.net.slots >= (SUBNET ? 4 : bal::MAX_SLOTS) && g.deck.uplink + g.deck.shroud >= (SUBNET ? 1 : 3)) {
+        bool haveGw = false;
+        for (auto& m : g.net.machines) if (m.job == Job::Gateway) haveGw = true;
+        int reserve = 2 * g.net.upkeepTotal() + 300;
+        if (!haveGw && g.credits - bal::BUY_PRICE[static_cast<int>(Job::Gateway)] >= reserve && g.net.externalCount() < bal::MAX_EXTERNAL) {
+            // The rack is full: store the weakest non-home machine to make room for the gateway.
+            if (g.net.activeCount() >= g.net.slots)
+                for (auto& m : g.net.machines)
+                    if (!m.home && m.active && m.bay < 0 && g.net.decoyId != m.id) { deactivate(g, m); break; }
+            Result res = buyMachine(g, Job::Gateway);
+            if (res.ok) {
+                ++st.gateways;
+                ++st.bought;
+                Machine& gw = g.net.machines.back();
+                if (!gw.active) activate(g, gw);
+                setRole(g, gw, CHAOS ? BayRole::Siege : SUBNET ? BayRole::Speed : BayRole::Stealth);
+            }
+        }
+        for (auto* gw : g.net.openBays()) {
+            Machine* G = g.net.find(gw->id);
+            for (auto& m : g.net.machines)
+                if (!m.active && !m.dark() && canPlug(g, m, *G) && g.credits > 2 * g.net.upkeepTotal() + upkeepOf(m) + 150 &&
+                    plugIn(g, m, *G).ok)
+                    ++st.plugged;
+            if (g.net.clusterBonus(G->id)) ++st.clusters;
         }
     }
     armAnyDecoy(g, CHAOS);
@@ -474,7 +531,172 @@ void selfTest() {
         CHECK(h.stats.finesPaid == fines, "HOT IRON decoys waive the fine");
         roundTrip(h);
     }
-    if (!problems) std::printf("selftest: keypad marks, programs, jammer/vault, traits, memorial - OK\n");
+    // Subnets: a gateway opens a bay; members don't use main slots; power budget; role; on/off.
+    {
+        GameState h;
+        h.worldSeed = 6;
+        h.credits = 20000;
+        unlockNetwork(h);
+        h.net.slots = bal::MAX_SLOTS;
+        CHECK(buyMachine(h, Job::Gateway).ok, "buy a gateway");
+        Machine& gw = h.net.machines.back();
+        int gwId = gw.id;
+        CHECK(h.net.bayOpen(gw) && h.net.openBays().size() == 1, "a running gateway opens a bay");
+        int mainBefore = h.net.activeCount();
+        const int base = h.net.relayBonus();   // N0 starts as a T1 relay
+        auto addT3 = [&](Job j, const std::string& name) -> Machine& {
+            Machine m;
+            m.id = h.net.nextId++;
+            m.name = name;
+            m.job = j;
+            m.tier = 3;
+            m.captured = true;
+            m.noise = 1;
+            h.net.machines.push_back(m);
+            return h.net.machines.back();
+        };
+        addT3(Job::Relay, "r1");
+        addT3(Job::Relay, "r2");
+        addT3(Job::Relay, "r3");
+        auto* G = h.net.find(gwId);
+        std::string why;
+        // T2 gateway: 7 power, a T3 draws 3 -> only two fit
+        CHECK(plugIn(h, *h.net.find(gwId + 1), *G).ok && plugIn(h, *h.net.find(gwId + 2), *G).ok, "plug two T3 relays in");
+        CHECK(!canPlug(h, *h.net.find(gwId + 3), *G, &why) && why.find("power") != std::string::npos, "the power budget refuses a third T3");
+        CHECK(h.net.activeCount() == mainBefore, "subnet members don't take main-rack slots");
+        int bayRelay = std::min(2 * bal::RELAY_BONUS[3] + bal::SPEED_BONUS[2], bal::BAY_RELAY_CAP);
+        CHECK(h.net.relayBonus() == base + bayRelay, "the subnet's relays pool under the subnet cap");
+        CHECK(h.net.bayUpkeep(gwId) == 2 * upkeepOf(*h.net.find(gwId + 1)), "the subnet bills its members");
+        CHECK(toggleBay(h, *G).ok && h.net.relayBonus() == base && h.net.bayUpkeep(gwId) == 0, "switched off: no bill, no effect");
+        CHECK(toggleBay(h, *G).ok && h.net.relayBonus() == base + bayRelay, "switched back on");
+        // Upgrade the gateway's power (a T3 gateway: 9) and form a cluster.
+        G->tier = 3;
+        CHECK(plugIn(h, *h.net.find(gwId + 3), *G).ok, "the third relay fits a T3 gateway");
+        CHECK(h.net.clusterBonus(gwId) == 1 && h.net.effTier(*h.net.find(gwId + 1)) == 4, "three matching T3s act as T4");
+        CHECK(h.net.relayBonus() == base + std::min(3 * bal::RELAY_BONUS[4] + bal::SPEED_BONUS[3], bal::BAY_RELAY_CAP), "the cluster uses T4 numbers");
+        CHECK(setRole(h, *G, BayRole::Siege).ok && h.net.computeCapacity() == 1 && h.net.jamSpikeCut() == bal::SIEGE_SPIKE[3], "SIEGE role");
+        roundTrip(h);
+        CHECK(unplug(h, *h.net.find(gwId + 2)).ok && h.net.clusterBonus(gwId) == 0, "pulling one out ends the cluster - nothing merged");
+        CHECK(!h.net.find(gwId + 2)->active && h.net.find(gwId + 2)->tier == 3, "the unplugged machine is unchanged, in storage");
+        CHECK(!scrap(h, gwId).ok, "a gateway with a subnet can't be scrapped");
+        CHECK(!rejob(h, *G, Job::Relay).ok, "or re-jobbed");
+        // Over budget (e.g. a member got swapped for heavier iron): the bay browns out.
+        h.net.find(gwId + 1)->tier = 4;
+        h.net.find(gwId + 3)->tier = 4;
+        CHECK(!h.net.bayOnline(*G) && h.net.relayBonus() == base, "over its power budget, a subnet browns out");
+        h.net.find(gwId + 1)->tier = 3;
+        h.net.find(gwId + 3)->tier = 3;
+        CHECK(h.net.bayOnline(*G), "back under budget");
+    }
+    // Strikes: once per run, matched to the role, wear the whole bay; a gateway decoy burns the subnet.
+    {
+        GameState h;
+        h.worldSeed = 7;
+        h.credits = 20000;
+        unlockNetwork(h);
+        buyMachine(h, Job::Gateway);
+        int gwId = h.net.machines.back().id;
+        buyMachine(h, Job::Proxy);
+        Machine& p = h.net.machines.back();
+        int pId = p.id;
+        CHECK(plugIn(h, p, *h.net.find(gwId)).ok, "plug a proxy into the bay");
+        setRole(h, *h.net.find(gwId), BayRole::Stealth);
+        {
+            RunSession r(h, testTarget(LockType::Keypad), 9);
+            std::string err;
+            CHECK(r.strikeUsable(gwId), "a STEALTH strike is ready");
+            double t0 = r.trace;
+            CHECK(r.strike(gwId, err), "BLACKOUT");
+            CHECK(r.freezeLeft == bal::STRIKE_BLACKOUT, "BLACKOUT sets the freeze");
+            r.guess("1234", err);
+            CHECK(r.trace == t0, "BLACKOUT holds the trace");
+            CHECK(!r.strike(gwId, err), "once per run");
+            r.disconnect();
+            int c0 = h.net.find(pId)->condition, g0 = h.net.find(gwId)->condition;
+            r.settle();
+            CHECK(h.net.find(pId)->condition < c0 && h.net.find(gwId)->condition <= g0 - bal::STRIKE_WEAR,
+                  "a strike wears every machine in the bay");
+        }
+        setRole(h, *h.net.find(gwId), BayRole::Siege);
+        {
+            RunSession r(h, testTarget(LockType::Keypad), 10);
+            std::string err;
+            CHECK(r.strike(gwId, err) && r.lock.known(0) && r.lock.known(1), "CRACK reveals two boxes");
+            r.disconnect();
+            r.settle();
+        }
+        setRole(h, *h.net.find(gwId), BayRole::Speed);
+        {
+            RunSession r(h, testTarget(LockType::None), 11);
+            std::string err;
+            CHECK(!r.strikeUsable(gwId), "MIRROR needs a download");
+            r.startDownload(0, err);
+            int left = r.actTotal - r.actDone;
+            CHECK(r.strike(gwId, err) && (r.actTotal - r.actDone < left || !r.busy()), "MIRROR jumps the download");
+            r.disconnect();
+            r.settle();
+        }
+        for (auto& m : h.net.machines) m.condition = 100;
+        CHECK(armDecoy(h, *h.net.find(gwId), true).ok, "arm a whole subnet as the decoy");
+        size_t before = h.net.machines.size();
+        RunSession r(h, testTarget(LockType::None), 12);
+        r.trace = 99.95;
+        std::string err;
+        r.startDownload(0, err);
+        while (!r.over()) r.step();
+        CHECK(r.end == End::Sacrifice, "the subnet takes the ticket");
+        CHECK(h.net.machines.size() == before - 2 && !h.net.find(pId) && !h.net.find(gwId), "the gateway's subnet is lost as a group");
+        long long fines = h.stats.finesPaid;
+        r.settle();
+        CHECK(h.wall.size() == 2 && h.stats.finesPaid == fines, "two nameplates; the fine is waived");
+        roundTrip(h);
+    }
+    // Prototypes: the only real tier 4.
+    {
+        Target t = testTarget(LockType::None);
+        t.kind = Kind::Prototype;
+        t.id = 1036;
+        t.stealable = true;
+        CHECK(hardwareFor(t).tier == 4 && traitFor(Kind::Prototype) == Trait::Unstable, "a prototype lab holds UNSTABLE T4");
+        Machine m;
+        m.captured = true;
+        m.tier = 4;
+        m.noise = 4;
+        m.condition = 80;
+        Machine u = m;
+        u.trait = Trait::Unstable;
+        CHECK(upkeepOf(u) > upkeepOf(m) && conditionAfterRun(u, false) < conditionAfterRun(m, false) && repairCost(u) > repairCost(m),
+              "UNSTABLE: bills more, wears double, repairs dear");
+        bool seen = false;
+        for (int map = 0; map < 30 && !seen; ++map) {
+            GameState h;
+            h.worldSeed = 99;
+            h.netUnlocked = true;
+            h.act = 2;
+            h.mapIndex = map;
+            for (auto& b : buildBoard(h)) if (b.kind == Kind::Prototype) {
+                seen = true;
+                CHECK(b.stealable && b.watchdog && b.security == 4 && !b.files.empty(), "prototype labs are hard");
+            }
+        }
+        CHECK(seen, "prototype listings appear on some boards");
+        GameState h;
+        h.worldSeed = 8;
+        h.credits = 20000;
+        unlockNetwork(h);
+        h.net.slots = bal::MAX_SLOTS;
+        RunSession r(h, t, 13);
+        CaptureQuote q = r.quote();
+        std::string err;
+        CHECK(q.possible && r.startHold(q.def, err), "start holding the prototype");
+        while (r.busy() && !r.over()) r.step();
+        CHECK(r.end == End::Steal && h.net.machines.back().tier == 4 && h.net.machines.back().trait == Trait::Unstable,
+              "capturing a prototype gives real T4 UNSTABLE hardware");
+        r.settle();
+        roundTrip(h);
+        CHECK(upgradeHome(h).ok || h.net.home()->tier <= 3, "N0 never passes tier 3");
+    }
+    if (!problems) std::printf("selftest: keypad marks, programs, jammer/vault, traits, memorial, subnets, strikes, prototypes - OK\n");
 }
 
 int main(int argc, char** argv) {
@@ -482,6 +704,7 @@ int main(int argc, char** argv) {
     int runs = argc > 2 ? std::atoi(argv[2]) : 25;
     std::string mode = argc > 3 ? argv[3] : "careful";
     CHAOS = mode == "chaos";
+    SUBNET = mode == "subnet";
     std::srand(static_cast<unsigned>(seed));
     auto dir = std::filesystem::temp_directory_path() / ("ghostnet-sim-" + std::to_string(seed) + "-" + mode);
     paths::overrideSaveDir(dir.string());
@@ -498,7 +721,8 @@ int main(int argc, char** argv) {
         auto usable = [&](const Target& t) { return !g.burned.count(t.id); };
         bool deepReady = g.netUnlocked && (g.knownPhrases.count(kDeepId) || CHAOS) &&
                          g.net.relayBonus() + g.net.proxyBonus() >= 45 && g.deck.uplink + g.deck.shroud >= 3;
-        bool early = st.deepAttempts == 0;
+        bool early = st.deepAttempts == 0 && !SUBNET;
+        if (SUBNET) deepReady = false;
         const Target* pick = nullptr;
         auto choose = [&](auto pred) {
             if (pick) return;
@@ -507,6 +731,9 @@ int main(int argc, char** argv) {
         if (early || deepReady) choose([](const Target& t) { return t.deep; });
         if (!g.knownPhrases.count(kDeepId)) choose([](const Target& t) { return t.kind == Kind::Side && t.sideIndex == kAnnexSide; });
         if (!CHAOS || i % 2 == 0) choose([](const Target& t) { return t.kind == Kind::Story && !t.deep; });
+        for (auto& b : board) if (b.kind == Kind::Prototype && usable(b)) ++st.protoSeen;
+        if (SUBNET) choose([&](const Target& t) { return t.kind == Kind::Prototype && g.net.bestScoutTier() > 0; });
+        if (SUBNET) choose([&](const Target& t) { return t.kind == Kind::Story && t.deep == false; });
         if (i % 3 == 1) choose([&](const Target& t) { return t.stealable && g.net.bestScoutTier() > 0; });
         bool strong = g.netUnlocked && g.net.proxyBonus() >= 9 && (g.deck.breaker >= 1 || CHAOS);
         auto rich = [](const Target& t) { return t.kind == Kind::Guarded || t.kind == Kind::Corporate || (t.kind == Kind::Side && t.sideIndex != kAnnexSide); };
@@ -519,8 +746,8 @@ int main(int argc, char** argv) {
         if (g.netUnlocked && !t.deep) scanTarget(g, t);
         ReportView rep = reportView(g, t);
         (void)panelBriefing(g, t);
-        bool wantSteal = t.stealable && g.net.bestScoutTier() > 0 && i % 3 == 1 && !t.deep &&
-                         g.net.externalCount() < bal::MAX_EXTERNAL - 4;
+        bool wantSteal = t.stealable && g.net.bestScoutTier() > 0 && (i % 3 == 1 || t.kind == Kind::Prototype) && !t.deep &&
+                         g.net.externalCount() < (t.kind == Kind::Prototype ? bal::MAX_EXTERNAL : bal::MAX_EXTERNAL - 4);
 
         RunSession r(g, t, seed * 7919 + static_cast<uint64_t>(i));
         ++st.runs;
@@ -540,6 +767,8 @@ int main(int argc, char** argv) {
         if (rk.deepWon) ++st.deepWon;
         if (!rk.storyOutro.empty() && !rk.deep) ++st.contracts;
         for (auto& l : rk.lines) if (l.text.find("UNPAID") != std::string::npos) ++st.unpaid;
+        if (rk.end == End::Steal && t.kind == Kind::Prototype) ++st.protos;
+        if (t.kind == Kind::Prototype) ++st.protoTries;
         if (rk.end == End::Sacrifice && rk.sacrificed.empty()) fail("sacrifice without a name");
         checkInvariants(g);
         roundTrip(g);
@@ -549,14 +778,16 @@ int main(int argc, char** argv) {
                     g.credits, g.net.relayBonus(), g.net.proxyBonus(), g.deck.breaker, g.deck.uplink, g.deck.shroud, g.act);
     }
     std::printf("\nSIM STATS seed=%llu mode=%s: runs %d contracts %d captures %d (tries %d) traceouts %d sacrifices %d phrases %d "
-                "extra %d honeypots %d bought %d decoys %d unpaid %d annex %d deep %d/%d won, shortfall screens %d\n",
+                "extra %d honeypots %d bought %d decoys %d unpaid %d annex %d deep %d/%d won, shortfall screens %d "
+                "gateways %d plugged %d strikes %d cluster-nights %d prototypes %d/%d tries/%d listed-nights\n",
                 static_cast<unsigned long long>(seed), mode.c_str(), st.runs, st.contracts, st.captures, st.steals, st.traceouts,
                 st.sacrifices, st.phrases, st.extra, st.honeypots, st.bought, st.decoys, st.unpaid, st.annex, st.deepWon, st.deepAttempts,
-                st.shortfalls);
+                st.shortfalls, st.gateways, st.plugged, st.strikes, st.clusters, st.protos, st.protoTries, st.protoSeen);
     std::error_code ec;
     std::filesystem::remove_all(dir, ec);
     if (problems) { std::printf("problems: %d\n", problems); return 1; }
     if (mode == "deep" && !st.deepWon) { std::printf("FAIL: the deep job was not beaten\n"); return 1; }
+    if (mode == "subnet" && st.plugged == 0) { std::printf("FAIL: the subnet bot never used a subnet\n"); return 1; }
     std::printf("problems: none\n");
     return 0;
 }

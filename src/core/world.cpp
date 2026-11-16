@@ -15,6 +15,7 @@ const char* kindName(Kind k) {
         case Kind::Shrine: return "SHRINE";
         case Kind::Story: return "CONTRACT";
         case Kind::Side: return "SIDE ROUTE";
+        case Kind::Prototype: return "PROTOTYPE";
     }
     return "?";
 }
@@ -49,8 +50,20 @@ HardwareSpec hardwareFor(Kind k) {
         case Kind::Hidden: return {Job::Scout, Job::Proxy, 2, 75, 2};
         case Kind::Guarded: return {Job::Proxy, Job::Compute, 2, 60, 3};
         case Kind::Corporate: return {Job::Compute, Job::Relay, 3, 45, 4};
+        case Kind::Prototype: return {Job::Gateway, Job::Relay, 4, 70, 4};
         default: return {Job::Relay, Job::Proxy, 1, 50, 2};
     }
+}
+
+HardwareSpec hardwareFor(const Target& t) {
+    HardwareSpec hw = hardwareFor(t.kind);
+    if (t.kind == Kind::Prototype) {   // which experiment sits in this lab, fixed per listing
+        static const Job pairs[3][2] = {{Job::Gateway, Job::Relay}, {Job::Proxy, Job::Jammer}, {Job::Compute, Job::Vault}};
+        int k = ((t.id / 10) % 3 + 3) % 3;
+        hw.def = pairs[k][0];
+        hw.alt = pairs[k][1];
+    }
+    return hw;
 }
 
 Trait traitFor(Kind k) {
@@ -59,6 +72,7 @@ Trait traitFor(Kind k) {
         case Kind::Hidden: return Trait::OldNet;
         case Kind::Guarded: return Trait::HotIron;
         case Kind::Corporate: return Trait::CorpBuild;
+        case Kind::Prototype: return Trait::Unstable;
         default: return Trait::None;
     }
 }
@@ -150,6 +164,8 @@ const std::vector<std::string> kShrineNames = {"The Stacks (public archive)", "O
                                                "Dead Drop Library", "Courier's Chapel"};
 const std::vector<std::string> kSideNames = {"Blacksite KESTREL", "Undersea Cable Tap 7", "Dark Ledger Annex",
                                              "Orbital Uplink Shadow", "Vault Beneath the Pier", "Project LAMPLIGHT"};
+const std::vector<std::string> kProtoNames = {"HELIOS Testbed LAZARUS", "Black-site ORACLE", "Skunkworks Node VANTA",
+                                              "Cold Lab PALISADE", "Prototype Bay 3", "Darkroom MERIDIAN"};
 const std::vector<std::string> kPhrases = {"MOTHWING", "LANTERN", "OLDHARBOR", "VELVETROPE", "CINDERFALL", "SALTMARSH",
                                            "BLUEHERON", "IRONCLAD", "GLASSWING", "NIGHTTIDE", "STAIRWELL", "SKYBRIDGE",
                                            "DRIFTWOOD", "STORMCELLAR", "LOWTIDE", "NEONRAIN"};
@@ -463,6 +479,25 @@ std::vector<Target> buildBoard(const GameState& g) {
         }
     }
     board.insert(board.begin() + 5, shrine);
+
+    // Sometimes, once you own hardware: a HELIOS black-site with prototype (tier 4) iron.
+    // Its own random stream, so the rest of the board is unchanged by it.
+    Rng pr(seedOf(g.worldSeed, 0x9707A00 + static_cast<uint64_t>(g.mapIndex)));
+    if (g.netUnlocked && g.act >= 2 && g.mapIndex >= 2 && pr.chance(0.45)) {
+        Target t;
+        t.id = 1000 + g.mapIndex * 10 + 6;
+        t.kind = Kind::Prototype;
+        t.security = 4;   // 5 makes the 30s anchor hold unsurvivable; the watchdog and bait make it hard enough
+        t.name = pr.pick(kProtoNames);
+        t.host = slug(t.name) + ".helios";
+        t.blurb = "A HELIOS black-site testbed. Tier 4 hardware nobody else has. Everything here wants you caught.";
+        t.lock = pr.chance(0.5) ? LockType::Rotor : LockType::Cipher;
+        t.watchdog = true;
+        t.stealable = true;
+        addPaydata(t, pr, 2, 1.2, sizeMin(t.security), sizeMax(t.security));
+        addHoneypot(t, pr);
+        board.push_back(t);
+    }
     return board;
 }
 

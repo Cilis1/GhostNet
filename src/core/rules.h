@@ -38,7 +38,7 @@ inline int anchorSeconds(const Target& t, bool viaPhrase) {
 
 // Starting condition / noise of the hardware if stolen right now.
 inline void captureQuote(const Target& t, bool honeypotTriggered, int& condition, int& noise) {
-    HardwareSpec hw = hardwareFor(t.kind);
+    HardwareSpec hw = hardwareFor(t);
     int taken = 0;
     for (auto& f : t.files)
         if (f.taken && (f.kind == FileKind::Paydata || f.kind == FileKind::Objective)) ++taken;

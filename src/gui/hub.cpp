@@ -28,6 +28,7 @@ const char* jobLetter(Job j) {
         case Job::Compute: return "C";
         case Job::Jammer: return "J";
         case Job::Vault: return "V";
+        case Job::Gateway: return "G";
     }
     return "?";
 }
@@ -40,6 +41,7 @@ const char* jobPitch(Job j) {
         case Job::Compute: return "one emergency guess per lock";
         case Job::Jammer: return "holds watchdogs back, softens alarms";
         case Job::Vault: return "keeps your best file if you're traced";
+        case Job::Gateway: return "opens a 3-slot SUBNET with a role";
     }
     return "";
 }
@@ -89,12 +91,14 @@ const HelpSection kHelp[] = {
                  "taken: everything but N0 goes dark and the decoy is disarmed. No debt. Earn credits, switch them back on."},
     {"THE DECOY", "Arm a running PROXY as the decoy. If the trace fills, HELIOS traces it instead of you: it is destroyed, the fine is "
                   "halved, and you keep the night. Its nameplate goes on the MEMORIAL WALL in Records."},
-    {"CAPTURE", "With a scout running, listings marked HW carry detachable hardware. Inside, CAPTURE HARDWARE shows a quote. Take "
-                "files first and it arrives more damaged. Corporate iron is tier 3."},
-    {"THE DEEP JOB", "A HELIOS archive tuned so no deck alone can finish it. You can try it the moment it appears; if you fall short "
-                     "the game tells you exactly how far."},
-    {"THE PANEL", "Three advisor AIs - VESPER (risk), LEDGER (money), MOTH (intel) - read your meters and vote before a run. They "
-                  "never solve a lock for you. No idle income, no timers, no raids: nothing happens while you're away."},
+    {"CAPTURE", "With a scout running, listings marked HW carry detachable hardware. Take files first and it arrives more damaged. "
+                "Corporate iron is tier 3. Rare HELIOS PROTOTYPE labs hold the only real tier 4: UNSTABLE, loud and dear to run."},
+    {"SUBNETS", "A GATEWAY opens a subnet: 3 more slots with their own power, bill and caps, a role (STEALTH, SPEED, SIEGE) and one "
+                "STRIKE per run (BLACKOUT, MIRROR, CRACK) that wears the whole subnet. Three matching T3+ machines act one tier higher "
+                "while together - pull one and it ends. Arm the gateway as decoy and the subnet burns with it."},
+    {"THE DEEP JOB", "A HELIOS archive tuned so no deck alone can finish it. Try it any time; fall short and you see how far."},
+    {"THE PANEL", "VESPER (risk), LEDGER (money) and MOTH (intel) vote before a run. No idle income, no timers: nothing happens while "
+                  "you're away."},
 };
 }  // namespace
 
@@ -166,6 +170,7 @@ void App::drawHub() {
     }
 
     Rectangle area{24, 122, 1232, 566};
+    hoverHint.clear();
     switch (tab) {
         case Tab::Rack: g.netUnlocked ? drawRack(area) : drawLockedRack(area); break;
         case Tab::Board: drawBoard(area); break;
@@ -176,6 +181,15 @@ void App::drawHub() {
             panel(area, C_PURPLE, "HOW TO PLAY");
             drawHelp(Rectangle{area.x + 20, area.y + 24, area.width - 40, area.height - 40});
             break;
+    }
+    if (!hoverHint.empty() && modals.empty()) {
+        auto ls = wrap(F::Mono, hoverHint, 300, 13);
+        float hh = 14 + ls.size() * 18.0f;
+        float hx = gx::mouse.x + 18 + 330 > W - 6 ? gx::mouse.x - 18 - 330 : gx::mouse.x + 18;
+        Rectangle hr{hx, std::max(6.0f, std::min(gx::mouse.y - hh - 12, H - hh - 10.0f)), 330, hh};
+        DrawRectangleRec(hr, fade(Color{6, 6, 20, 255}, 0.96f));
+        DrawRectangleLinesEx(hr, 1, fade(C_CYAN, 0.6f));
+        for (size_t k = 0; k < ls.size(); ++k) text(F::Mono, ls[k], hr.x + 12, hr.y + 7 + k * 18, 13, C_TEXT);
     }
 }
 
@@ -228,13 +242,17 @@ void App::drawRack(Rectangle area) {
     panel(left, C_CYAN, "GHOSTNET // YOUR SERVER MESH");
     Network& n = g.net;
 
-    Vector2 c{left.x + 390, left.y + 245};
-    float rx = 250, ry = 155;
-    std::vector<Machine*> active, stored;
+    std::vector<Machine*> active, stored, gateways;
     for (auto& m : n.machines) {
         if (m.home) continue;
-        (m.active ? active : stored).push_back(&m);
+        if (m.job == Job::Gateway && m.bay < 0) gateways.push_back(&m);
+        if (!m.active) stored.push_back(&m);
+        else if (m.bay < 0) active.push_back(&m);
     }
+    // With a gateway in the rack, the ring moves left and the subnets get the right-hand column.
+    const bool subnets = !gateways.empty();
+    Vector2 c{left.x + (subnets ? 280.0f : 390.0f), left.y + 245};
+    float rx = subnets ? 185.0f : 250.0f, ry = 155;
     int ring = std::max(1, n.slots - 1);
     std::vector<Vector2> pos(static_cast<size_t>(ring));
     for (int i = 0; i < ring; ++i) {
@@ -298,11 +316,73 @@ void App::drawRack(Rectangle area) {
     for (size_t i = 0; i < active.size() && i < pos.size(); ++i) drawMachine(*active[i], pos[i], 28);
     if (Machine* h = n.home()) drawMachine(*h, c, 38);
 
+    // Subnets: one box per gateway (up to MAX_BAYS open), linked to the gateway's slot.
+    for (size_t gi = 0; gi < gateways.size() && gi < 2; ++gi) {
+        Machine& gw = *gateways[gi];
+        Rectangle box{left.x + 540, left.y + 44 + gi * 178.0f, 224, 166};
+        bool open = n.bayOpen(gw), online = n.bayOnline(gw);
+        Color rc = roleColor(gw.role);
+        Color edge = !open ? C_DARK : online ? rc : gw.bayOn ? C_RED : C_DIM;
+        for (size_t i = 0; i < active.size() && i < pos.size(); ++i)
+            if (active[i] == &gw) {
+                Vector2 to{box.x, box.y + 40};
+                glowLine(pos[i], to, fade(edge, 0.5f), 1.2f);
+                if (online) tracer(pos[i], to, gx::now * 0.8f + gi * 0.5f, rc, 2);
+            }
+        DrawRectangleRec(box, fade(edge, 0.06f));
+        DrawRectangleLinesEx(box, selMachine == gw.id ? 2.0f : 1.0f, fade(edge, 0.85f));
+        text(F::Display, "SUBNET " + gw.name, box.x + 10, box.y + 8, 11, edge);
+        std::string st = !open ? (gw.active ? "CLOSED" : "GATEWAY STORED") : !gw.bayOn ? "OFF" : online ? roleName(gw.role)
+                       : n.bayMembers(gw.id).empty() ? "EMPTY" : "BROWNOUT";
+        text(F::MonoBold, st, box.x + box.width - 10, box.y + 8, 11, online ? rc : C_RED, Right);
+        auto members = n.bayMembers(gw.id);
+        bool cluster = n.clusterBonus(gw.id) != 0;
+        for (int k = 0; k < bal::BAY_SLOTS; ++k) {
+            Vector2 p{box.x + 40 + k * 72.0f, box.y + 60};
+            if (k < static_cast<int>(members.size())) {
+                Machine& m = *n.find(members[static_cast<size_t>(k)]->id);
+                bool on = n.online(m);
+                Color col = on ? jobColor(m.job) : C_DARK;
+                int et = n.effTier(m);
+                hexNode(p, 20, col, on ? 0.18f : 0.05f);
+                glowText(F::Display, jobLetter(m.job), p.x, p.y - 11, 16, on ? WHITE : C_DIM, Center, 0.7f);
+                text(F::MonoBold, "T" + std::to_string(et), p.x, p.y + 6, 10, et > m.tier ? pulse(C_AMBER, 3) : fade(col, 0.95f), Center);
+                float cond = m.condition / 100.0f;
+                DrawRing(p, 23, 25, -90, -90 + 360 * cond, 32, mix(C_RED, C_GREEN, cond));
+                text(F::Mono, m.name.substr(0, 10), p.x, p.y + 29, 10, selMachine == m.id ? WHITE : C_TEXT, Center);
+                if (selMachine == m.id) brackets(Rectangle{p.x - 32, p.y - 30, 64, 76}, pulse(WHITE, 4, 0.5f), 8, 2);
+                if (hitArea(Rectangle{p.x - 30, p.y - 26, 60, 66}, m.name)) {
+                    selMachine = m.id;
+                    sfx::play(sfx::Click);
+                }
+            } else {
+                DrawPolyLinesEx(p, 6, 20, 30, 1, fade(C_DIM, 0.5f));
+                text(F::Mono, "free", p.x, p.y - 6, 10, fade(C_DIM, 0.7f), Center);
+            }
+        }
+        if (cluster) {
+            DrawLineEx(Vector2{box.x + 40, box.y + 60}, Vector2{box.x + 184, box.y + 60}, 1, fade(C_AMBER, 0.4f));
+            glowText(F::Display, "CLUSTER: ACTING T" + std::to_string(n.effTier(*n.find(members[0]->id))), box.x + box.width / 2, box.y + 104, 11,
+                     pulse(C_AMBER, 3), Center);
+        }
+        text(F::Mono, "POWER", box.x + 10, box.y + 124, 11, C_DIM);
+        int pw = n.bayPower(gw.id), bud = n.bayBudget(gw);
+        pips(box.x + 60, box.y + 125, pw, bud, pw > bud ? C_RED : rc, 7, 2);
+        text(F::Mono, std::to_string(pw) + "/" + std::to_string(bud), box.x + box.width - 10, box.y + 124, 11, pw > bud ? C_RED : C_TEXT, Right);
+        text(F::Mono, "BILL " + std::to_string(n.bayUpkeep(gw.id)) + "cr/run", box.x + 10, box.y + 144, 11, C_AMBER);
+        text(F::Mono, std::string(strikeName(gw.role)) + " x1", box.x + box.width - 10, box.y + 144, 11, online ? rc : C_DIM, Right);
+        if (hitArea(Rectangle{box.x, box.y, box.width, 30}, "subnet " + gw.name)) {
+            selMachine = gw.id;
+            sfx::play(sfx::Click);
+        }
+    }
+
     // Cold storage tray.
     float ty = left.y + left.height - 112;
     DrawRectangleGradientV(static_cast<int>(left.x + 1), static_cast<int>(ty - 10), static_cast<int>(left.width - 2), 2, fade(C_CYAN, 0.3f), fade(C_CYAN, 0));
     text(F::Display, "COLD STORAGE", left.x + 20, ty, 12, C_DIM);
-    text(F::Mono, "free, no wear, counts toward the 10-machine limit", left.x + 150, ty + 1, 12, fade(C_DIM, 0.8f));
+    text(F::Mono, "free, no wear, counts toward the " + std::to_string(bal::MAX_EXTERNAL) + "-machine limit", left.x + 150, ty + 1, 12,
+         fade(C_DIM, 0.8f));
     if (stored.empty()) text(F::Mono, "(empty)", left.x + 20, ty + 34, 13, fade(C_DIM, 0.7f));
     for (size_t i = 0; i < stored.size() && i < 6; ++i) {
         Machine& m = *stored[i];
@@ -336,7 +416,10 @@ void App::drawRack(Rectangle area) {
     for (auto& m : n.machines) worth += scrapValue(m);
     const Machine* decoy = n.decoy();
     struct Row { const char* k; std::string v; Color c; };
-    Row rows[4] = {{"MACHINES RUNNING", std::to_string(n.activeCount()) + " / " + std::to_string(n.slots) + " slots", C_CYAN},
+    int inBays = 0;
+    for (auto& m : n.machines) if (m.bay >= 0 && m.active) ++inBays;
+    Row rows[4] = {{"MACHINES RUNNING", std::to_string(n.activeCount()) + " / " + std::to_string(n.slots) + " slots" +
+                                            (inBays ? " +" + std::to_string(inBays) + " subnet" : std::string()), C_CYAN},
                    {"WORTH (SCRAP)", cr(worth), C_AMBER},
                    {"NEXT RUN COSTS", cr(n.upkeepTotal()), n.upkeepTotal() > g.credits ? C_RED : C_TEXT},
                    {"ARMED TO DIE", decoy ? decoy->name : std::string("nobody"), decoy ? C_RED : C_DIM}};
@@ -350,7 +433,7 @@ void App::drawRack(Rectangle area) {
     text(F::Mono, fx, right.x + 20, right.y + 126, 12, fade(C_CYAN, 0.9f));
     const Machine* vault = n.bestVault();
     std::string fx2 = "JAM " + std::to_string(n.jamDelay()) + "s / -" + std::to_string(n.jamSpikeCut()) + "% SPIKES   VAULT " +
-                      (vault ? std::to_string(bal::VAULT_KEEP[vault->tier]) + "%" : std::string("none"));
+                      (vault ? std::to_string(bal::VAULT_KEEP[n.effTier(*vault)]) + "%" : std::string("none"));
     text(F::Mono, fx2, right.x + 20, right.y + 144, 12, fade(C_PURPLE, 0.95f));
     DrawRectangle(static_cast<int>(right.x + 16), static_cast<int>(right.y + 164), static_cast<int>(right.width - 32), 1, fade(C_MAGENTA, 0.4f));
     Rectangle body{right.x + 16, right.y + 172, right.width - 32, right.height - 182};
@@ -365,17 +448,21 @@ void App::drawRack(Rectangle area) {
 void App::drawMachinePanel(Rectangle a, Machine& m) {
     Color col = m.dark() ? C_DIM : jobColor(m.job);
     glowText(F::Display, m.name, a.x + 4, a.y, 22, col, Left, 0.9f);
-    std::string kind = std::string(jobName(m.job)) + "  //  TIER " + std::to_string(m.tier) + "  //  " +
-                       (m.home ? "HOME" : m.captured ? "CAPTURED" : "BOUGHT") + (m.active ? "" : "  //  STORED");
+    const int et = g.net.effTier(m);
+    const Machine* myGw = m.bay >= 0 ? g.net.find(m.bay) : nullptr;
+    std::string kind = std::string(jobName(m.job)) + "  //  TIER " + std::to_string(m.tier) + (et > m.tier ? " (ACTS T" + std::to_string(et) + ")" : "") +
+                       "  //  " + (m.home ? "HOME" : m.captured ? "CAPTURED" : "BOUGHT") +
+                       (!m.active ? "  //  STORED" : myGw ? "  //  IN " + myGw->name : "");
     text(F::Mono, kind, a.x + 4, a.y + 30, 12, C_TEXT);
     float y = a.y + 50;
     if (m.trait != Trait::None) {
-        Color tc = m.trait == Trait::HotIron ? C_RED : m.trait == Trait::OldNet ? C_PURPLE : m.trait == Trait::CorpBuild ? C_CYAN : C_AMBER;
+        Color tc = m.trait == Trait::HotIron ? C_RED : m.trait == Trait::OldNet ? C_PURPLE : m.trait == Trait::CorpBuild ? C_CYAN
+                 : m.trait == Trait::Unstable ? kindColor(Kind::Prototype) : C_AMBER;
         float tw = tag(a.x + 4, y, traitName(m.trait), tc, 11);
         para(F::Mono, traitText(m.trait), a.x + tw + 12, y, a.width - tw - 16, 11, fade(tc, 0.9f), 1.25f, 2);
         y += 30;
     }
-    y += para(F::Mono, m.origin, a.x + 4, y, a.width - 8, 12, C_DIM, 1.3f, m.trait != Trait::None ? 1 : 2) + 6;
+    y += para(F::Mono, m.origin, a.x + 4, y, a.width - 8, 12, C_DIM, 1.3f, m.trait != Trait::None || m.job == Job::Gateway ? 1 : 2) + 6;
     if (!m.home) {
         text(F::Mono, "CONDITION " + std::to_string(m.condition), a.x + 4, y, 12, C_TEXT);
         progress(Rectangle{a.x + 120, y + 2, a.width - 124, 10}, m.condition / 100.0f, mix(C_RED, C_GREEN, m.condition / 100.0f), false);
@@ -385,29 +472,56 @@ void App::drawMachinePanel(Rectangle a, Machine& m) {
         text(F::Mono, "UPKEEP " + std::to_string(upkeepOf(m)) + "cr/run", a.x + a.width - 4, y, 12, C_AMBER, Right);
         y += 22;
     }
-    y += para(F::Mono, describeEffect(m), a.x + 4, y, a.width - 8, 12, fade(col, 0.95f), 1.3f, 3) + 10;
+    y += para(F::Mono, describeEffect(m, et), a.x + 4, y, a.width - 8, 12, fade(col, 0.95f), 1.3f, m.job == Job::Gateway ? 2 : 3) + 10;
 
-    float bw = (a.width - 10) / 2, bh = 32;
-    auto at = [&](int i) { return Rectangle{a.x + (i % 2) * (bw + 10), y + (i / 2) * (bh + 8), bw, bh}; };
+    const bool compact = m.job == Job::Gateway || m.bay >= 0 || !g.net.openBays().empty();   // six buttons + a row
+    float bw = (a.width - 10) / 2, bh = compact ? 28.0f : 32.0f, gap = compact ? 6.0f : 8.0f;
+    auto at = [&](int i) { return Rectangle{a.x + (i % 2) * (bw + 10), y + (i / 2) * (bh + gap), bw, bh}; };
     int i = 0;
+    // The first open subnet that would take this machine right now.
+    Machine* plugTo = nullptr;
+    std::string plugWhy;
+    if (!m.home && m.job != Job::Gateway && m.bay < 0)
+        for (auto* gw : g.net.openBays()) {
+            Machine* G = g.net.find(gw->id);
+            std::string why;
+            if (canPlug(g, m, *G, &why)) { plugTo = G; break; }
+            if (plugWhy.empty()) plugWhy = why;
+        }
     if (!m.home) {
-        if (m.active) {
+        if (m.bay >= 0) {
+            if (button(at(i++), "UNPLUG", C_DIM)) result(unplug(g, m));
+            if (button(at(i++), "TO MAIN RACK", C_GREEN, g.net.activeCount() < g.net.slots)) result(activate(g, m));
+        } else if (m.active) {
             if (button(at(i++), "STORE", C_DIM)) result(deactivate(g, m));
         } else if (button(at(i++), "SWITCH ON", C_GREEN, !m.dark())) {
             result(activate(g, m));
+        }
+        if (!g.net.openBays().empty() && m.job != Job::Gateway && m.bay < 0) {
+            Rectangle pr = at(i++);
+            if (button(pr, plugTo ? "PLUG INTO " + plugTo->name : std::string("SUBNET FULL"), Color{255, 140, 60, 255}, plugTo != nullptr))
+                result(plugIn(g, m, *plugTo));
+            if (!plugTo && gx::hovered(pr) && !plugWhy.empty()) hoverHint = plugWhy;
+        }
+        if (m.job == Job::Gateway) {
+            if (button(at(i++), m.bayOn ? "SUBNET: ON" : "SUBNET: OFF", m.bayOn ? C_GREEN : C_DIM)) result(toggleBay(g, m));
         }
         int cost = repairCost(m);
         if (button(at(i++), m.condition >= 100 ? "PRISTINE" : "REPAIR " + std::to_string(cost) + "cr", C_CYAN, m.condition < 100))
             result(repairOne(g, m));
         if (g.net.decoyId == m.id) {
             if (button(at(i++), "DISARM DECOY", C_RED)) result(disarmDecoy(g));
-        } else if (button(at(i++), "ARM AS DECOY", C_RED, m.job == Job::Proxy && m.working())) {
+        } else if (button(at(i++), m.job == Job::Gateway ? "ARM SUBNET AS DECOY" : "ARM AS DECOY", C_RED,
+                          (m.job == Job::Proxy && g.net.online(m)) || (m.job == Job::Gateway && g.net.bayOnline(m)))) {
             Result r = armDecoy(g, m, false);
             if (r.msg == "confirm") {
                 int id = m.id;
-                confirm("ARM " + m.name + " AS THE DECOY?",
-                        "You bought this machine. If the trace fills on a run, HELIOS traces " + m.name +
-                            " instead of you: it is DESTROYED, for good. You keep the night and the fine is halved.",
+                std::string body = m.job == Job::Gateway
+                    ? "If the trace fills on a run, HELIOS traces " + m.name + " AND EVERY MACHINE IN ITS SUBNET (" +
+                          std::to_string(g.net.bayMembers(m.id).size()) + "). All of them are DESTROYED, for good. You keep the night and the fine is waived."
+                    : "You bought this machine. If the trace fills on a run, HELIOS traces " + m.name +
+                          " instead of you: it is DESTROYED, for good. You keep the night and the fine is halved.";
+                confirm("ARM " + m.name + (m.job == Job::Gateway ? "'S SUBNET" : "") + " AS THE DECOY?", body,
                         "ARM IT", C_RED, [this, id] {
                             if (Machine* mm = g.net.find(id)) result(armDecoy(g, *mm, true));
                         });
@@ -416,7 +530,8 @@ void App::drawMachinePanel(Rectangle a, Machine& m) {
             }
         }
         int value = scrapValue(m);
-        if (button(at(i++), "SCRAP +" + std::to_string(value) + "cr", C_AMBER, g.net.decoyId != m.id)) {
+        bool hasBay = m.job == Job::Gateway && !g.net.bayMembers(m.id).empty();
+        if (button(at(i++), "SCRAP +" + std::to_string(value) + "cr", C_AMBER, g.net.decoyId != m.id && !hasBay)) {
             int id = m.id;
             confirm("SCRAP " + m.name + "?",
                     "Strip it for parts: +" + std::to_string(value) + "cr, exactly. It is gone for good - this is the only way you lose a "
@@ -444,15 +559,35 @@ void App::drawMachinePanel(Rectangle a, Machine& m) {
         };
         pushModal(md);
     }
-    y += ((i + 1) / 2) * (bh + 8) + 8;
-    text(F::Display, "RE-JOB  " + std::to_string(rejobFee(m)) + "cr", a.x + 4, y, 12, C_DIM);
-    text(F::Mono, "keeps tier, condition, noise, name, trait", a.x + a.width - 4, y + 1, 11, fade(C_DIM, 0.8f), Right);
-    y += 20;
-    float jw = (a.width - 5 * 4) / kJobCount;
-    for (int j = 0; j < kJobCount; ++j) {
-        Job job = static_cast<Job>(j);
-        bool ok = job != m.job && g.net.decoyId != m.id;
-        if (button(Rectangle{a.x + j * (jw + 4), y, jw, 30}, jobName(job), jobColor(job), ok, false, 10)) result(rejob(g, m, job));
+    y += ((i + 1) / 2) * (bh + gap) + (compact ? 4 : 8);
+    if (m.job == Job::Gateway && !g.net.bayMembers(m.id).empty()) {
+        // The subnet's role, set between runs.
+        int pw = g.net.bayPower(m.id), bud = g.net.bayBudget(m);
+        text(F::Display, "SUBNET ROLE", a.x + 4, y, 12, C_DIM);
+        text(F::Mono, std::to_string(g.net.bayMembers(m.id).size()) + "/" + std::to_string(bal::BAY_SLOTS) + "  POWER " + std::to_string(pw) + "/" +
+                          std::to_string(bud) + "  BILL " + std::to_string(g.net.bayUpkeep(m.id)) + "cr",
+             a.x + a.width - 4, y + 1, 11, pw > bud ? C_RED : fade(C_DIM, 0.9f), Right);
+        y += 20;
+        float rw = (a.width - 2 * 6) / kRoleCount;
+        for (int k = 0; k < kRoleCount; ++k) {
+            BayRole role = static_cast<BayRole>(k);
+            Rectangle rr{a.x + k * (rw + 6), y, rw, 30};
+            bool cur = m.role == role;
+            if (button(rr, cur ? std::string("> ") + roleName(role) : std::string(roleName(role)), roleColor(role), !cur, false, 11))
+                result(setRole(g, m, role));
+            if (gx::hovered(rr)) hoverHint = std::string(roleText(role)) + "\nStrike: " + strikeName(role) + ". " + strikeText(role);
+        }
+    } else {
+        text(F::Display, "RE-JOB  " + std::to_string(rejobFee(m)) + "cr", a.x + 4, y, 12, C_DIM);
+        text(F::Mono, "keeps tier, condition, noise, name, trait", a.x + a.width - 4, y + 1, 11, fade(C_DIM, 0.8f), Right);
+        y += 20;
+        float jw = (a.width - (kJobCount - 1) * 3) / kJobCount;
+        for (int j = 0; j < kJobCount; ++j) {
+            Job job = static_cast<Job>(j);
+            bool ok = job != m.job && g.net.decoyId != m.id && !(job == Job::Gateway && m.bay >= 0);
+            if (button(Rectangle{a.x + j * (jw + 3), y, jw, 30}, jobLetter(job), jobColor(job), ok, false, 12)) result(rejob(g, m, job));
+            if (gx::hovered(Rectangle{a.x + j * (jw + 3), y, jw, 30})) hoverHint = std::string(jobName(job)) + ": " + jobPitch(job);
+        }
     }
     if (button(Rectangle{a.x, a.y + a.height - 34, a.width, 32}, "BACK TO HARDWARE", C_DIM, true, false, 12)) selMachine = -1;
 }
@@ -467,14 +602,14 @@ void App::drawShop(Rectangle a) {
         hexNode(Vector2{a.x + 16, y + 16}, 12, col, 0.2f);
         text(F::Display, jobLetter(job), a.x + 16, y + 9, 12, WHITE, Center);
         text(F::MonoBold, jobName(job), a.x + 38, y + 2, 13, col);
-        text(F::Mono, jobPitch(job), a.x + 38, y + 19, 11, C_DIM);
+        text(F::Mono, jobPitch(job), a.x + 38, y + 18, 11, C_DIM);
         int price = bal::BUY_PRICE[j];
-        if (button(Rectangle{a.x + a.width - 110, y + 2, 110, 30}, std::to_string(price) + " CR", col, g.credits >= price, false, 13)) {
+        if (button(Rectangle{a.x + a.width - 110, y + 2, 110, 28}, std::to_string(price) + " CR", col, g.credits >= price, false, 13)) {
             Result r = buyMachine(g, job);
             result(r);
             if (r.ok) sfx::play(sfx::Boot, 0.6f);
         }
-        y += 38;
+        y += 33;
     }
     y += 4;
     DrawRectangle(static_cast<int>(a.x), static_cast<int>(y), static_cast<int>(a.width), 1, fade(C_MAGENTA, 0.3f));

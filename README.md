@@ -67,7 +67,7 @@ all three locks with no trace and no bill.
     screen at no time cost. Only one may run against a given lock; unused ones refund in full.
     FREEZE 120 (trace stands still 4s), PEEK 90 (reveal one box of the lock), SPOOF 80
     (the next bait file is defused), BURST 70 (next 5 download seconds at ×2, trace ×1.5).
-* **GhostNet** (unlocks after your first contract): N0 plus up to 10 machines.
+* **GhostNet** (unlocks after your first contract): N0 plus up to 14 machines.
   * **Relay** speeds downloads.
   * **Proxy** slows the trace.
   * **Scout** gives target reports and reveals `[HW]` listings.
@@ -76,15 +76,37 @@ all three locks with no trace and no bill.
     and softens lockout, wrong-phrase and honeypot spikes (20/30/40%, cap 50%).
   * **Vault**: if you're traced out, your best working vault keeps 60/80/100% of your
     single most valuable downloaded file.
-  * Bought machines are clean tier 2: Relay 400, Jammer 425, Scout 450, Vault 475, Proxy 500, Compute 550.
+  * **Gateway** opens a subnet (see below).
+  * Bought machines are clean tier 2: Relay 400, Jammer 425, Scout 450, Vault 475, Proxy 500, Compute 550, Gateway 700.
   * **Origin traits** are fixed for life on captured machines: *Salvaged* (open servers:
     repairs 1cr/pt, +2 wear), *Old Net* (hidden: wear never drops it below 30 except on a
     trace-out, re-jobs cost double), *Hot Iron* (guarded: fine waived if it dies as your
     decoy, bills +10%), *Corporate Build* (corporate: 60% wear, bills +20%).
   * Tier 3 comes only from upgrading N0 or stealing corporate iron.
+  * **Prototypes (tier 4):** rare HELIOS black-site listings (security 4, a watchdog and a bait
+    file) hold the only real tier 4 in the city. It is *Unstable* for life: double wear,
+    repairs at 3cr/pt and bills +40%.
+* **Subnets** (0.5): a running **Gateway** in the main rack opens a separate bay of 3 slots
+  (up to 2 subnets). Machines plugged into it don't use main-rack slots.
+  * Each subnet has its own **power budget** (5/7/9/12 by gateway tier; a member draws
+    1/2/3/5 by tier). Over budget it browns out. It also has its own **bill**, its own relay
+    and proxy caps (30% / 18%, under hard caps of 90% / 50%), and a **power switch**.
+    Switched off, it doesn't bill, wear or do anything.
+  * **Roles**, set between runs: STEALTH (trace slower), SPEED (downloads faster), SIEGE
+    (+1 emergency attempt, softer alarm spikes).
+  * **Strikes:** once per run, each subnet that was online when you connected can strike
+    to match its role. BLACKOUT freezes the trace 8s, MIRROR lands 12s of the current
+    download at once, and CRACK reveals 2 boxes of the lock. A strike costs no time, but
+    every machine in that subnet takes 8 wear after the run.
+  * **Clusters:** three matching tier 3+ machines in one subnet act one tier higher (T4, or
+    T5 from prototypes) *while they're together*. Nothing is merged: pull one out and the
+    bonus ends.
+  * If a subnet's bill can't be paid, only that subnet powers down. Arm its **gateway as the
+    decoy** and the whole subnet burns with it. Every machine gets a nameplate, and the fine
+    is waived.
 * **The bill:** running machines bill you after a run that does something. If you can't
   pay, nothing is taken and everything except N0 goes dark. There is never debt.
-* **Decoy:** arm a Proxy. If the trace fills, HELIOS traces it instead of you. The decoy
+* **Decoy:** arm a Proxy (or a whole subnet, by its Gateway). If the trace fills, HELIOS traces it instead of you. The decoy
   is destroyed, the fine is halved, and you keep the night. Its nameplate goes on the
   **Memorial Wall** in Records.
 * **The deep job** is tuned so that no deck alone can finish it. You can try it as soon
@@ -127,9 +149,9 @@ all, for CI. That build only takes `--shots DIR`.
 
 * `ctest --test-dir build` runs:
   * the installer's JSON / manifest / file-name validation tests;
-  * `ghostnet_sim`, an automated player (`tests/sim_bot.cpp`) that plays the real rules end to end. It solves locks only from their feedback and learns passphrases only by reading files. There are three modes: `careful`, `chaos` (lockouts, trace-outs, decoy sacrifices, unpaid bills) and `deep`. Deep fails unless the bot builds a network and beats the deep job, after one doomed early attempt that checks the shortfall readout.
+  * `ghostnet_sim`, an automated player (`tests/sim_bot.cpp`) that plays the real rules end to end. It solves locks only from their feedback and learns passphrases only by reading files. There are four modes: `careful`, `chaos` (lockouts, trace-outs, decoy sacrifices, unpaid bills), `deep`, and `subnet` (gateways, strikes and prototype captures over 70 runs). Deep fails unless the bot builds a network and beats the deep job, after one doomed early attempt that checks the shortfall readout.
 * `gui_autoplay` (headless builds): the game plays its own UI through a simulated 1600×1000 window using only mouse clicks and typing: practice range, new game, every hub tab, the first contract (lock typed and clicked), the reckoning, naming N0, buying, storing and switching on a machine, save & quit, continue. A dead button or mouse mapping that misses fails the build.
-* `build/GhostNet --shots shots` drives every screen of the actual front end and saves 24 screenshots. CI does this on every push and uploads them as the **screenshots** artifact.
+* `build/GhostNet --shots shots` drives every screen of the actual front end and saves 30 screenshots. CI does this on every push and uploads them as the **screenshots** artifact.
 * `GhostNet-Setup.exe --selftest`: the downloader's offline security self-test.
 
 ## Releasing

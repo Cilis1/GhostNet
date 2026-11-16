@@ -151,6 +151,11 @@ void App::handleEvents() {
                 flash = 0.4f, flashColor = C_MAGENTA;
                 floats.push_back({"SPOOFED", C_MAGENTA, Vector2{636, 380}, gx::now});
                 break;
+            case Ev::Strike:
+                sfx::play(sfx::Boot);
+                flash = 0.5f, flashColor = Color{255, 140, 60, 255}, glitch = 0.5f, shake = 0.3f;
+                floats.push_back({e.text, Color{255, 140, 60, 255}, Vector2{636, 380}, gx::now});
+                break;
         }
     }
     run->events.clear();
@@ -343,11 +348,12 @@ void App::drawRoute(Rectangle a) {
     RunSession& r = *run;
     panel(a, C_CYAN, "ROUTE");
     Vector2 top{a.x + a.width / 2, a.y + 70};
-    Vector2 bottom{a.x + a.width / 2, a.y + 290};
+    const bool strikes = !r.strikeBays.empty();   // room for a row of subnet strikes
+    Vector2 bottom{a.x + a.width / 2, a.y + (strikes ? 250.0f : 290.0f)};
     std::vector<const Machine*> nodes;
     if (g.netUnlocked)
         for (auto& m : g.net.machines)
-            if (m.working()) nodes.push_back(&m);
+            if (g.net.online(m) && m.bay < 0) nodes.push_back(&m);
     std::vector<Vector2> chain;
     chain.push_back(bottom);
     int n = static_cast<int>(std::min<size_t>(nodes.size(), 5));
@@ -378,14 +384,22 @@ void App::drawRoute(Rectangle a) {
         const Machine& m = *nodes[static_cast<size_t>(i)];
         Vector2 p = chain[static_cast<size_t>(i) + 1];
         hexNode(p, 15, jobColor(m.job), 0.2f);
-        text(F::MonoBold, m.name, p.x + ((i % 2) ? 22.0f : -22.0f), p.y - 7, 11, C_TEXT, (i % 2) ? Left : Right);
+        std::string nm = m.name;
+        if (m.job == Job::Gateway && g.net.bayOnline(m)) {   // a subnet hangs off its gateway
+            nm += " +" + std::to_string(g.net.bayMembers(m.id).size());
+            for (int k = 0; k < 3; ++k) {
+                float ang = gx::now * 1.4f + k * 2.094f;
+                DrawCircleV(Vector2{p.x + std::cos(ang) * 21, p.y + std::sin(ang) * 21}, 2.5f, roleColor(m.role));
+            }
+        }
+        text(F::MonoBold, nm, p.x + ((i % 2) ? 22.0f : -22.0f), p.y - 7, 11, C_TEXT, (i % 2) ? Left : Right);
         if (g.net.decoyId == m.id) DrawRing(p, 20, 22, gx::now * 120, gx::now * 120 + 270, 16, C_RED);
     }
     hexNode(bottom, 24, C_PURPLE, 0.25f);
     text(F::Display, "YOU", bottom.x, bottom.y - 7, 12, WHITE, Center);
     text(F::Mono, "your deck", bottom.x, bottom.y + 32, 12, C_DIM, Center);
 
-    float y = a.y + 334;
+    float y = a.y + (strikes ? 294.0f : 334.0f);
     auto row = [&](const std::string& k, const std::string& v, Color c) {
         text(F::Mono, k, a.x + 20, y, 12, C_DIM);
         text(F::MonoBold, v, a.x + a.width - 20, y, 13, c, Right);
@@ -412,6 +426,29 @@ void App::drawRoute(Rectangle a) {
 
     // Deck programs: two single-use slots. Running one costs no time.
     float py = a.y + a.height - 104;
+    // Subnet strikes: once per run per subnet that was online at connect. Free; wears the subnet after.
+    if (strikes) {
+        int ns = static_cast<int>(std::min<size_t>(r.strikeBays.size(), 2));
+        float sw = (a.width - 40 - 8 * (ns - 1)) / ns;
+        for (int i = 0; i < ns; ++i) {
+            int gid = r.strikeBays[static_cast<size_t>(i)];
+            const Machine* gw = g.net.find(gid);
+            if (!gw) continue;
+            bool spent = std::find(r.strikesUsed.begin(), r.strikesUsed.end(), gid) != r.strikesUsed.end();
+            std::string why;
+            bool ok = r.strikeUsable(gid, &why);
+            Rectangle br{a.x + 20 + i * (sw + 8), py - 38, sw, 30};
+            std::string lbl = spent ? std::string("SPENT") : std::string(strikeName(gw->role));
+            if (button(br, lbl, roleColor(gw->role), ok && modals.empty(), false, 11)) {
+                std::string err;
+                if (!r.strike(gid, err)) toast(err, C_AMBER);
+                handleEvents();
+            }
+            if (gx::hovered(br))
+                hoverHint = gw->name + " SUBNET (" + roleName(gw->role) + ")\n" + strikeText(gw->role) + " Wears every machine in it by " +
+                            std::to_string(bal::STRIKE_WEAR) + "." + (ok ? "" : "\n" + why);
+        }
+    }
     text(F::Display, "DECK PROGRAMS", a.x + 20, py, 11, C_DIM);
     if (!r.doorOpen) text(F::Mono, r.doorPrograms > 0 ? "lock: used" : "1 per lock", a.x + a.width - 20, py, 11, r.doorPrograms > 0 ? C_AMBER : C_DIM, Right);
     for (int i = 0; i < kProgramSlots; ++i) {

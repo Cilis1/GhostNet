@@ -21,7 +21,7 @@ struct Line {
 enum class Ev {
     Connected, AccessGranted, PhraseOk, PhraseBad, Guess, Lockout, Extra, MachineDark,
     Read, PhraseLearned, SideFound, DownloadDone, DownloadAborted, Honeypot, Objective,
-    ContractDone, Captured, Traced, Sacrifice, Program, Spoofed
+    ContractDone, Captured, Traced, Sacrifice, Program, Spoofed, Strike
 };
 struct Event {
     Ev type;
@@ -81,7 +81,12 @@ public:
     int jamDelay = 0, jamCut = 0;  // from working jammers, fixed when the run begins
     int vaultPct = 0;              // best working vault, fixed when the run begins
     std::string vaultName;
+    int vaultFiles = 0;            // how many of your best files it keeps
     int bestFile = 0;              // most valuable paydata file downloaded tonight
+    std::vector<int> takenFiles;   // every paydata file downloaded tonight (credits)
+    // Subnet strikes: the bays that were online when the run began, and which have struck.
+    std::vector<int> strikeBays;
+    std::vector<int> strikesUsed;
     // Deck programs.
     int freezeLeft = 0;            // seconds the trace stands still
     int burstLeft = 0;             // download seconds at double speed
@@ -105,6 +110,10 @@ public:
     // Run the program loaded in a deck slot (free: costs no time). Consumes it.
     bool runProgram(int slot, std::string& err);
     bool programUsable(int slot, std::string* why = nullptr) const;
+    // A subnet's once-per-run strike (free: costs no time). Wears the bay after the run.
+    bool strike(int gatewayId, std::string& err);
+    bool strikeUsable(int gatewayId, std::string* why = nullptr) const;
+    int vaultKeeps() const;        // what the vault would save on a trace-out right now
     // Inside.
     bool read(int fileIdx);
     bool startDownload(int fileIdx, std::string& err);
@@ -133,4 +142,5 @@ private:
     void emit(Ev e, const std::string& s = "") { events.push_back({e, s}); }
     bool settled_ = false;
     bool decoyHot_ = false;        // the burned decoy was HOT IRON: fine waived
+    bool subnetBurned_ = false;    // the decoy was a whole subnet: fine waived
 };

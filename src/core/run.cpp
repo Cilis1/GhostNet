@@ -22,15 +22,20 @@ RunSession::RunSession(GameState& gs, const Target& tg, uint64_t entropy) : g(gs
         jamDelay = g.net.jamDelay();
         jamCut = g.net.jamSpikeCut();
         if (const Machine* v = g.net.bestVault()) {
-            vaultPct = bal::VAULT_KEEP[v->tier];
+            vaultPct = bal::VAULT_KEEP[g.net.effTier(*v)];
+            vaultFiles = bal::VAULT_FILES[g.net.effTier(*v)];
             vaultName = v->name;
         }
+        for (auto* gw : g.net.openBays())
+            if (g.net.bayOnline(*gw)) strikeBays.push_back(gw->id);
     }
     for (auto& m : g.net.machines) {
         m.usedThisRun = false;
-        if (m.working() && !m.home) billIds.push_back(m.id);
+        if (g.net.online(m) && !m.home) billIds.push_back(m.id);
     }
-    int nodes = g.netUnlocked ? g.net.activeCount() : 0;
+    int nodes = 0;
+    if (g.netUnlocked)
+        for (auto& m : g.net.machines) if (g.net.online(m)) ++nodes;
     say("handshake " + t.host + " ... " +
             (nodes > 0 ? "routed through " + std::to_string(nodes) + " owned node(s)" : std::string("straight from your deck")) +
             " ... connected.",
@@ -86,18 +91,30 @@ void RunSession::traced() {
         std::string name = b->name;
         int id = b->id;
         decoyHot_ = b->trait == Trait::HotIron;
-        Memorial plate;
-        plate.name = b->name;
-        plate.origin = b->origin;
-        plate.job = b->job;
-        plate.tier = b->tier;
-        plate.where = t.name;
-        plate.run = g.stats.runs + 1;
-        g.wall.push_back(plate);
+        subnetBurned_ = b->job == Job::Gateway;
+        // A gateway takes its whole subnet with it. Every machine gets a nameplate.
+        std::vector<int> dying = {id};
+        if (subnetBurned_)
+            for (auto* m : g.net.bayMembers(id)) dying.push_back(m->id);
+        for (int d : dying) {
+            const Machine* m = g.net.find(d);
+            if (!m) continue;
+            Memorial plate;
+            plate.name = m->name;
+            plate.origin = m->origin;
+            plate.job = m->job;
+            plate.tier = m->tier;
+            plate.where = t.name;
+            plate.run = g.stats.runs + 1;
+            g.wall.push_back(plate);
+        }
         auto& v = g.net.machines;
-        v.erase(std::remove_if(v.begin(), v.end(), [id](const Machine& m) { return m.id == id; }), v.end());
+        v.erase(std::remove_if(v.begin(), v.end(),
+                               [&](const Machine& m) { return std::find(dying.begin(), dying.end(), m.id) != dying.end(); }),
+                v.end());
         g.net.decoyId = -1;
-        g.net.burnedCount += 1;
+        g.net.burnedCount += static_cast<int>(dying.size());
+        if (subnetBurned_) name += " and its subnet (" + std::to_string(dying.size()) + " machines)";
         sacrificed = name;
         end = End::Sacrifice;
         say("TRACE COMPLETE. The ticket resolves to the decoy. HELIOS traced " + name + " instead of you.", Tone::Bad);
@@ -162,7 +179,10 @@ bool RunSession::extra(std::string& err) {
     if (h && h->working() && h->job == Job::Compute && !h->usedThisRun) who = h;
     else
         for (auto& m : g.net.machines)
-            if (m.working() && m.job == Job::Compute && !m.usedThisRun && (!who || m.tier > who->tier)) who = &m;
+            if (g.net.online(m) && m.job == Job::Compute && !m.usedThisRun && (!who || m.tier > who->tier)) who = &m;
+    if (!who)   // a SIEGE subnet answers through its gateway
+        for (auto& m : g.net.machines)
+            if (m.job == Job::Gateway && g.net.bayOnline(m) && m.role == BayRole::Siege && !m.usedThisRun) { who = &m; break; }
     if (!who) { err = "No compute machine is able to answer."; return false; }
     lock.maxGuesses += 1;
     lock.extraUsed = true;
@@ -171,7 +191,7 @@ bool RunSession::extra(std::string& err) {
     say(who->name + " spins up and holds the lock open for one more guess.", Tone::Good);
     emit(Ev::Extra, who->name);
     if (!who->home) {
-        who->condition = std::max(0, who->condition - bal::COMPUTE_WEAR[who->tier]);
+        who->condition = std::max(0, who->condition - bal::COMPUTE_WEAR[g.net.effTier(*who)]);
         if (who->dark()) {
             who->active = false;
             say(who->name + " gave everything it had and went dark.", Tone::Bad);
@@ -246,6 +266,77 @@ bool RunSession::runProgram(int slot, std::string& err) {
         default: break;
     }
     emit(Ev::Program, programName(p));
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Subnet strikes
+// ---------------------------------------------------------------------------
+int RunSession::vaultKeeps() const {
+    if (vaultPct <= 0 || vaultFiles <= 0) return 0;
+    std::vector<int> v = takenFiles;
+    std::sort(v.rbegin(), v.rend());
+    int sum = 0;
+    for (int i = 0; i < vaultFiles && i < static_cast<int>(v.size()); ++i) sum += v[static_cast<size_t>(i)];
+    return sum * vaultPct / 100;
+}
+
+bool RunSession::strikeUsable(int gwId, std::string* why) const {
+    auto no = [&](const std::string& s) { if (why) *why = s; return false; };
+    if (over()) return no("The connection is closed.");
+    if (std::find(strikeBays.begin(), strikeBays.end(), gwId) == strikeBays.end()) return no("That subnet wasn't online when you connected.");
+    if (std::find(strikesUsed.begin(), strikesUsed.end(), gwId) != strikesUsed.end()) return no("That subnet has already struck tonight.");
+    const Machine* gw = g.net.find(gwId);
+    if (!gw || !g.net.bayOnline(*gw)) return no("That subnet is offline.");
+    switch (gw->role) {
+        case BayRole::Stealth:
+            if (freezeLeft >= bal::STRIKE_BLACKOUT) return no("The trace is already frozen.");
+            break;
+        case BayRole::Speed:
+            if (act != Act::Download) return no("MIRROR needs a download in progress.");
+            break;
+        case BayRole::Siege: {
+            if (doorOpen || lock.type == LockType::None) return no("CRACK needs a closed lock in front of you.");
+            bool any = false;
+            for (int i = 0; i < lock.length(); ++i) if (!lock.known(i)) any = true;
+            if (!any) return no("You already know every box.");
+            break;
+        }
+    }
+    return true;
+}
+
+bool RunSession::strike(int gwId, std::string& err) {
+    if (!strikeUsable(gwId, &err)) return false;
+    const Machine* gw = g.net.find(gwId);
+    strikesUsed.push_back(gwId);
+    std::string who = gw->name + "'s subnet";
+    switch (gw->role) {
+        case BayRole::Stealth:
+            freezeLeft = std::max(freezeLeft, bal::STRIKE_BLACKOUT);
+            say("BLACKOUT. " + who + " floods HELIOS with ghosts: the trace stands still for " + std::to_string(bal::STRIKE_BLACKOUT) + "s.",
+                Tone::Info);
+            break;
+        case BayRole::Speed: {
+            int jump = std::min(bal::STRIKE_MIRROR, actTotal - actDone);
+            actDone += jump;
+            say("MIRROR. " + who + " pulls " + std::to_string(jump) + "s of the download in parallel. No trace for it.", Tone::Info);
+            if (actDone >= actTotal) finishDownload();
+            break;
+        }
+        case BayRole::Siege: {
+            std::string got;
+            for (int k = 0; k < bal::STRIKE_CRACK; ++k) {
+                int pos = lock.peek();
+                if (pos < 0) break;
+                got += (got.empty() ? "" : ", ") + std::string("box ") + std::to_string(pos + 1) + " = '" +
+                       txt::upper(lock.secret.substr(static_cast<size_t>(pos), 1)) + "'";
+            }
+            say("CRACK. " + who + " brute-forces part of the lock: " + got + ".", Tone::Info);
+            break;
+        }
+    }
+    emit(Ev::Strike, strikeName(gw->role));
     return true;
 }
 
@@ -324,6 +415,7 @@ void RunSession::finishDownload() {
     }
     haul += f.credits;
     bestFile = std::max(bestFile, f.credits);
+    takenFiles.push_back(f.credits);
     say("+" + std::to_string(f.credits) + "cr  " + f.name + "  (haul so far: " + std::to_string(haul) + "cr)", Tone::Good);
     emit(Ev::DownloadDone, f.name);
 }
@@ -337,8 +429,8 @@ CaptureQuote RunSession::quote() const {
         else q.reason = "Nothing here is detachable.";
         return q;
     }
-    if (g.net.externalCount() >= bal::MAX_EXTERNAL) { q.reason = "You already own 10 machines besides N0. Scrap one first (between runs)."; return q; }
-    HardwareSpec hw = hardwareFor(t.kind);
+    if (g.net.externalCount() >= bal::MAX_EXTERNAL) { q.reason = "You already own " + std::to_string(bal::MAX_EXTERNAL) + " machines besides N0. Scrap one first (between runs)."; return q; }
+    HardwareSpec hw = hardwareFor(t);
     captureQuote(t, honeypot, q.condition, q.noise);
     Machine probe;
     probe.tier = hw.tier;
@@ -380,7 +472,7 @@ bool RunSession::startHold(Job j, std::string& err) {
 void RunSession::finishCapture() {
     act = Act::None;
     anchoring = false;
-    HardwareSpec hw = hardwareFor(t.kind);
+    HardwareSpec hw = hardwareFor(t);
     int cond, noise;
     captureQuote(t, honeypot, cond, noise);
     Machine m;
@@ -461,12 +553,13 @@ Reckoning RunSession::settle() {
     if (haul > 0) {
         if (traceOut) {
             line("Accounts seized: tonight's " + std::to_string(haul) + "cr haul is gone.", Tone::Bad);
-            int kept = bestFile * vaultPct / 100;
+            int kept = vaultKeeps();
             if (kept > 0) {
                 g.credits += kept;
                 g.stats.earned += kept;
-                line("...except what " + vaultName + " was holding offline: your best file, +" + std::to_string(kept) + "cr kept (VAULT, " +
-                         std::to_string(vaultPct) + "%).",
+                line("...except what " + vaultName + " was holding offline: " +
+                         (vaultFiles > 1 ? "your best " + std::to_string(vaultFiles) + " files" : std::string("your best file")) + ", +" +
+                         std::to_string(kept) + "cr kept (VAULT, " + std::to_string(vaultPct) + "%).",
                      Tone::Good);
             }
         }
@@ -484,11 +577,13 @@ Reckoning RunSession::settle() {
     if (traceOut && jobDone) line("The contract files went with the seized accounts. The job is not done.", Tone::Bad);
     if (traceOut || sacrifice) {
         int fine = baseFine(g, t, honeypot, anchoring);
-        if (sacrifice) fine = decoyHot_ ? 0 : (fine + 1) / 2;
+        if (sacrifice) fine = (decoyHot_ || subnetBurned_) ? 0 : (fine + 1) / 2;
         fine = std::min(fine, g.credits);
         g.credits -= fine;
         g.stats.finesPaid += fine;
-        if (sacrifice && decoyHot_)
+        if (sacrifice && subnetBurned_)
+            line("Fine: waived. A whole subnet took the ticket - HELIOS is still counting the bodies.", Tone::Info);
+        else if (sacrifice && decoyHot_)
             line("Fine: waived. " + sacrificed + " was HOT IRON - HELIOS got its own hardware back and called it even.", Tone::Info);
         else
             line("Fine: -" + std::to_string(fine) + "cr" + (sacrifice ? " (halved: " + sacrificed + " took the ticket)" : ""), Tone::Bad);
@@ -501,24 +596,52 @@ Reckoning RunSession::settle() {
                  "cr" + (t.infoReward.empty() ? "" : " and information"),
              Tone::Good);
     }
-    int bill = 0;
+    // The main rack and every subnet bill separately. A subnet that can't be paid powers
+    // down on its own; the main rack going unpaid takes its gateways (and so their subnets) with it.
+    int bill = 0, mainBill = 0;
+    std::vector<std::pair<int, int>> bayBills;   // gateway id, amount
     if (billable)
-        for (int id : billIds)
-            if (const Machine* m = g.net.find(id)) bill += upkeepOf(*m);
+        for (int id : billIds) {
+            const Machine* m = g.net.find(id);
+            if (!m) continue;
+            int u = upkeepOf(*m);
+            bill += u;
+            if (m->bay < 0) { mainBill += u; continue; }
+            auto it = std::find_if(bayBills.begin(), bayBills.end(), [&](const std::pair<int, int>& b) { return b.first == m->bay; });
+            if (it == bayBills.end()) bayBills.push_back({m->bay, u});
+            else it->second += u;
+        }
     rk.bill = bill;
-    if (bill > 0) {
-        if (g.credits >= bill) {
-            g.credits -= bill;
-            g.stats.billsPaid += bill;
-            line("The bill: -" + std::to_string(bill) + "cr", Tone::Warn);
+    bool mainPaid = true;
+    if (mainBill > 0) {
+        if (g.credits >= mainBill) {
+            g.credits -= mainBill;
+            g.stats.billsPaid += mainBill;
+            line("The bill: -" + std::to_string(mainBill) + "cr" + (bayBills.empty() ? "" : " (main rack)"), Tone::Warn);
         } else {
+            mainPaid = false;
             g.stats.unpaidBills += 1;
-            for (auto& m : g.net.machines) if (!m.home) m.active = false;
+            for (auto& m : g.net.machines) if (!m.home && m.bay < 0) m.active = false;
             g.net.decoyId = -1;
-            line("The bill of " + std::to_string(bill) +
+            line("The bill of " + std::to_string(mainBill) +
                      "cr went UNPAID. Nothing was taken. Every machine except N0 has gone dark, and the decoy is disarmed.",
                  Tone::Bad);
             line("No debt. Earn credits, then switch them back on.", Tone::Info);
+        }
+    }
+    for (auto& [gwId, amount] : bayBills) {
+        Machine* gw = g.net.find(gwId);
+        std::string nm = gw ? gw->name : std::string("a subnet");
+        if (mainPaid && g.credits >= amount) {
+            g.credits -= amount;
+            g.stats.billsPaid += amount;
+            line("Subnet " + nm + (gw ? " (" + std::string(roleName(gw->role)) + ")" : "") + ": -" + std::to_string(amount) + "cr", Tone::Warn);
+        } else if (mainPaid) {
+            g.stats.unpaidBills += 1;
+            if (gw) gw->bayOn = false;
+            if (gw && g.net.decoyId == gw->id) g.net.decoyId = -1;
+            line("Subnet " + nm + "'s bill of " + std::to_string(amount) + "cr went unpaid. That subnet powers down on its own; the rest keeps running.",
+                 Tone::Bad);
         }
     }
     std::vector<std::string> darkNow;
@@ -532,10 +655,29 @@ Reckoning RunSession::settle() {
             m->condition = conditionAfterRun(*m, traceOut);
             if (m->dark() && !wasDark) {
                 m->active = false;
+                m->bay = -1;
                 if (g.net.decoyId == m->id) g.net.decoyId = -1;
                 darkNow.push_back(m->name);
             }
         }
+    }
+    for (int gwId : strikesUsed) {   // a strike pushes every machine in the bay past its limits
+        Machine* gw = g.net.find(gwId);
+        if (!gw) continue;
+        std::vector<Machine*> bay = {gw};
+        for (auto& m : g.net.machines) if (m.bay == gwId && m.active) bay.push_back(&m);
+        for (Machine* m : bay) {
+            bool wasDark = m->dark();
+            m->condition = std::max(0, m->condition - bal::STRIKE_WEAR);
+            if (m->dark() && !wasDark) {
+                if (m->bay < 0) m->active = false;
+                else { m->bay = -1; m->active = false; }
+                if (g.net.decoyId == m->id) g.net.decoyId = -1;
+                darkNow.push_back(m->name);
+            }
+        }
+        line("Strike wear: -" + std::to_string(bal::STRIKE_WEAR) + " on " + gw->name + "'s subnet (" + std::to_string(bay.size()) + " machines).",
+             Tone::Warn);
     }
     if (worn > 0)
         line(std::string("Wear: ") + (traceOut ? "HEAVY (traced with no decoy)" : "normal") + " on " + std::to_string(worn) + " machine(s)",
@@ -637,5 +779,9 @@ Reckoning RunSession::settle() {
     }
     for (auto& m : g.net.machines) m.usedThisRun = false;
     rk.credits = g.credits;
+    if (g.net.decoyId >= 0 && !g.net.decoy()) {   // e.g. a decoy subnet whose last member went dark
+        g.net.decoyId = -1;
+        line("Your decoy can't take a ticket any more. It's disarmed.", Tone::Warn);
+    }
     return rk;
 }

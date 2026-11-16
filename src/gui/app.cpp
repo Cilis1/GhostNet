@@ -34,6 +34,7 @@ Color jobColor(Job j) {
         case Job::Compute: return C_GREEN;
         case Job::Jammer: return C_PURPLE;
         case Job::Vault: return Color{205, 215, 235, 255};   // vault silver
+        case Job::Gateway: return Color{255, 140, 60, 255};   // gateway orange
     }
     return C_TEXT;
 }
@@ -47,6 +48,16 @@ Color kindColor(Kind k) {
         case Kind::Shrine: return C_PURPLE;
         case Kind::Story: return C_MAGENTA;
         case Kind::Side: return C_PURPLE;
+        case Kind::Prototype: return Color{255, 70, 40, 255};   // black-site red-orange
+    }
+    return C_TEXT;
+}
+
+Color roleColor(BayRole r) {
+    switch (r) {
+        case BayRole::Stealth: return C_MAGENTA;
+        case BayRole::Speed: return C_CYAN;
+        case BayRole::Siege: return C_AMBER;
     }
     return C_TEXT;
 }

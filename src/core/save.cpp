@@ -13,7 +13,7 @@
 namespace fs = std::filesystem;
 
 namespace {
-constexpr int kVersion = 3;   // v1 (0.1.x) and v2 (0.2-0.3) saves still load; new fields default
+constexpr int kVersion = 4;   // v1 (0.1.x), v2 (0.2-0.3) and v3 (0.4) saves still load; new fields default
 
 std::string esc(const std::string& s) {
     static const char* hex = "0123456789ABCDEF";
@@ -65,7 +65,7 @@ bool saveGame(const GameState& g, std::string* err) {
     for (auto& m : g.net.machines)
         o << "m " << m.id << " " << esc(m.name) << " " << static_cast<int>(m.job) << " " << m.tier << " " << m.captured << " "
           << m.home << " " << m.active << " " << m.condition << " " << m.noise << " " << m.price << " " << esc(m.origin) << " "
-          << static_cast<int>(m.trait) << "\n";
+          << static_cast<int>(m.trait) << " " << m.bay << " " << static_cast<int>(m.role) << " " << (m.bayOn ? 1 : 0) << "\n";
     o << "programs";
     for (auto p : g.programs) o << " " << static_cast<int>(p);
     o << "\n";
@@ -154,10 +154,16 @@ bool loadGame(GameState& g, std::string* err) {
             int trait = 0;
             if (!(is >> trait)) trait = 0;   // v2 saves: no traits
             m.trait = static_cast<Trait>(clampi(trait, 0, kTraitCount - 1));
+            long long bay = -1;
+            int role = 1, bayOn = 1;
+            if (!(is >> bay >> role >> bayOn)) { bay = -1; role = 1; bayOn = 1; }   // v3 saves: no subnets
+            m.bay = static_cast<int>(std::max<long long>(-1, std::min<long long>(1000000000, bay)));
+            m.role = static_cast<BayRole>(clampi(role, 0, kRoleCount - 1));
+            m.bayOn = bayOn != 0;
             m.id = clampi(id, 0, 1000000000);
             m.name = unesc(name).substr(0, 24);
             m.job = static_cast<Job>(clampi(job, 0, kJobCount - 1));
-            m.tier = clampi(tier, 1, 3);
+            m.tier = clampi(tier, 1, 4);
             m.captured = cap != 0;
             m.home = home != 0;
             m.active = act != 0;
@@ -183,7 +189,7 @@ bool loadGame(GameState& g, std::string* err) {
             if (!(is >> name >> job >> tier >> run >> where >> origin)) continue;
             w.name = unesc(name).substr(0, 24);
             w.job = static_cast<Job>(clampi(job, 0, kJobCount - 1));
-            w.tier = clampi(tier, 1, 3);
+            w.tier = clampi(tier, 1, 4);
             w.run = clampi(run, 0, 1000000);
             w.where = unesc(where).substr(0, 60);
             w.origin = unesc(origin).substr(0, 120);
@@ -200,9 +206,19 @@ bool loadGame(GameState& g, std::string* err) {
     if (!header || !end) { if (err) *err = "save file is damaged or from another version"; return false; }
     // Integrity: the home server comes first, the active count fits the rack, the decoy is legal.
     std::stable_partition(n.net.machines.begin(), n.net.machines.end(), [](const Machine& m) { return m.home; });
+    // Subnet integrity: members point at a real gateway in the main rack, never more than a full bay.
+    std::map<int, int> filled;
+    for (auto& m : n.net.machines) {
+        if (m.bay < 0) continue;
+        const Machine* gw = n.net.find(m.bay);
+        bool ok = gw && gw->job == Job::Gateway && gw->bay < 0 && !m.home && m.job != Job::Gateway && m.active &&
+                  filled[m.bay] < bal::BAY_SLOTS;
+        if (ok) ++filled[m.bay];
+        else { m.bay = -1; m.active = false; }
+    }
     int active = 0;
     for (auto& m : n.net.machines) {
-        if (m.active) {
+        if (m.active && m.bay < 0) {
             if (active >= n.net.slots && !m.home) m.active = false;
             else ++active;
         }

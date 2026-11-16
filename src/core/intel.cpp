@@ -29,7 +29,8 @@ Result scanTarget(GameState& g, const Target& t) {
     if (h && h->working() && h->job == Job::Scout) who = h;
     else
         for (auto& m : g.net.machines)
-            if (m.working() && m.job == Job::Scout && (!who || m.tier > who->tier)) who = &m;
+            if (g.net.online(m) && m.job == Job::Scout && (!who || m.tier > who->tier)) who = &m;
+    if (!who) return {false, "No scouting machine is online."};
     g.net.scoutCharges -= 1;
     g.reports[t.id] = best;
     std::string msg = who->name + " reached out quietly.";
@@ -37,6 +38,7 @@ Result scanTarget(GameState& g, const Target& t) {
         who->condition = std::max(0, who->condition - bal::SCOUT_WEAR);
         if (who->dark()) {
             who->active = false;
+            who->bay = -1;
             msg += " It burned out answering and went dark.";
         }
     }
@@ -142,7 +144,7 @@ PanelView panelBriefing(const GameState& g, const Target& t) {
         say(Advisor::Vesper, "Decoy armed: '" + b->name + "'. If this goes wrong, HELIOS traces it instead of you.");
     } else if (g.netUnlocked && t.security >= 3) {
         bool hasProxy = false;
-        for (auto& m : g.net.machines) if (m.working() && m.job == Job::Proxy && !m.home) hasProxy = true;
+        for (auto& m : g.net.machines) if (g.net.online(m) && (m.job == Job::Proxy || m.job == Job::Gateway) && !m.home) hasProxy = true;
         say(Advisor::Vesper, hasProxy ? "No decoy armed. You have a running proxy that could take the fall."
                                       : "No decoy, no proxy to sacrifice. A trace-out here seizes the night's haul.");
         if (vv == Vote::Go) vv = Vote::Caution;
@@ -159,14 +161,16 @@ PanelView panelBriefing(const GameState& g, const Target& t) {
     if (t.reward) ll += " Contract pays " + txt::cr(t.reward) + " on completion.";
     say(Advisor::Ledger, ll);
     if (t.stealable && g.net.bestScoutTier() > 0) {
-        HardwareSpec hw = hardwareFor(t.kind);
+        HardwareSpec hw = hardwareFor(t);
         int up = bal::TIER_UPKEEP[hw.tier] + (hw.noise - 1) * bal::NOISE_UPKEEP;
+        if (t.kind == Kind::Prototype) up += up * bal::UNSTABLE_UPKEEP_PCT / 100;
         say(Advisor::Ledger, std::string("Detachable ") + jobName(hw.def) + " T" + std::to_string(hw.tier) + " here. Free to take, ~" +
                                  std::to_string(up) + "cr/run to keep running." +
-                                 (hw.tier == 3 ? " Ruinous, but it's the only stolen tier 3." : ""));
+                                 (hw.tier == 4 ? " PROTOTYPE. Tier 4 - nothing else in the city is. Unstable, and it bills like a landlord."
+                                  : hw.tier == 3 ? " Ruinous, but it's the only stolen tier 3." : ""));
     }
     if (g.net.externalCount() >= bal::MAX_EXTERNAL && t.stealable)
-        say(Advisor::Ledger, "You own 10 machines already. Scrap something before you try to capture.");
+        say(Advisor::Ledger, "You own " + std::to_string(bal::MAX_EXTERNAL) + " machines already. Scrap something before you try to capture.");
 
     Vote mv = Vote::Go;
     if (!reported) {
@@ -211,7 +215,7 @@ PanelView panelReview(const GameState& g) {
     say(Advisor::Ledger, "Running " + std::to_string(n.activeCount()) + "/" + std::to_string(n.slots) + " slots. Bill per run: " + txt::cr(bill) +
                              ". You hold " + txt::cr(g.credits) + ".");
     const Machine* loud = nullptr;
-    for (auto& m : n.machines) if (m.working() && !m.home && (!loud || upkeepOf(m) > upkeepOf(*loud))) loud = &m;
+    for (auto& m : n.machines) if (n.online(m) && !m.home && (!loud || upkeepOf(m) > upkeepOf(*loud))) loud = &m;
     if (loud && upkeepOf(*loud) >= 35)
         say(Advisor::Ledger, "'" + loud->name + "' costs " + txt::cr(upkeepOf(*loud)) + "/run on its own. Store it on runs that don't need it.");
     int repair = repairAllCost(g);
@@ -228,6 +232,13 @@ PanelView panelReview(const GameState& g) {
     if (const Machine* b = n.decoy()) say(Advisor::Vesper, "Decoy armed: '" + b->name + "'. I hope you said goodbye.");
     else say(Advisor::Vesper, "No decoy armed. Proxy bonus " + std::to_string(n.proxyBonus()) + "% of a " + std::to_string(bal::PROXY_CAP) + "% cap.");
     say(Advisor::Vesper, "Relay bonus " + std::to_string(n.relayBonus()) + "% of a " + std::to_string(bal::RELAY_CAP) + "% cap. Past the cap, more relays do nothing.");
+    for (auto* gw : n.openBays()) {
+        int used = static_cast<int>(n.bayMembers(gw->id).size());
+        std::string st = !gw->bayOn ? "switched OFF" : !n.bayOnline(*gw) ? "BROWNED OUT - over its power budget" : std::string(roleName(gw->role));
+        say(Advisor::Moth, "Subnet " + gw->name + ": " + std::to_string(used) + "/" + std::to_string(bal::BAY_SLOTS) + " plugged, " +
+                               std::to_string(n.bayPower(gw->id)) + "/" + std::to_string(n.bayBudget(*gw)) + " power, " + st + ", " +
+                               txt::cr(n.bayUpkeep(gw->id)) + "/run." + (n.clusterBonus(gw->id) ? " CLUSTER live: acting a tier higher." : ""));
+    }
     say(Advisor::Moth, "Scouting: " + std::to_string(n.usableScoutCharges()) + " charge(s), capacity " + std::to_string(n.scoutCapacity()) +
                            ", best report quality " + std::to_string(n.bestScoutTier()) + "/3.");
     say(Advisor::Moth, "Emergency attempts next run: " + std::to_string(n.computeCapacity()) + " (max " + std::to_string(bal::COMPUTE_MAX) + ", one per lock).");

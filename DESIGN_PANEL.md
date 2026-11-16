@@ -103,6 +103,19 @@ them: daily login rewards, offline income, raids on your rack, sending machines
 out on jobs, crafting or merging machines, levelling up machines, a premium
 currency, loot-box machine rolls, and machines that work while you're away.
 
+## 0.5.0 — Subnets and above-tier hardware: how they stay inside the walls
+
+* **Clusters are not merging.** Three matching tier 3+ machines in a subnet *act* one tier
+  higher only while all three are plugged in together. They stay three machines, each with
+  its own condition, trait, bill and wear. Pull one out and the bonus ends at once. Nothing
+  is consumed and nothing is permanent.
+* **Prototypes are not levelling.** Tier 4 can't be grown into. It only arrives by capturing
+  a HELIOS black-site prototype, and it comes with a lifelong UNSTABLE drawback.
+* **Subnets don't work while you're away.** A subnet acts only during runs you play. It bills
+  and wears with the rest, and its once-per-run strike is a choice you make at the lock.
+* **Subnets are optional.** The deep job is still beatable without a gateway (sims: careful
+  mode is unchanged at ~20 runs).
+
 ## Deferred backlog
 
 1. ~~A graphical client~~ built in 0.3.0 (see section 6).

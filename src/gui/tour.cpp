@@ -180,6 +180,74 @@ int App::screenshotTour(const std::string& dir, const std::function<void()>& ren
     refreshBoard();
     shot("17-board-later");
 
+    // Subnets: a T3 SPEED subnet with a cluster of three T3 relays, and a STEALTH subnet holding a prototype.
+    g.net.slots = bal::MAX_SLOTS;
+    for (auto& m : g.net.machines)   // keep the main rack to four so both gateways fit
+        if (!m.home && m.active && (m.job == Job::Jammer || m.job == Job::Scout)) m.active = false;
+    auto add = [&](Job j, int tier, const std::string& name, Trait tr, bool active, int bay, int cond) -> int {
+        Machine m;
+        m.id = g.net.nextId++;
+        m.job = j;
+        m.tier = tier;
+        m.name = name;
+        m.trait = tr;
+        m.captured = true;
+        m.active = active;
+        m.bay = bay;
+        m.condition = cond;
+        m.noise = tr == Trait::Unstable ? 4 : 1;
+        m.origin = tr == Trait::Unstable ? "Captured from HELIOS Testbed LAZARUS (board 3)." : "Captured from Kessler-Maru Compute (board 2).";
+        g.net.machines.push_back(m);
+        return m.id;
+    };
+    int gwA = add(Job::Gateway, 3, "SPINE-GW", Trait::CorpBuild, true, -1, 88);
+    int gwB = add(Job::Gateway, 2, "GW-07", Trait::None, true, -1, 100);
+    if (Machine* G = g.net.find(gwA)) G->role = BayRole::Speed;
+    if (Machine* G = g.net.find(gwB)) G->role = BayRole::Stealth;
+    add(Job::Relay, 3, "kessler-31", Trait::CorpBuild, true, gwA, 92);
+    add(Job::Relay, 3, "kessler-38", Trait::CorpBuild, true, gwA, 74);
+    add(Job::Relay, 3, "aurelia-44", Trait::CorpBuild, true, gwA, 81);
+    int proto = add(Job::Proxy, 4, "lazarus-52", Trait::Unstable, true, gwB, 63);
+    add(Job::Scout, 1, "kiosk-12", Trait::Salvaged, true, gwB, 70);
+    g.credits += 2500;
+    tab = Tab::Rack;
+    selMachine = -1;
+    shot("26-rack-subnets");
+    selMachine = gwA;
+    shot("27-gateway");
+    selMachine = proto;
+    shot("28-prototype-in-subnet");
+    selMachine = -1;
+    {
+        int keep = g.mapIndex, keepAct = g.act;
+        g.act = 2;
+        for (int mi = 2; mi < 40; ++mi) {
+            g.mapIndex = mi;
+            bool found = false;
+            for (auto& b : buildBoard(g)) if (b.kind == Kind::Prototype) found = true;
+            if (found) break;
+        }
+        tab = Tab::Board;
+        refreshBoard();
+        shot("29-board-prototype");
+        const Target* pt = findTarget([](const Target& t) { return t.kind == Kind::Prototype; });
+        if (!pt) { std::fprintf(stderr, "no prototype listing\n"); ++failures; }
+        else {
+            Target protoT = *pt;
+            connect(protoT);
+            run->guess(protoT.lock == LockType::Rotor ? "1234" : "crane", err);
+            run->strike(gwB, err);      // BLACKOUT
+            handleEvents();
+            shot("30-run-strike", 0.5f);
+            floats.clear();
+            run->disconnect();
+            run.reset();
+        }
+        g.mapIndex = keep;
+        g.act = keepAct;
+        refreshBoard();
+    }
+
     // Cipher and rotor locks, a hot trace, a trace-out.
     const Target* any = findTarget([&](const Target& t) { return !g.burned.count(t.id) && t.lock != LockType::None; });
     if (!any) { std::fprintf(stderr, "no locked target\n"); return failures + 1; }

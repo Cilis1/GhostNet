@@ -47,7 +47,7 @@ Result buyMachine(GameState& g, Job j) {
     m.condition = 100;
     m.noise = 1;
     m.price = price;
-    static const char* serial[kJobCount] = {"RLY-", "PRX-", "SCT-", "CMP-", "JAM-", "VLT-"};
+    static const char* serial[kJobCount] = {"RLY-", "PRX-", "SCT-", "CMP-", "JAM-", "VLT-", "GW-"};
     char buf[8];
     std::snprintf(buf, sizeof buf, "%02d", m.id);
     m.name = std::string(serial[static_cast<int>(j)]) + buf;
@@ -59,6 +59,11 @@ Result buyMachine(GameState& g, Job j) {
 }
 
 Result activate(GameState& g, Machine& m) {
+    if (m.active && m.bay >= 0) {   // out of a subnet, into the main rack
+        if (g.net.activeCount() >= g.net.slots) return {false, "No free main-rack slot. Switch something off or expand the rack."};
+        m.bay = -1;
+        return {true, m.name + " moves out of the subnet into the main rack."};
+    }
     if (m.active) return {false, "Already running."};
     if (m.dark()) return {false, m.name + " is dark (condition 0). Repair it first."};
     if (g.net.activeCount() >= g.net.slots) return {false, "No free slot. Switch something off or expand the rack."};
@@ -69,6 +74,7 @@ Result activate(GameState& g, Machine& m) {
 Result deactivate(GameState& g, Machine& m) {
     if (m.home) return {false, m.name + " is always running - it's the rack's heart."};
     if (!m.active) return {false, "Already in storage."};
+    if (m.bay >= 0) return unplug(g, m);
     m.active = false;
     std::string msg = m.name + " goes to cold storage. Silent, free, no wear.";
     if (g.net.decoyId == m.id) {
@@ -81,6 +87,8 @@ Result deactivate(GameState& g, Machine& m) {
 Result rejob(GameState& g, Machine& m, Job j) {
     if (g.net.decoyId == m.id) return {false, m.name + " is armed as the decoy. Disarm it before you change its job."};
     if (m.job == j) return {false, "It already does that."};
+    if (m.job == Job::Gateway && !g.net.bayMembers(m.id).empty()) return {false, "Unplug " + m.name + "'s subnet before you change its job."};
+    if (j == Job::Gateway && m.bay >= 0) return {false, "A gateway can't live inside another subnet. Unplug it first."};
     int fee = rejobFee(m);
     if (g.credits < fee) return {false, "Re-jobbing " + m.name + " costs " + txt::cr(fee) + "."};
     g.credits -= fee;
@@ -128,28 +136,34 @@ Result scrap(GameState& g, int id) {
     Machine* m = g.net.find(id);
     if (!m) return {false, "No such machine."};
     if (m->home) return {false, m->name + " can never be scrapped."};
+    if (m->job == Job::Gateway && !g.net.bayMembers(id).empty()) return {false, "Unplug " + m->name + "'s subnet first."};
     int value = scrapValue(*m);
     std::string name = m->name;
     if (g.net.decoyId == id) g.net.decoyId = -1;
     auto& v = g.net.machines;
     v.erase(std::remove_if(v.begin(), v.end(), [id](const Machine& x) { return x.id == id; }), v.end());
+    if (g.net.decoyId >= 0 && !g.net.decoy()) g.net.decoyId = -1;
     g.credits += value;
     return {true, name + " is stripped for parts. +" + txt::cr(value) + "."};
 }
 
-bool decoyNeedsConfirm(const Machine& m) { return !m.captured; }
+bool decoyNeedsConfirm(const Machine& m) { return !m.captured || m.job == Job::Gateway; }   // a gateway takes its subnet with it
 
 Result armDecoy(GameState& g, Machine& m, bool confirmed) {
     if (m.home) return {false, "Never " + m.name + ". There has to be one thing you cannot lose."};
     if (g.net.decoyId == m.id) return {false, m.name + " is already the decoy."};
-    if (m.job != Job::Proxy) return {false, "Only a PROXY can be a decoy."};
+    if (m.job != Job::Proxy && m.job != Job::Gateway) return {false, "Only a PROXY - or a whole subnet, by its GATEWAY - can be a decoy."};
     if (!m.active) return {false, "It has to be in the rack, running."};
     if (m.dark()) return {false, "It's dark. A dead machine can't fool HELIOS."};
+    if (!g.net.online(m)) return {false, m.name + " isn't online (its subnet is off, browned out or closed)."};
+    if (m.job == Job::Gateway && !g.net.bayOnline(m)) return {false, m.name + "'s subnet has to be open and switched on."};
     if (decoyNeedsConfirm(m) && !confirmed) return {false, "confirm"};
     std::string msg;
     if (g.net.decoyId >= 0)
         if (const Machine* old = g.net.find(g.net.decoyId)) msg = old->name + " is no longer the decoy. ";
     g.net.decoyId = m.id;
+    if (m.job == Job::Gateway)
+        return {true, msg + m.name + " and its whole subnet are armed. If HELIOS closes the ticket, every machine in it burns with the gateway."};
     return {true, msg + m.name + " is armed. It keeps slowing the trace until the moment it dies."};
 }
 
@@ -244,4 +258,61 @@ Result unloadProgram(GameState& g, int slot) {
     g.programs[slot] = Program::None;
     g.credits += refund;
     return {true, std::string(programName(p)) + " unloaded. Unused, so it's a full refund: +" + txt::cr(refund) + "."};
+}
+
+// ---------------------------------------------------------------------------
+// Subnets
+// ---------------------------------------------------------------------------
+bool canPlug(const GameState& g, const Machine& m, const Machine& gw, std::string* why) {
+    auto no = [&](const std::string& s) { if (why) *why = s; return false; };
+    if (gw.job != Job::Gateway) return no(gw.name + " isn't a gateway.");
+    if (!g.net.bayOpen(gw)) return no(gw.name + " has no open subnet (it must be running, and only " + std::to_string(bal::MAX_BAYS) + " subnets open).");
+    if (m.home) return no("N0 stays the heart of the main rack.");
+    if (m.job == Job::Gateway) return no("A gateway can't sit inside another subnet.");
+    if (m.dark()) return no(m.name + " is dark. Repair it first.");
+    if (m.bay == gw.id && m.active) return no(m.name + " is already in that subnet.");
+    if (static_cast<int>(g.net.bayMembers(gw.id).size()) >= bal::BAY_SLOTS) return no(gw.name + "'s subnet is full.");
+    int draw = bal::POWER_DRAW[std::clamp(m.tier, 1, kMaxTier)];
+    if (g.net.bayPower(gw.id) + draw > g.net.bayBudget(gw))
+        return no(m.name + " draws " + std::to_string(draw) + " power; " + gw.name + " has " +
+                  std::to_string(g.net.bayBudget(gw) - g.net.bayPower(gw.id)) + " left.");
+    return true;
+}
+
+Result plugIn(GameState& g, Machine& m, Machine& gw) {
+    std::string why;
+    if (!canPlug(g, m, gw, &why)) return {false, why};
+    bool fromRack = m.active && m.bay < 0;
+    m.bay = gw.id;
+    m.active = true;
+    std::string msg = m.name + " plugs into " + gw.name + "'s subnet" + (fromRack ? ", freeing a main-rack slot." : ".");
+    if (g.net.clusterBonus(gw.id)) msg += " CLUSTER: three matching machines - they all act one tier higher.";
+    return {true, msg};
+}
+
+Result unplug(GameState& g, Machine& m) {
+    if (m.bay < 0) return {false, m.name + " isn't in a subnet."};
+    m.bay = -1;
+    m.active = false;
+    std::string msg = m.name + " is unplugged and goes to cold storage.";
+    if (g.net.decoyId >= 0 && !g.net.decoy()) {   // the subnet it armed is now empty
+        g.net.decoyId = -1;
+        msg += " That disarmed the decoy.";
+    }
+    return {true, msg};
+}
+
+Result setRole(GameState& g, Machine& gw, BayRole r) {
+    (void)g;
+    if (gw.job != Job::Gateway) return {false, "Only a gateway's subnet has a role."};
+    if (gw.role == r) return {false, "It already runs " + std::string(roleName(r)) + "."};
+    gw.role = r;
+    return {true, gw.name + "'s subnet now runs " + roleName(r) + ". " + roleText(r)};
+}
+
+Result toggleBay(GameState& g, Machine& gw) {
+    if (gw.job != Job::Gateway) return {false, "Not a gateway."};
+    gw.bayOn = !gw.bayOn;
+    if (g.net.decoyId >= 0 && !g.net.decoy()) g.net.decoyId = -1;
+    return {true, gw.name + "'s subnet is " + (gw.bayOn ? "ON. It bills and wears with the rest." : "OFF. No bill, no wear, no effect.")};
 }
