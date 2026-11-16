@@ -280,14 +280,7 @@ void App::drawRun() {
     drawTrace(Vector2{1106, 186}, 82);
     drawLog(Rectangle{952, 300, 308, 388});
 
-    if (!hoverHint.empty() && modals.empty()) {
-        auto ls = wrap(F::Mono, hoverHint, 300, 13);
-        float hh = 14 + ls.size() * 18.0f;
-        Rectangle hr{gx::mouse.x + 18, std::min(gx::mouse.y - hh / 2, H - hh - 10.0f), 330, hh};
-        DrawRectangleRec(hr, fade(Color{6, 6, 20, 255}, 0.96f));
-        DrawRectangleLinesEx(hr, 1, fade(C_CYAN, 0.6f));
-        for (size_t k = 0; k < ls.size(); ++k) text(F::Mono, ls[k], hr.x + 12, hr.y + 7 + k * 18, 13, C_TEXT);
-    }
+    drawHoverHint();
 
     // Floating callouts.
     for (auto& f : floats) {

@@ -209,6 +209,9 @@ int App::screenshotTour(const std::string& dir, const std::function<void()>& ren
     add(Job::Relay, 3, "aurelia-44", Trait::CorpBuild, true, gwA, 81);
     int proto = add(Job::Proxy, 4, "lazarus-52", Trait::Unstable, true, gwB, 63);
     add(Job::Scout, 1, "kiosk-12", Trait::Salvaged, true, gwB, 70);
+    add(Job::Compute, 2, "vault-dc-3", Trait::CorpBuild, false, -1, 55);   // more than six in storage: the tray pages
+    add(Job::Relay, 1, "pachinko-8", Trait::Salvaged, false, -1, 40);
+    add(Job::Jammer, 2, "spire-19", Trait::OldNet, false, -1, 90);
     g.credits += 2500;
     tab = Tab::Rack;
     selMachine = -1;

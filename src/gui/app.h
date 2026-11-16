@@ -69,6 +69,7 @@ public:
 
     // hub
     int selMachine = -1;      // machine id, -1 = shop view
+    int storagePage = 0;      // cold storage tray page (it shows a handful at a time)
     std::vector<Target> board;
     float boardScroll = 0;
     Target brief;
@@ -123,6 +124,7 @@ private:
     void drawTopBar();
     void drawRack(Rectangle area);
     void drawMachinePanel(Rectangle area, Machine& m);
+    void drawHoverHint();   // shared by the hub and the run screen
     void drawShop(Rectangle area);
     void drawLockedRack(Rectangle area);
     void drawBoard(Rectangle area);

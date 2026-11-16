@@ -210,30 +210,30 @@ int jobValue(const Machine& m, int tier) {
         default: return 1;
     }
 }
-// Relay and proxy pool per unit: the main rack and each subnet have their own caps.
-int Network::relayBonus() const {
-    int main = 0, total = 0;
-    for (auto& m : machines) if (m.bay < 0 && online(m) && m.job == Job::Relay) main += jobValue(m, effTier(m));
-    total = std::min(main, bal::RELAY_CAP);
-    for (auto* gw : openBays()) {
-        if (!bayOnline(*gw)) continue;
-        int b = gw->role == BayRole::Speed ? bal::SPEED_BONUS[std::clamp(gw->tier, 1, kMaxTier)] : 0;
-        for (auto* m : bayMembers(gw->id)) if (online(*m) && m->job == Job::Relay) b += jobValue(*m, effTier(*m));
-        total += std::min(b, bal::BAY_RELAY_CAP);
+// Relay and proxy pool per unit: the main rack has its cap, each online subnet has its own cap
+// (plus its role bonus when the role matches), and the total sits under a hard ceiling.
+namespace {
+int pooledBonus(const Network& n, Job job, int rackCap, int bayCap, int hardCap, BayRole role, const int (&roleBonus)[kMaxTier + 1]) {
+    int rack = 0;
+    for (auto& m : n.machines)
+        if (m.bay < 0 && m.job == job && n.online(m)) rack += jobValue(m, n.effTier(m));
+    int total = std::min(rack, rackCap);
+    for (auto* gw : n.openBays()) {
+        if (!n.bayOnline(*gw)) continue;
+        int bay = gw->role == role ? roleBonus[std::clamp(gw->tier, 1, kMaxTier)] : 0;
+        for (auto* m : n.bayMembers(gw->id))
+            if (m->job == job && n.online(*m)) bay += jobValue(*m, n.effTier(*m));
+        total += std::min(bay, bayCap);
     }
-    return std::min(total, bal::RELAY_HARD_CAP);
+    return std::min(total, hardCap);
+}
+}  // namespace
+
+int Network::relayBonus() const {
+    return pooledBonus(*this, Job::Relay, bal::RELAY_CAP, bal::BAY_RELAY_CAP, bal::RELAY_HARD_CAP, BayRole::Speed, bal::SPEED_BONUS);
 }
 int Network::proxyBonus() const {
-    int main = 0, total = 0;
-    for (auto& m : machines) if (m.bay < 0 && online(m) && m.job == Job::Proxy) main += jobValue(m, effTier(m));
-    total = std::min(main, bal::PROXY_CAP);
-    for (auto* gw : openBays()) {
-        if (!bayOnline(*gw)) continue;
-        int b = gw->role == BayRole::Stealth ? bal::STEALTH_BONUS[std::clamp(gw->tier, 1, kMaxTier)] : 0;
-        for (auto* m : bayMembers(gw->id)) if (online(*m) && m->job == Job::Proxy) b += jobValue(*m, effTier(*m));
-        total += std::min(b, bal::BAY_PROXY_CAP);
-    }
-    return std::min(total, bal::PROXY_HARD_CAP);
+    return pooledBonus(*this, Job::Proxy, bal::PROXY_CAP, bal::BAY_PROXY_CAP, bal::PROXY_HARD_CAP, BayRole::Stealth, bal::STEALTH_BONUS);
 }
 int Network::computeCapacity() const {
     int t = 0, siege = 0;

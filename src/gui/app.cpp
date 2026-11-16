@@ -119,6 +119,19 @@ void App::result(const Result& r) {
     }
 }
 
+// The hover hint: beside the pointer, flipped left near the right edge, always fully on screen.
+void App::drawHoverHint() {
+    if (hoverHint.empty() || !modals.empty()) return;
+    auto ls = wrap(F::Mono, hoverHint, 300, 13);
+    const float hw = 330, hh = 14 + ls.size() * 18.0f;
+    float hx = gx::mouse.x + 18 + hw > W - 6 ? gx::mouse.x - 18 - hw : gx::mouse.x + 18;
+    float hy = std::clamp(gx::mouse.y - hh / 2, 6.0f, std::max(6.0f, H - hh - 10.0f));
+    Rectangle hr{std::max(6.0f, hx), hy, hw, hh};
+    DrawRectangleRec(hr, fade(Color{6, 6, 20, 255}, 0.96f));
+    DrawRectangleLinesEx(hr, 1, fade(C_CYAN, 0.6f));
+    for (size_t k = 0; k < ls.size(); ++k) text(F::Mono, ls[k], hr.x + 12, hr.y + 7 + k * 18, 13, C_TEXT);
+}
+
 void App::autosave() {
     std::string err;
     if (!saveGame(g, &err)) toast("Save failed: " + err, C_RED);

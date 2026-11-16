@@ -182,15 +182,7 @@ void App::drawHub() {
             drawHelp(Rectangle{area.x + 20, area.y + 24, area.width - 40, area.height - 40});
             break;
     }
-    if (!hoverHint.empty() && modals.empty()) {
-        auto ls = wrap(F::Mono, hoverHint, 300, 13);
-        float hh = 14 + ls.size() * 18.0f;
-        float hx = gx::mouse.x + 18 + 330 > W - 6 ? gx::mouse.x - 18 - 330 : gx::mouse.x + 18;
-        Rectangle hr{hx, std::max(6.0f, std::min(gx::mouse.y - hh - 12, H - hh - 10.0f)), 330, hh};
-        DrawRectangleRec(hr, fade(Color{6, 6, 20, 255}, 0.96f));
-        DrawRectangleLinesEx(hr, 1, fade(C_CYAN, 0.6f));
-        for (size_t k = 0; k < ls.size(); ++k) text(F::Mono, ls[k], hr.x + 12, hr.y + 7 + k * 18, 13, C_TEXT);
-    }
+    drawHoverHint();
 }
 
 // ---------------------------------------------------------------------------
@@ -299,7 +291,9 @@ void App::drawRack(Rectangle area) {
             float cond = m.condition / 100.0f;
             DrawRing(p, r + 5, r + 8, -90, -90 + 360 * cond, 48, mix(C_RED, C_GREEN, cond));
         }
-        text(F::MonoBold, m.name, p.x, p.y + r + 12, 13, sel ? WHITE : C_TEXT, Center);
+        Rectangle hit{p.x - r, p.y - r, 2 * r, 2 * r + 36};
+        bool hov = !sel && hovered(hit);
+        text(F::MonoBold, m.name, p.x, p.y + r + 12, 13, sel || hov ? WHITE : C_TEXT, Center);
         std::string sub = m.home ? "HOME  //  " + std::string(jobName(m.job)) : m.dark() ? "DARK" : std::string(jobName(m.job));
         text(F::Mono, sub, p.x, p.y + r + 28, 11, m.dark() ? C_RED : fade(col, 0.9f), Center);
         if (n.decoyId == m.id) {
@@ -308,7 +302,8 @@ void App::drawRack(Rectangle area) {
             glowText(F::Display, "ARMED TO DIE", p.x, p.y - r - 34, 11, pulse(C_RED, 5), Center);
         }
         if (sel) brackets(Rectangle{p.x - r - 22, p.y - r - 22, 2 * r + 44, 2 * r + 76}, pulse(WHITE, 4, 0.5f), 12, 2);
-        if (hitArea(Rectangle{p.x - r, p.y - r, 2 * r, 2 * r + 36}, m.name)) {
+        else if (hov) brackets(Rectangle{p.x - r - 18, p.y - r - 18, 2 * r + 36, 2 * r + 68}, fade(col, 0.6f), 10, 1);
+        if (hitArea(hit, m.name)) {
             selMachine = m.id;
             sfx::play(sfx::Click);
         }
@@ -349,15 +344,20 @@ void App::drawRack(Rectangle area) {
                 text(F::MonoBold, "T" + std::to_string(et), p.x, p.y + 6, 10, et > m.tier ? pulse(C_AMBER, 3) : fade(col, 0.95f), Center);
                 float cond = m.condition / 100.0f;
                 DrawRing(p, 23, 25, -90, -90 + 360 * cond, 32, mix(C_RED, C_GREEN, cond));
-                text(F::Mono, m.name.substr(0, 10), p.x, p.y + 29, 10, selMachine == m.id ? WHITE : C_TEXT, Center);
-                if (selMachine == m.id) brackets(Rectangle{p.x - 32, p.y - 30, 64, 76}, pulse(WHITE, 4, 0.5f), 8, 2);
-                if (hitArea(Rectangle{p.x - 30, p.y - 26, 60, 66}, m.name)) {
+                Rectangle hit{p.x - 30, p.y - 26, 60, 66};
+                bool msel = selMachine == m.id, hov = !msel && hovered(hit);
+                text(F::Mono, m.name.substr(0, 10), p.x, p.y + 29, 10, msel || hov ? WHITE : C_TEXT, Center);
+                if (msel) brackets(Rectangle{p.x - 32, p.y - 30, 64, 76}, pulse(WHITE, 4, 0.5f), 8, 2);
+                else if (hov) brackets(Rectangle{p.x - 30, p.y - 28, 60, 72}, fade(col, 0.6f), 8, 1);
+                if (hitArea(hit, m.name)) {
                     selMachine = m.id;
                     sfx::play(sfx::Click);
                 }
             } else {
-                DrawPolyLinesEx(p, 6, 20, 30, 1, fade(C_DIM, 0.5f));
-                text(F::Mono, "free", p.x, p.y - 6, 10, fade(C_DIM, 0.7f), Center);
+                bool hov = hovered(Rectangle{p.x - 26, p.y - 26, 52, 52});
+                DrawPolyLinesEx(p, 6, 20, 30, 1, fade(hov ? rc : C_DIM, hov ? 0.9f : 0.5f));
+                text(F::Mono, "free", p.x, p.y - 6, 10, hov ? C_TEXT : fade(C_DIM, 0.7f), Center);
+                if (hov) hoverHint = "Free subnet slot. Select a machine, then press PLUG INTO " + gw.name + ".";
             }
         }
         if (cluster) {
@@ -371,7 +371,9 @@ void App::drawRack(Rectangle area) {
         text(F::Mono, std::to_string(pw) + "/" + std::to_string(bud), box.x + box.width - 10, box.y + 124, 11, pw > bud ? C_RED : C_TEXT, Right);
         text(F::Mono, "BILL " + std::to_string(n.bayUpkeep(gw.id)) + "cr/run", box.x + 10, box.y + 144, 11, C_AMBER);
         text(F::Mono, std::string(strikeName(gw.role)) + " x1", box.x + box.width - 10, box.y + 144, 11, online ? rc : C_DIM, Right);
-        if (hitArea(Rectangle{box.x, box.y, box.width, 30}, "subnet " + gw.name)) {
+        // The whole box selects the gateway, so clicks on it never fall through and deselect.
+        if (hovered(box) && selMachine != gw.id) DrawRectangleLinesEx(box, 1, fade(edge, 0.5f));
+        if (hitArea(box, "subnet " + gw.name)) {
             selMachine = gw.id;
             sfx::play(sfx::Click);
         }
@@ -384,12 +386,17 @@ void App::drawRack(Rectangle area) {
     text(F::Mono, "free, no wear, counts toward the " + std::to_string(bal::MAX_EXTERNAL) + "-machine limit", left.x + 150, ty + 1, 12,
          fade(C_DIM, 0.8f));
     if (stored.empty()) text(F::Mono, "(empty)", left.x + 20, ty + 34, 13, fade(C_DIM, 0.7f));
-    for (size_t i = 0; i < stored.size() && i < 6; ++i) {
-        Machine& m = *stored[i];
+    // Six cards fit; with more, show five a page with arrows, so every stored machine stays reachable.
+    const size_t perPage = stored.size() <= 6 ? 6 : 5;
+    const int pages = static_cast<int>((stored.size() + perPage - 1) / perPage);
+    storagePage = std::clamp(storagePage, 0, std::max(0, pages - 1));
+    const size_t first = static_cast<size_t>(storagePage) * perPage;
+    for (size_t i = 0; first + i < stored.size() && i < perPage; ++i) {
+        Machine& m = *stored[first + i];
         Rectangle r{left.x + 20 + i * 124.0f, ty + 24, 114, 64};
         Color col = m.dark() ? C_DARK : jobColor(m.job);
-        bool sel = selMachine == m.id;
-        DrawRectangleRec(r, fade(col, sel ? 0.22f : 0.08f));
+        bool sel = selMachine == m.id, hov = !sel && hovered(r);
+        DrawRectangleRec(r, fade(col, sel ? 0.22f : hov ? 0.15f : 0.08f));
         DrawRectangleLinesEx(r, sel ? 2.0f : 1.0f, fade(col, 0.8f));
         text(F::MonoBold, m.name, r.x + 8, r.y + 8, 13, C_TEXT);
         text(F::Mono, std::string(jobName(m.job)) + " T" + std::to_string(m.tier), r.x + 8, r.y + 26, 11, col);
@@ -399,7 +406,12 @@ void App::drawRack(Rectangle area) {
             sfx::play(sfx::Click);
         }
     }
-    if (stored.size() > 6) text(F::Mono, "+" + std::to_string(stored.size() - 6) + " more", left.x + 760, ty + 50, 13, C_DIM, Right);
+    if (pages > 1) {
+        float px = left.x + 20 + 5 * 124.0f;
+        text(F::Mono, "PAGE " + std::to_string(storagePage + 1) + "/" + std::to_string(pages), px + 57, ty + 26, 11, C_DIM, Center);
+        if (button(Rectangle{px, ty + 44, 54, 34}, "<", C_CYAN, storagePage > 0, false, 14)) storagePage -= 1;
+        if (button(Rectangle{px + 60, ty + 44, 54, 34}, ">", C_CYAN, storagePage < pages - 1, false, 14)) storagePage += 1;
+    }
     text(F::Mono, "click a machine to manage it", left.x + left.width - 16, left.y + 14, 12, fade(C_DIM, 0.8f), Right);
     if (!g.wall.empty()) {
         Rectangle mr{left.x + left.width - 236, ty - 40, 220, 22};

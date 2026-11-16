@@ -3,7 +3,7 @@ cmake_policy(SET CMP0091 NEW)   # lets us pick the static MSVC runtime
 
 project(GhostNet LANGUAGES C CXX)
 
-set(GHOSTNET_VERSION "0.5.0" CACHE STRING "Version stamped into the binaries")
+set(GHOSTNET_VERSION "0.5.1" CACHE STRING "Version stamped into the binaries")
 set(GHOSTNET_REPO "Cilis1/GhostNet" CACHE STRING "GitHub owner/repo the installer is pinned to")
 set(GHOSTNET_SIGNING_PUBKEY_HEX "" CACHE STRING "Optional ECDSA P-256 public key (X||Y hex) the installer requires")
 

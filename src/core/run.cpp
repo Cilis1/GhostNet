@@ -670,8 +670,8 @@ Reckoning RunSession::settle() {
             bool wasDark = m->dark();
             m->condition = std::max(0, m->condition - bal::STRIKE_WEAR);
             if (m->dark() && !wasDark) {
-                if (m->bay < 0) m->active = false;
-                else { m->bay = -1; m->active = false; }
+                m->active = false;   // a dark machine leaves its subnet for storage
+                m->bay = -1;
                 if (g.net.decoyId == m->id) g.net.decoyId = -1;
                 darkNow.push_back(m->name);
             }
