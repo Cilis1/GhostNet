@@ -50,7 +50,7 @@ ReportView reportView(const GameState& g, const Target& t) {
     auto it = g.reports.find(t.id);
     if (it == g.reports.end()) return r;
     r.exists = true;
-    r.quality = g.net.bestScoutTier() > 0 ? it->second : 1;
+    r.quality = (g.net.bestScoutTier() > 0 || t.kind == Kind::Tower) ? it->second : 1;   // a bought floor plan doesn't fade
     r.lockName = lockName(t.lock);
     r.lockRule = t.lock == LockType::None ? "No lock - the door is open." : lockRuleText(t.lock);
     r.lockWarning = lockHasOddNearRule(t.lock);
@@ -65,6 +65,13 @@ ReportView reportView(const GameState& g, const Target& t) {
     if (r.quality >= 3) {
         r.secondsToTrace = static_cast<int>(100.0 / effectiveTraceRate(g, t));
         r.backdoor = t.backdoor;
+    }
+    if (t.kind == Kind::Tower) {
+        r.facts.push_back(std::string("DOCTRINE: ") + doctrineText(t.doctrine));
+        r.facts.push_back("Floor " + std::to_string(t.floor + 1) + " of " + std::to_string(kFloors) + ". " +
+                          (t.floor + 1 == kFloors                ? "The Boardroom."
+                           : t.doctrine == Doctrine::Fortress ? "No ports, so no memo leaks a way up - only the locks."
+                                                              : "Its facilities memo names the next floor's maintenance phrase."));
     }
     if (t.deep) r.facts.push_back("THE DEEP JOB. Tuned past any deck alone. Its maintenance phrase is kept by HELIOS facilities.");
     if (t.stealable && g.net.bestScoutTier() > 0) r.facts.push_back("Detachable hardware: you could capture a server here.");
@@ -119,10 +126,21 @@ PanelView panelBriefing(const GameState& g, const Target& t) {
     int lockCost = t.lock == LockType::None ? 0
                  : phrase                   ? bal::COST_PHRASE
                                             : static_cast<int>((baseGuesses(t.lock) + g.deck.breaker) * 0.75) * bal::COST_GUESS;
+    const int cut = g.netUnlocked ? g.net.jamSpikeCut() : 0;
+    if (t.lock == LockType::Composite) {   // a keypad and a rotor; misses ping the trace
+        int guesses = phrase ? 4 : 6;
+        lockCost = (phrase ? bal::COST_PHRASE : 0) + guesses * bal::COST_GUESS;
+        if (t.doctrine == Doctrine::Fortress)
+            lockCost += static_cast<int>((guesses - 1) * bal::FORTRESS_MISS_SPIKE * (100 - cut) / 100.0 / eff);
+    }
     int objSecs = 0;
     for (auto& f : t.files) if (f.kind == FileKind::Objective) objSecs += secondsToDownload(g, f.size);
     objSecs = static_cast<int>(std::ceil(objSecs * bal::DOWNLOAD_TRACE_MULT));
     int need = lockCost + objSecs + 4;
+    if (t.doctrine == Doctrine::Biosentinel) {
+        int sweeps = need / bal::BIO_SWEEP_EVERY;
+        need += static_cast<int>(sweeps * bal::BIO_SWEEP_SPIKE * (100 - cut) / 100.0 / eff);
+    }
 
     Vote vv = Vote::Go;
     std::string vl = "Trace budget ~" + std::to_string(budget) + "s. Door costs ~" + std::to_string(lockCost) + "s";
@@ -139,7 +157,20 @@ PanelView panelBriefing(const GameState& g, const Target& t) {
         vl += " Comfortable, if you stay disciplined.";
     }
     say(Advisor::Vesper, vl);
-    if (t.watchdog) say(Advisor::Vesper, "Watchdog on this box: every minute you stay, the hunt gets 50% faster.");
+    if (t.watchdog)
+        say(Advisor::Vesper, t.doctrine == Doctrine::Biosentinel ? "BIOSENTINEL watchdog: every minute you stay, the hunt gets 100% faster."
+                                                                 : "Watchdog on this box: every minute you stay, the hunt gets 50% faster.");
+    if (t.doctrine == Doctrine::Fortress)
+        say(Advisor::Vesper, "FORTRESS doctrine. Every miss at the door pings the trace (+" +
+                                 std::to_string(static_cast<int>(std::lround(bal::FORTRESS_MISS_SPIKE * (100 - cut) / 100.0))) +
+                                 "% each after jammers), and the door only gives you " + std::to_string(bal::FORTRESS_GUESSES + g.deck.breaker) +
+                                 " guess(es) plus one per compute box (" + std::to_string(g.netUnlocked ? g.net.computeCapacity() : 0) +
+                                 " tonight). Bring a SIEGE subnet, compute, PEEK.");
+    if (t.doctrine == Doctrine::Biosentinel)
+        say(Advisor::Vesper, "BIOSENTINEL doctrine. A sentinel sweep every " + std::to_string(bal::BIO_SWEEP_EVERY) + "s, +" +
+                                 std::to_string(static_cast<int>(std::lround(bal::BIO_SWEEP_SPIKE * (100 - cut) / 100.0))) +
+                                 "% each after jammers; the watchdog is held " + std::to_string(g.netUnlocked ? g.net.jamDelay() : 0) +
+                                 "s. Bring jammers, a STEALTH subnet, FREEZE.");
     if (const Machine* b = g.net.decoy()) {
         say(Advisor::Vesper, "Decoy armed: '" + b->name + "'. If this goes wrong, HELIOS traces it instead of you.");
     } else if (g.netUnlocked && t.security >= 3) {
@@ -183,9 +214,18 @@ PanelView panelBriefing(const GameState& g, const Target& t) {
     } else {
         say(Advisor::Moth, "Report on file at quality " + std::to_string(quality) + "/3. Re-reading it is free.");
     }
-    if (phrase) say(Advisor::Moth, "You've read the maintenance phrase for this door. Use it and skip the lock.");
+    if (phrase && t.lock == LockType::Composite)
+        say(Advisor::Moth, "You hold the phrase. It opens the outer keypad only - the rotor still has to be turned by hand.");
+    else if (phrase) say(Advisor::Moth, "You've read the maintenance phrase for this door. Use it and skip the lock.");
+    else if (t.kind == Kind::Tower && !t.backdoor)
+        say(Advisor::Moth, "FORTRESS: no maintenance ports, so no phrase will help. It's you, your kit and the lock.");
+    else if (t.kind == Kind::Tower)
+        say(Advisor::Moth, t.floor == 0 ? "No phrase for the ground floor. Nobody leaks those - but a fixer will sell you one."
+                                        : "The floor below kept a facilities memo with this phrase. Or buy it.");
     else if (t.backdoor && quality >= 3) say(Advisor::Moth, "There IS a maintenance way in. Somebody wrote the phrase down. Shrines hoard memos.");
-    if (t.lock != LockType::None && lockHasOddNearRule(t.lock) && (quality >= 1 || t.kind == Kind::Story))
+    if (t.lock == LockType::Composite)
+        say(Advisor::Moth, "Composite: the keypad first. Then a rotor whose every wheel sits within 2 notches of the keypad digit in the same box.");
+    else if (t.lock != LockType::None && lockHasOddNearRule(t.lock) && (quality >= 1 || t.kind == Kind::Story || t.kind == Kind::Tower))
         say(Advisor::Moth, "Rotor lock. Amber means one notch off, NOT misplaced. It's how most runners die.");
     if (t.hasHoneypot() && quality >= 1) {
         say(Advisor::Moth, "There's a bait file in there. Read before you grab.");
@@ -254,4 +294,39 @@ PanelView panelReview(const GameState& g) {
     }
     p.verdict = "Between runs is the only time you can change anything.";
     return p;
+}
+
+// ---------------------------------------------------------------------------
+// Heist prep (Act IV)
+// ---------------------------------------------------------------------------
+const char* prepName(Prep p) { return p == Prep::Plan ? "FLOOR PLAN" : "MAINTENANCE PHRASE"; }
+const char* prepText(Prep p) {
+    return p == Prep::Plan ? "A full-quality report: security, objectives, trace window, and every bait file named. No scout needed."
+                           : "The floor's maintenance phrase, from a fixer who used to clean there. Good until a trace re-keys the tower.";
+}
+int prepCost(const Target& t, Prep p) {
+    if (p == Prep::Plan) return bal::PREP_PLAN_COST;
+    return bal::PREP_PHRASE_COST[std::max(0, std::min(kFloors - 1, t.floor))];
+}
+bool prepAvailable(const GameState& g, const Target& t, Prep p, std::string* why) {
+    auto no = [&](const std::string& s) { if (why) *why = s; return false; };
+    if (t.kind != Kind::Tower) return no("Prep is sold for corp towers only.");
+    if (p == Prep::Plan && g.reports.count(t.id) && g.reports.at(t.id) >= 3) return no("You already hold the full floor plan.");
+    if (p == Prep::Phrase && !t.backdoor) return no("FORTRESS: there are no maintenance ports to sell a phrase for.");
+    if (p == Prep::Phrase && g.knownPhrases.count(t.id)) return no("You already hold this floor's phrase.");
+    if (g.credits < prepCost(t, p)) return no("Not enough credits (" + txt::cr(prepCost(t, p)) + ").");
+    return true;
+}
+Result buyPrep(GameState& g, const Target& t, Prep p) {
+    std::string why;
+    if (!prepAvailable(g, t, p, &why)) return {false, why};
+    int cost = prepCost(t, p);
+    g.credits -= cost;
+    if (p == Prep::Plan) {
+        g.reports[t.id] = 3;
+        return {true, "Floor plan bought for " + txt::cr(cost) + ". The report is on file at full quality."};
+    }
+    g.knownPhrases.insert(t.id);
+    g.journal.push_back("Passphrase for " + t.host + ": " + t.passphrase + " (bought)");
+    return {true, "Phrase bought for " + txt::cr(cost) + ". It's in your journal."};
 }

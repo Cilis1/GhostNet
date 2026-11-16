@@ -13,7 +13,7 @@
 namespace fs = std::filesystem;
 
 namespace {
-constexpr int kVersion = 4;   // v1 (0.1.x), v2 (0.2-0.3) and v3 (0.4) saves still load; new fields default
+constexpr int kVersion = 5;   // v1 (0.1.x), v2 (0.2-0.3), v3 (0.4) and v4 (0.5) saves still load; new fields default
 
 std::string esc(const std::string& s) {
     static const char* hex = "0123456789ABCDEF";
@@ -77,6 +77,8 @@ bool saveGame(const GameState& g, std::string* err) {
     for (int id : g.knownPhrases) o << "phrase " << id << "\n";
     for (int sd : g.sidesRevealed) o << "side " << sd << "\n";
     for (int sd : g.sidesBurned) o << "sideburned " << sd << "\n";
+    for (size_t i = 0; i < g.towerFloor.size() || i < g.towerKey.size(); ++i)   // v5: Act IV towers
+        o << "tower " << i << " " << g.floorsCleared(static_cast<int>(i)) << " " << g.keyOf(static_cast<int>(i)) << "\n";
     for (auto& j : g.journal) o << "journal " << esc(j) << "\n";
     for (auto& l : g.stats.log) o << "log " << esc(l) << "\n";
     o << "end\n";
@@ -118,7 +120,7 @@ bool loadGame(GameState& g, std::string* err) {
         else if (k == "act") {
             long long a = 1; int d = 0, r = 0;
             is >> a >> d >> r;
-            n.act = clampi(a, 1, 3);
+            n.act = clampi(a, 1, kMaxAct);
             n.deepDone = d != 0;
             n.retired = r != 0;
         } else if (k == "unlocked") { int v = 0; is >> v; n.netUnlocked = v != 0; }
@@ -199,6 +201,15 @@ bool loadGame(GameState& g, std::string* err) {
         else if (k == "phrase") { int v; if (is >> v) n.knownPhrases.insert(v); }
         else if (k == "side") { int v; if (is >> v && v >= 0) n.sidesRevealed.push_back(v); }
         else if (k == "sideburned") { int v; if (is >> v) n.sidesBurned.insert(v); }
+        else if (k == "tower") {
+            long long i = -1, fl = 0, key = 0;
+            if (!(is >> i >> fl >> key) || i < 0 || i >= kTowerCount) continue;
+            size_t at = static_cast<size_t>(i);
+            if (n.towerFloor.size() <= at) n.towerFloor.resize(at + 1, 0);
+            if (n.towerKey.size() <= at) n.towerKey.resize(at + 1, 0);
+            n.towerFloor[at] = clampi(fl, 0, kFloors);
+            n.towerKey[at] = clampi(key, 0, 1000000);
+        }
         else if (k == "journal") { std::string t; is >> t; n.journal.push_back(unesc(t)); }
         else if (k == "log") { std::string t; is >> t; n.stats.log.push_back(unesc(t)); }
         else if (k == "end") { end = true; break; }
@@ -227,6 +238,7 @@ bool loadGame(GameState& g, std::string* err) {
     if (n.stats.captures > 0 && n.act < 2) n.act = 2;      // 0.1.x saves: derive the act from history
     if (n.stats.sacrifices > 0 && n.act < 3) n.act = 3;
     if (n.netUnlocked && !n.net.home()) n.netUnlocked = false;
+    if (!n.deepDone) { n.towerFloor.clear(); n.towerKey.clear(); if (n.act > 3) n.act = 3; }   // the Ledger opens after the deep job
     g = n;
     return true;
 }

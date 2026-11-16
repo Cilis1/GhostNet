@@ -22,6 +22,7 @@ const char* actName(int act) {
     switch (act) {
         case 1: return "ACT ONE - RENTING";
         case 2: return "ACT TWO - OWNING";
+        case 4: return "ACT FOUR - THE LEDGER";
         default: return "ACT THREE - THE DEEP JOB";
     }
 }
@@ -49,6 +50,7 @@ Color kindColor(Kind k) {
         case Kind::Story: return C_MAGENTA;
         case Kind::Side: return C_PURPLE;
         case Kind::Prototype: return Color{255, 70, 40, 255};   // black-site red-orange
+        case Kind::Tower: return Color{120, 200, 255, 255};     // corporate glass blue
     }
     return C_TEXT;
 }
@@ -330,7 +332,9 @@ void App::drawEnding() {
         lines = {"You stop taking listings. Nobody tells you to; there's just nothing left you need to take.",
                  std::to_string(g.net.activeCount()) + " machine(s) hum in a room you used to rent. " +
                      (g.net.home() ? g.net.home()->name : std::string("N0")) + " is still on, the way SAINT left it.",
-                 "HELIOS never closes ticket #48213. It just stops mattering."};
+                 "HELIOS never closes ticket #48213. It just stops mattering.",
+                 "But HELIOS was only ever the help. THE LEDGER - the corp towers that set the rent - is open on your board, "
+                 "whenever you want it. Nobody is timing you."};
         final = "The rack goes quiet. The machines stay on.";
     } else {
         title = "A RUNNER WHO KEPT RENTING";
@@ -356,7 +360,7 @@ void App::drawEnding() {
     text(F::Mono, st, 640, y + 80, 14, fade(C_DIM, a), Center);
     text(F::Mono, "Your save stays. Continue any time - the city doesn't care that you're done.", 640, y + 104, 13, fade(C_DIM, a), Center);
     if (t > 2.0f) {
-        if (button(Rectangle{450, 620, 180, 44}, "THE RACK", C_CYAN, true, true)) go(Scr::Hub);
+        if (button(Rectangle{450, 620, 180, 44}, owner ? "THE LEDGER" : "THE RACK", C_CYAN, true, true)) go(Scr::Hub);
         if (button(Rectangle{650, 620, 180, 44}, "TITLE", C_DIM)) {
             haveSave = saveExists();
             go(Scr::Title);

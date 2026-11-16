@@ -21,7 +21,8 @@ struct Line {
 enum class Ev {
     Connected, AccessGranted, PhraseOk, PhraseBad, Guess, Lockout, Extra, MachineDark,
     Read, PhraseLearned, SideFound, DownloadDone, DownloadAborted, Honeypot, Objective,
-    ContractDone, Captured, Traced, Sacrifice, Program, Spoofed, Strike
+    ContractDone, Captured, Traced, Sacrifice, Program, Spoofed, Strike,
+    Stage, Sweep, MissLogged   // 0.6: a composite's outer stage opens; doctrine pings
 };
 struct Event {
     Ev type;
@@ -55,6 +56,8 @@ struct Reckoning {
     Shortfall shortfall;
     std::vector<std::pair<std::string, std::string>> actCards;   // title, text
     std::string storyTitle, storyOutro, infoReward;
+    int tower = -1, floorCleared = -1;   // Act IV: the floor this run took (if any)
+    bool towerOwned = false, ledgerDone = false, rekeyed = false;
     bool unlockedNetwork = false;
     bool boardRefreshed = false;
     std::string sacrificed, captured;
@@ -127,6 +130,8 @@ public:
     bool over() const { return end != End::None; }
     bool busy() const { return act != Act::None; }
     double rateNow(double mult = 1.0) const;
+    int nextSweep() const;           // BIOSENTINEL: seconds until the next sentinel sweep (-1 if none)
+    int sweeps = 0, misses = 0;      // doctrine pings tonight
     int secondsLeft() const;
     Reckoning settle();             // call once, after over()
 

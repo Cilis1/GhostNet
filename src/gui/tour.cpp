@@ -3,6 +3,7 @@
 // every push, and the pictures double as up-to-date screenshots.
 #include <cstdio>
 #include <filesystem>
+#include <optional>
 
 #include "app.h"
 #include "balance.h"
@@ -308,6 +309,58 @@ int App::screenshotTour(const std::string& dir, const std::function<void()>& ren
     g.deepDone = true;
     go(Scr::Ending);
     shot("23-ending-owner");
+
+    // Act IV - THE LEDGER: the card, the towers on the board, a doctrine briefing, both doctrines live.
+    g.retired = true;
+    g.deck.breaker = bal::DECK_MAX;
+    g.credits += 4000;
+    tab = Tab::Rack;
+    go(Scr::Hub);
+    shot("31-ledger-card");
+    dismiss();
+    tab = Tab::Board;
+    refreshBoard();
+    boardScroll = 0;
+    shot("32-board-ledger");
+    // findTarget rebuilds the board, so copy each hit before the next lookup.
+    std::optional<Target> fort, bio;
+    if (const Target* f = findTarget([](const Target& t) { return t.kind == Kind::Tower && t.doctrine == Doctrine::Fortress; })) fort = *f;
+    if (const Target* b = findTarget([](const Target& t) { return t.kind == Kind::Tower && t.doctrine == Doctrine::Biosentinel; })) bio = *b;
+    if (!fort || !bio) { std::fprintf(stderr, "no towers on the Ledger\n"); ++failures; }
+    else {
+        Target fortT = *fort, bioT = *bio;
+        buyPrep(g, fortT, Prep::Plan);
+        brief = fortT;
+        go(Scr::Brief);
+        shot("33-brief-fortress");
+        connect(fortT);
+        std::string k = run->lock.secret;
+        run->guess(k.substr(1) + k.substr(0, 1), err);   // a logged miss
+        run->guess(k, err);                             // the keypad opens; the rotor wakes
+        std::string near = run->lock.secret;
+        near[0] = near[0] == '9' ? '8' : static_cast<char>(near[0] + 1);
+        run->guess(near, err);
+        input = "4";
+        handleEvents();
+        floats.clear();
+        shot("34-lock-composite", 1.0f);
+        run->disconnect();
+        run.reset();
+        buyPrep(g, bioT, Prep::Phrase);
+        connect(bioT);
+        run->phrase(bioT.passphrase);
+        for (size_t i = 0; i < run->t.files.size(); ++i)
+            if (run->t.files[i].kind == FileKind::Objective && run->startDownload(static_cast<int>(i), err)) {
+                for (int s = 0; s < 14 && run->busy() && !run->over(); ++s) run->step();
+                break;
+            }
+        traceShown = static_cast<float>(run->trace);
+        handleEvents();
+        floats.clear();
+        shot("35-run-biosentinel", 1.0f);
+        run->disconnect();
+        run.reset();
+    }
     practice = makeLock(LockType::Cipher, practiceRng, 0);
     practiceOn = true;
     practice.guess("crane", err);

@@ -9,7 +9,8 @@ whose trace meter is "how long you've been an open ticket") closes your ticket.
 Then you find what the dead courier SAINT left behind: a salvaged 3-slot rack
 and a home server, **N0**. From there you build a network you own, and every
 machine in it bills you, wears out, and can die in your place. The goal is to
-survive, then pull off **the deep job**.
+survive, then pull off **the deep job**. After that, **the Ledger** puts the
+towers that set your rent on your board.
 
 It runs in its own window: a rain-soaked skyline, a live mesh graph of your
 machines, lock grids that light up green and amber, a trace ring that turns red
@@ -50,10 +51,11 @@ THE RECKONING -> haul, fines, the bill, wear, machines going dark
 **Enter**; **Backspace** fixes. **Esc** opens the menu (save & quit, practice,
 retire) or closes a dialog. **F11** toggles borderless fullscreen. **M** on the
 title screen mutes. The **Practice range** on the title screen lets you learn
-all three locks with no trace and no bill.
+all four locks with no trace and no bill.
 
-* **Three acts.** *Renting* ends at your first trace-out. *Owning* starts with
+* **Four acts.** *Renting* ends at your first trace-out. *Owning* starts with
   your first captured machine. *The Deep Job* starts when a decoy first dies for you.
+  *The Ledger* opens after the owner ending.
 * **Trace-out:** your accounts are seized, so the night's haul is lost. You pay a fine
   (never more than you have), the bill still comes due, and your machines wear hard.
 * **Downloading** takes time and makes you easier to find: the trace runs ×1.25 while bytes move.
@@ -114,6 +116,33 @@ all three locks with no trace and no bill.
   * **Owner ending:** finish the deep job and retire as an owner.
   * **Renter ending:** walk away and be filed as a runner who kept renting.
   * Neither ending is a loss.
+* **Act IV: the Ledger** (0.6) opens once you've finished the deep job. The owner ending
+  now offers **THE LEDGER**, and a card puts two corp towers on your board. Each has
+  3 floors; the third is the Boardroom, and taking it means you own the tower. A tower is
+  never timed and never moves on its own: you start every climb, and a floor you've taken
+  stays taken.
+  * **Doctrines** are always announced on the board and in the briefing, never sprung
+    mid-run. Each tower is built against a different build, so one deck rarely takes both.
+    * **Kessler-Maru, FORTRESS.** Every door is a **composite lock**, and there are no
+      maintenance ports (so no phrase). You get one guess for the whole door, plus one per
+      Breaker level. Each compute box (and a SIEGE subnet) answers *once* per door. Every
+      miss is logged as an alarm ping (+4% trace).
+    * **Tidewater BioSys, BIOSENTINEL.** Ordinary locks, but a watchdog on every floor and a
+      **sentinel sweep** every 12s (+6% trace). Jammers soften a sweep but can't delay it;
+      FREEZE lets one pass. Each floor's facilities memo names the next floor's
+      maintenance phrase.
+  * **Composite lock:** one door, two stages, one guess budget. First a keypad (4 different
+    digits, judged as usual). Once it opens, a rotor wakes, and every wheel sits within 2
+    notches of the keypad digit in the same box. The screen shows the carried code and
+    each box's range, and both stages give their own feedback.
+  * **Heist prep** is paid for once and kept: a **FLOOR PLAN** (350cr) is a full-quality
+    report, and a **MAINTENANCE PHRASE** (700/1000/1400cr, Biosentinel only) opens the
+    door outright.
+  * **Re-key:** the only thing a tower does to you is react to a trace. Get traced on a floor
+    and that tower re-keys every door: phrases you held for it go stale. Floor plans and
+    taken floors are kept.
+  * Floors pay 1500 / 2500 / 9000cr. Records shows your progress on the Ledger. Saves from
+    any earlier version carry over (save format v5).
 * **The Panel:** VESPER (risk), LEDGER (money) and MOTH (intel) are advisor AIs. They read
   your meters and vote before each run. They never solve a lock.
 * **Never in this game:** idle income, offline progress, build timers, raids, a second currency, gacha or levelling.
@@ -149,9 +178,9 @@ all, for CI. That build only takes `--shots DIR`.
 
 * `ctest --test-dir build` runs:
   * the installer's JSON / manifest / file-name validation tests;
-  * `ghostnet_sim`, an automated player (`tests/sim_bot.cpp`) that plays the real rules end to end. It solves locks only from their feedback and learns passphrases only by reading files. There are four modes: `careful`, `chaos` (lockouts, trace-outs, decoy sacrifices, unpaid bills), `deep`, and `subnet` (gateways, strikes and prototype captures over 70 runs). Deep fails unless the bot builds a network and beats the deep job, after one doomed early attempt that checks the shortfall readout.
-* `gui_autoplay` (headless builds): the game plays its own UI through a simulated 1600×1000 window using only mouse clicks and typing: practice range, new game, every hub tab, the first contract (lock typed and clicked), the reckoning, naming N0, buying, storing and switching on a machine, save & quit, continue. A dead button or mouse mapping that misses fails the build.
-* `build/GhostNet --shots shots` drives every screen of the actual front end and saves 30 screenshots. CI does this on every push and uploads them as the **screenshots** artifact.
+  * `ghostnet_sim`, an automated player (`tests/sim_bot.cpp`) that plays the real rules end to end. It solves locks only from their feedback and learns passphrases only by reading files. There are five modes: `careful`, `chaos` (lockouts, trace-outs, decoy sacrifices, unpaid bills), `deep`, `subnet` (gateways, strikes and prototype captures over 70 runs), and `tower` (Act IV). Tower mode plays on past the deep job into the Ledger. Then it runs *kit trials*: an owner with the kit matched to a tower's doctrine must take all 3 floors of both towers, and a single build sent against the wrong doctrine must fail. Deep fails unless the bot builds a network and beats the deep job, after one doomed early attempt that checks the shortfall readout.
+* `gui_autoplay` (headless builds): the game plays its own UI through a simulated 1600×1000 window using only mouse clicks and typing: practice range, new game, every hub tab, the first contract (lock typed and clicked), the reckoning, naming N0, buying, storing and switching on a machine, save & quit, continue, then the Act IV card, buying a floor plan and solving a composite lock (keypad clicked, rotor typed). A dead button or mouse mapping that misses fails the build.
+* `build/GhostNet --shots shots` drives every screen of the actual front end and saves 35 screenshots. CI does this on every push and uploads them as the **screenshots** artifact.
 * `GhostNet-Setup.exe --selftest`: the downloader's offline security self-test.
 
 ## Releasing
@@ -169,8 +198,9 @@ src/core/        the rules: pure C++17, no I/O, no graphics
   balance.h      every tunable number
   run.cpp        a connection: locks, reading, downloads, capture, decoy, the reckoning
   rack.cpp       owning machines: buy, store, re-job, repair, scrap, decoy, the deck
-  world.cpp      job board, contracts, the deep job, side routes, shrines
-  intel.cpp      scouting reports and the Panel's advisor AIs
+  world.cpp      job board, contracts, the deep job, the Ledger's towers, side routes, shrines
+  intel.cpp      scouting reports, heist prep and the Panel's advisor AIs
+  locks.cpp      keypad, rotor, cipher and the two-stage composite
 src/gui/         the windowed game (raylib)
   gfx.cpp        palette, fonts, glow text, panels, the city, the CRT pass
   app.cpp        title, intro, endings, dialogs    hub.cpp  rack / board / deck / panel tabs

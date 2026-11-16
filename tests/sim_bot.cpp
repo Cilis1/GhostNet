@@ -6,8 +6,10 @@
 // the shortfall readout) and again once its network is strong. After every run
 // it checks the game's invariants and round-trips the save file.
 //
-// usage: ghostnet_sim [seed] [runs] [careful|chaos|deep]
-//   deep  exit 1 unless the deep job is beaten within [runs]
+// usage: ghostnet_sim [seed] [runs] [careful|chaos|deep|subnet|tower]
+//   deep   exit 1 unless the deep job is beaten within [runs]
+//   tower  beat the deep job, open Act IV and climb the corp towers; then kit trials: a build matched to each
+//          tower's doctrine must take all of it, and a single build facing the wrong doctrine must fail
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -33,6 +35,8 @@ namespace {
 
 bool CHAOS = false;
 bool SUBNET = false;   // "subnet" mode: build subnets early, hunt prototypes, never take the deep job
+bool TOWER = false;    // "tower" mode: keep playing after the deep job, into Act IV
+int KIT_TIER = 3;      // the tier of the late-game owner's iron in the kit trials
 int problems = 0;
 void fail(const std::string& s) {
     std::cerr << "PROBLEM: " << s << "\n";
@@ -44,15 +48,33 @@ struct Solver {
     std::vector<std::string> cands;
     std::vector<std::set<int>> wheels;
     std::string last;
-    explicit Solver(LockType k) : kind(k) {
-        if (k == LockType::Keypad) {
+    // A composite's rotor stage: every wheel within 2 notches of the keypad digit in its box.
+    void carry(const Lock& L) {
+        kind = LockType::Rotor;
+        wheels.clear();
+        for (int i = 0; i < 4; ++i) {
+            std::set<int> s;
+            int k = L.carried() ? L.outerRows.back().guess[static_cast<size_t>(i)] - '0' : -1;
+            for (int v = 0; v <= 9; ++v) if (k < 0 || std::abs(v - k) <= 2) s.insert(v);
+            wheels.push_back(s);
+        }
+    }
+    // What PEEK / CRACK showed on screen: box i is exactly c.
+    void pin(int i, char c) {
+        if (kind == LockType::Rotor) { wheels[static_cast<size_t>(i)] = {c - '0'}; return; }
+        std::vector<std::string> keep;
+        for (auto& w : cands) if (w[static_cast<size_t>(i)] == c) keep.push_back(w);
+        cands.swap(keep);
+    }
+    explicit Solver(LockType k) : kind(k == LockType::Composite ? LockType::Keypad : k) {
+        if (kind == LockType::Keypad) {
             for (int a = 0; a < 10; ++a)
                 for (int b = 0; b < 10; ++b)
                     for (int c = 0; c < 10; ++c)
                         for (int d = 0; d < 10; ++d)
                             if (a != b && a != c && a != d && b != c && b != d && c != d)
                                 cands.push_back({char('0' + a), char('0' + b), char('0' + c), char('0' + d)});
-        } else if (k == LockType::Rotor) {
+        } else if (kind == LockType::Rotor) {
             for (int i = 0; i < 4; ++i) {
                 std::set<int> s;
                 for (int v = 0; v < 10; ++v) s.insert(v);
@@ -82,7 +104,37 @@ struct Solver {
             return last = g;
         }
         if (cands.empty()) return last = kind == LockType::Keypad ? "0123" : "crane";
+        if (kind == LockType::Keypad && cands.size() > 2 && cands.size() <= 400) return last = bestKeypad();
         return last = cands.size() < 3 ? cands[0] : cands[cands.size() / 2];
+    }
+    // A careful player's keypad move once the field is small: any legal code (not just a candidate)
+    // that leaves the fewest candidates in the worst case - e.g. parking untried digits in boxes already known.
+    std::string bestKeypad() const {
+        static std::vector<std::string> all = [] {
+            std::vector<std::string> v;
+            for (int a = 0; a < 10; ++a)
+                for (int b = 0; b < 10; ++b)
+                    for (int c = 0; c < 10; ++c)
+                        for (int d = 0; d < 10; ++d)
+                            if (a != b && a != c && a != d && b != c && b != d && c != d)
+                                v.push_back({char('0' + a), char('0' + b), char('0' + c), char('0' + d)});
+            return v;
+        }();
+        std::string best = cands[0];
+        size_t bestWorst = cands.size() + 1;
+        bool bestIsCand = true;
+        for (auto& g : all) {
+            int bucket[81] = {0};
+            size_t worst = 0;
+            for (auto& c : cands) {
+                int code = 0;
+                for (int i = 0; i < 4; ++i) code = code * 3 + (g[i] == c[i] ? 2 : c.find(g[i]) != std::string::npos ? 1 : 0);
+                worst = std::max(worst, static_cast<size_t>(++bucket[code]));
+            }
+            bool isCand = std::find(cands.begin(), cands.end(), g) != cands.end();
+            if (worst < bestWorst || (worst == bestWorst && isCand && !bestIsCand)) { best = g; bestWorst = worst; bestIsCand = isCand; }
+        }
+        return best;
     }
     void feed(const Lock::Row& row) {
         const std::string& g = row.guess;
@@ -130,13 +182,29 @@ struct SimStats {
     int runs = 0, captures = 0, steals = 0, traceouts = 0, sacrifices = 0, phrases = 0, extra = 0, honeypots = 0;
     int bought = 0, decoys = 0, deepAttempts = 0, shortfalls = 0, deepWon = 0, annex = 0, contracts = 0, unpaid = 0;
     int gateways = 0, plugged = 0, strikes = 0, clusters = 0, protos = 0, protoSeen = 0, protoTries = 0;
+    int towerRuns = 0, floors = 0, rekeys = 0, prepBought = 0, sweeps = 0, misses = 0, programs = 0;
 } st;
 
 // Fire any subnet strike that is usable right now (the bot is greedy with them).
 void useStrikes(RunSession& r) {
     for (int id : r.strikeBays) {
         std::string err;
+        // On a tower the bot saves BLACKOUT for when the trace is actually climbing.
+        const Machine* gw = r.g.net.find(id);
+        if (r.t.kind == Kind::Tower && gw && gw->role == BayRole::Stealth && r.trace < 35) continue;
         if (r.strikeUsable(id) && r.strike(id, err)) ++st.strikes;
+    }
+}
+// Deck programs, on towers: PEEK at the door, FREEZE when the trace climbs, BURST on a big download.
+void usePrograms(RunSession& r) {
+    if (r.t.kind != Kind::Tower) return;
+    for (int s = 0; s < kProgramSlots; ++s) {
+        Program p = r.g.programs[s];
+        bool want = (p == Program::Peek && !r.doorOpen) || (p == Program::Freeze && r.trace >= 45) ||
+                    (p == Program::Burst && r.act == RunSession::Act::Download && r.actTotal - r.actDone >= 8) ||
+                    (p == Program::Spoof && r.doorOpen);
+        std::string err;
+        if (want && r.programUsable(s) && r.runProgram(s, err)) ++st.programs;
     }
 }
 
@@ -159,7 +227,9 @@ void checkInvariants(const GameState& g) {
     }
     if (g.net.relayBonus() > bal::RELAY_HARD_CAP || g.net.proxyBonus() > bal::PROXY_HARD_CAP) fail("a bonus passed its hard cap");
     if (g.netUnlocked && !g.net.home()) fail("network unlocked without N0");
-    if (g.act < 1 || g.act > 3) fail("act out of range");
+    if (g.act < 1 || g.act > kMaxAct) fail("act out of range");
+    if (g.act == 4 && !g.deepDone) fail("Act IV without the deep job");
+    for (int k = 0; k < kTowerCount; ++k) if (g.floorsCleared(k) < 0 || g.floorsCleared(k) > kFloors) fail("tower progress out of range");
 }
 
 void roundTrip(const GameState& g) {
@@ -169,7 +239,8 @@ void roundTrip(const GameState& g) {
     if (!loadGame(h, &err)) { fail("load failed: " + err); return; }
     if (h.credits != g.credits || h.net.machines.size() != g.net.machines.size() || h.story != g.story || h.act != g.act ||
         h.deepDone != g.deepDone || h.net.decoyId != g.net.decoyId || h.deck.lens != g.deck.lens || h.knownPhrases != g.knownPhrases ||
-        h.wall.size() != g.wall.size() || h.programs[0] != g.programs[0] || h.programs[1] != g.programs[1])
+        h.wall.size() != g.wall.size() || h.programs[0] != g.programs[0] || h.programs[1] != g.programs[1] ||
+        [&] { for (int k = 0; k < kTowerCount; ++k) if (h.floorsCleared(k) != g.floorsCleared(k) || h.keyOf(k) != g.keyOf(k)) return true; return false; }())
         fail("save/load round trip changed the game");
     for (size_t i = 0; i < h.net.machines.size() && i < g.net.machines.size(); ++i)
         if (h.net.machines[i].trait != g.net.machines[i].trait || h.net.machines[i].job != g.net.machines[i].job)
@@ -187,12 +258,20 @@ void solveDoor(RunSession& r) {
     if (r.doorOpen || r.over()) return;
     if (r.g.knownPhrases.count(r.t.id) && !CHAOS) {
         ++st.phrases;
-        if (r.phrase(r.t.passphrase)) return;
-        if (r.over()) return;
+        r.phrase(r.t.passphrase);   // a composite's phrase opens only the outer keypad
+        if (r.doorOpen || r.over()) return;
     }
-    if (!CHAOS) useStrikes(r);
     Solver s(r.lock.type);
-    for (int i = 0; i < 16 && !r.doorOpen && !r.over(); ++i) {
+    if (r.lock.composite() && r.lock.stage == 1) s.carry(r.lock);
+    int stage = r.lock.stage;
+    size_t pinned = 0;
+    for (int i = 0; i < 24 && !r.doorOpen && !r.over(); ++i) {
+        if (!CHAOS) { useStrikes(r); usePrograms(r); }
+        if (r.over()) return;
+        for (; pinned < r.lock.peeked.size(); ++pinned) {   // what PEEK / CRACK showed on screen
+            int pos = r.lock.peeked[pinned];
+            s.pin(pos, r.lock.secret[static_cast<size_t>(pos)]);
+        }
         if (r.lock.sealed()) {
             std::string err;
             if (r.extra(err)) { ++st.extra; continue; }
@@ -201,19 +280,26 @@ void solveDoor(RunSession& r) {
         }
         std::string guess = s.next();
         if (CHAOS && r.lock.left() > 1 && std::rand() % 10 < 6) {
-            guess = r.lock.type == LockType::Keypad ? "0123" : r.lock.type == LockType::Rotor ? "0000" : "zzzzz";
+            guess = r.lock.cur() == LockType::Keypad ? "0123" : r.lock.cur() == LockType::Rotor ? "0000" : "zzzzz";
             s.last = guess;
         }
         std::string err;
         if (!r.guess(guess, err)) { fail("lock rejected a well-formed guess: " + err); r.disconnect(); return; }
-        if (!r.lock.history.empty()) s.feed(r.lock.history.back());
+        if (r.lock.stage != stage) {   // the keypad opened: the rotor starts from its digits
+            stage = r.lock.stage;
+            s.carry(r.lock);
+            pinned = 0;
+        } else if (!r.lock.history.empty()) {
+            s.feed(r.lock.history.back());
+        }
     }
 }
 
 void runTimed(RunSession& r) {
     int guard = 0;
     while (r.busy() && !r.over() && ++guard < 1000) {
-        if (!CHAOS) useStrikes(r);
+        if (!CHAOS) { useStrikes(r); usePrograms(r); }
+        if (!r.busy() || r.over()) break;
         r.step();
     }
 }
@@ -231,7 +317,7 @@ void playInside(RunSession& r, bool wantSteal, bool deep, const ReportView& rep)
             }
         }
     }
-    if (!deep)
+    if (!deep && r.t.kind != Kind::Tower)
         for (size_t i = 0; i < r.t.files.size() && !r.over(); ++i)
             if (r.t.files[i].readable() && r.secondsLeft() > 12) r.read(static_cast<int>(i));
     std::vector<int> order;
@@ -252,7 +338,15 @@ void playInside(RunSession& r, bool wantSteal, bool deep, const ReportView& rep)
         pay.erase(worst);
     }
     order.insert(order.end(), pay.begin(), pay.end());
+    if (r.t.kind == Kind::Tower)   // the way up: the facilities memo, right after the objectives
+        for (size_t i = 0; i < r.t.files.size(); ++i)
+            if (r.t.files[i].phraseFor >= 0) order.insert(order.begin() + static_cast<long>(r.t.objectiveCount()), -1 - static_cast<int>(i));
     for (int i : order) {
+        if (r.over()) return;
+        if (i < 0) {   // a memo to read
+            if (r.jobDone && r.secondsLeft() > 8) r.read(-1 - i);
+            continue;
+        }
         if (r.over()) return;
         const File& f = r.t.files[static_cast<size_t>(i)];
         if (f.taken) continue;
@@ -311,6 +405,15 @@ void manage(GameState& g) {
             {0, {static_cast<int>(Tool::Uplink), g.deck.uplink == 2}},
             {0, {static_cast<int>(Tool::Shroud), g.deck.shroud == 2}},
         };
+        if (g.act >= 4) {   // the towers want a finished deck: BREAKER for the FORTRESS, cover for the clock
+            std::vector<std::pair<int, std::pair<int, bool>>> late = {
+                {0, {static_cast<int>(Tool::Breaker), g.deck.breaker < bal::DECK_MAX}},
+                {0, {static_cast<int>(Tool::Shroud), g.deck.shroud < bal::DECK_MAX}},
+                {1, {static_cast<int>(Job::Proxy), g.net.proxyBonus() < bal::PROXY_CAP && free()}},
+                {0, {static_cast<int>(Tool::Uplink), g.deck.uplink < bal::DECK_MAX}},
+            };
+            steps.insert(steps.begin(), late.begin(), late.end());
+        }
         auto it = std::find_if(steps.begin(), steps.end(), [](auto& s) { return s.second.second; });
         if (it == steps.end()) break;
         int cost = 0;
@@ -327,7 +430,7 @@ void manage(GameState& g) {
         if (kind == 1) ++st.bought;
     }
     // Re-job spare captured scouts/compute boxes into speed or cover once the deck is built.
-    if (!CHAOS && g.deck.uplink + g.deck.shroud >= 3) {
+    if (!CHAOS && g.act < 4 && g.deck.uplink + g.deck.shroud >= 3) {   // Act IV keeps its kit
         bool keptScout = false;
         for (auto& m : g.net.machines) {
             if (!m.working() || m.home || g.net.decoyId == m.id) continue;
@@ -342,9 +445,18 @@ void manage(GameState& g) {
     }
     // Subnets, once the main rack is maxed: buy a gateway and plug stored machines into it.
     if (g.net.slots >= (SUBNET ? 4 : bal::MAX_SLOTS) && g.deck.uplink + g.deck.shroud >= (SUBNET ? 1 : 3)) {
+        // Only a running gateway opens a bay. A captured one sitting in storage counts for nothing
+        // until it's switched on, so try that first (if the bill allows) before buying another.
         bool haveGw = false;
-        for (auto& m : g.net.machines) if (m.job == Job::Gateway) haveGw = true;
+        for (auto& m : g.net.machines) if (m.job == Job::Gateway && m.active) haveGw = true;
         int reserve = 2 * g.net.upkeepTotal() + 300;
+        if (!haveGw)
+            for (auto& m : g.net.machines)
+                if (m.job == Job::Gateway && !m.dark() && g.credits >= reserve + 2 * upkeepOf(m) && activate(g, m).ok) {
+                    setRole(g, m, CHAOS ? BayRole::Siege : SUBNET ? BayRole::Speed : BayRole::Stealth);
+                    haveGw = true;
+                    break;
+                }
         if (!haveGw && g.credits - bal::BUY_PRICE[static_cast<int>(Job::Gateway)] >= reserve && g.net.externalCount() < bal::MAX_EXTERNAL) {
             // The rack is full: store the weakest non-home machine to make room for the gateway.
             if (g.net.activeCount() >= g.net.slots)
@@ -369,6 +481,163 @@ void manage(GameState& g) {
         }
     }
     armAnyDecoy(g, CHAOS);
+}
+
+// ---------------------------------------------------------------------------
+// Act IV: the careful bot on a tower floor. Prep is bought with credits, the
+// floor is played, and nothing happens unless the player starts it.
+// ---------------------------------------------------------------------------
+void towerPrep(GameState& g, const Target& t, bool buyPhrase) {
+    int reserve = 2 * g.net.upkeepTotal() + 300;
+    if (prepAvailable(g, t, Prep::Plan) && g.credits - prepCost(t, Prep::Plan) >= reserve && buyPrep(g, t, Prep::Plan).ok) ++st.prepBought;
+    if (buyPhrase && prepAvailable(g, t, Prep::Phrase) && g.credits - prepCost(t, Prep::Phrase) >= reserve && buyPrep(g, t, Prep::Phrase).ok)
+        ++st.prepBought;
+}
+
+// Programs for the doctrine, reloaded before every attempt (they're single use).
+void loadPrograms(GameState& g, Doctrine d) {
+    for (int s = 0; s < kProgramSlots; ++s) unloadProgram(g, s);
+    if (d == Doctrine::Fortress) { buyProgram(g, Program::Peek); buyProgram(g, Program::Freeze); }
+    else { buyProgram(g, Program::Freeze); buyProgram(g, Program::Burst); }
+}
+
+Reckoning playFloor(GameState& g, const Target& t, uint64_t entropy) {
+    ReportView rep = reportView(g, t);
+    (void)panelBriefing(g, t);
+    RunSession r(g, t, entropy);
+    ++st.towerRuns;
+    solveDoor(r);
+    playInside(r, false, false, rep);
+    if (!r.over()) r.disconnect();
+    st.sweeps += r.sweeps;
+    st.misses += r.misses;
+    int got = 0;
+    for (auto& f : r.t.files) if (f.kind == FileKind::Objective && f.taken) ++got;
+    if (std::getenv("GHOSTNET_SIM_VERBOSE"))
+        std::printf("    floor %s: end %d door %d stage %d guesses %d/%d trace %.0f secs %d obj %d/3 sweeps %d misses %d jam %d/%d%% eff %.2f\n",
+                    t.name.c_str(), static_cast<int>(r.end), r.doorOpen, r.lock.stage, r.lock.used, r.lock.maxGuesses, r.trace, r.secs, got,
+                    r.sweeps, r.misses, r.jamDelay, r.jamCut, effectiveTraceRate(g, t));
+    Reckoning rk = r.settle();
+    if (rk.floorCleared >= 0) ++st.floors;
+    if (rk.rekeyed) ++st.rekeys;
+    if (rk.end == End::TraceOut) ++st.traceouts;
+    return rk;
+}
+
+// The natural bot's retool for a doctrine, with real purchases only: a gateway in the role the
+// tower calls for, and its subnet filled with compute boxes (FORTRESS) or jammers (BIOSENTINEL).
+// Returns false if it can't afford the kit yet.
+bool retoolFor(GameState& g, Doctrine d) {
+    const Job want = d == Doctrine::Fortress ? Job::Compute : Job::Jammer;
+    const BayRole role = d == Doctrine::Fortress ? BayRole::Siege : BayRole::Stealth;
+    Machine* gw = nullptr;
+    for (auto& m : g.net.machines) if (m.job == Job::Gateway && m.working()) { gw = &m; break; }
+    auto reserve = [&] { return 2 * g.net.upkeepTotal() + 400; };
+    if (!gw) {
+        if (g.credits - bal::BUY_PRICE[static_cast<int>(Job::Gateway)] < reserve() || g.net.externalCount() >= bal::MAX_EXTERNAL) return false;
+        if (g.net.activeCount() >= g.net.slots)
+            for (auto& m : g.net.machines)
+                if (!m.home && m.active && m.bay < 0 && m.job != Job::Proxy && m.job != Job::Relay) { deactivate(g, m); break; }
+        if (g.net.activeCount() >= g.net.slots)
+            for (auto& m : g.net.machines)
+                if (!m.home && m.active && m.bay < 0) { deactivate(g, m); break; }
+        if (!buyMachine(g, Job::Gateway).ok) return false;
+        ++st.bought;
+        gw = &g.net.machines.back();
+        if (!gw->active && !activate(g, *gw).ok) return false;
+    }
+    int gwId = gw->id;
+    if (gw->role != role) setRole(g, *g.net.find(gwId), role);
+    // Make room: anything in the bay that isn't part of the kit goes back to storage.
+    for (auto* m : g.net.bayMembers(gwId)) if (m->job != want) unplug(g, *g.net.find(m->id));
+    auto count = [&] { int n = 0; for (auto* m : g.net.bayMembers(gwId)) if (m->job == want) ++n; return n; };
+    for (auto& m : g.net.machines)   // stored kit machines first
+        if (count() < 2 && m.job == want && !m.active && !m.dark() && canPlug(g, m, *g.net.find(gwId))) plugIn(g, m, *g.net.find(gwId));
+    while (count() < 2) {
+        if (g.credits - bal::BUY_PRICE[static_cast<int>(want)] < reserve() || g.net.externalCount() >= bal::MAX_EXTERNAL) return false;
+        if (!buyMachine(g, want).ok) return false;
+        ++st.bought;
+        Machine& m = g.net.machines.back();
+        if (m.active) deactivate(g, m);
+        if (!canPlug(g, m, *g.net.find(gwId)) || !plugIn(g, m, *g.net.find(gwId)).ok) return false;
+        ++st.plugged;
+    }
+    if (!g.net.bayOnline(*g.net.find(gwId))) toggleBay(g, *g.net.find(gwId));
+    loadPrograms(g, d);
+    return g.net.bayOnline(*g.net.find(gwId));
+}
+
+// A late-game owner: the deep job done, a maxed deck, a full main rack of tier-3 speed and cover.
+Machine owned(GameState& g, Job j, int tier) {
+    Machine m;
+    m.id = g.net.nextId++;
+    m.name = std::string(jobName(j)).substr(0, 4) + "-" + std::to_string(m.id);
+    m.job = j;
+    m.tier = tier;
+    m.captured = true;
+    m.noise = 1;
+    m.condition = 100;
+    m.active = false;
+    g.net.machines.push_back(m);
+    return m;
+}
+
+GameState ledgerOwner(uint64_t seed) {
+    GameState g;
+    g.worldSeed = seed;
+    g.credits = 30000;
+    g.mapRunsLeft = bal::RUNS_PER_MAP;
+    g.story = storyCount();
+    g.act = 3;
+    g.deepDone = true;
+    g.retired = true;
+    unlockNetwork(g);
+    g.net.slots = bal::MAX_SLOTS;
+    g.net.home()->tier = 3;
+    g.deck.breaker = g.deck.uplink = g.deck.shroud = bal::DECK_MAX;
+    g.deck.lens = bal::LENS_MAX;
+    for (Job j : {Job::Relay, Job::Relay, Job::Proxy, Job::Proxy}) {
+        int id = owned(g, j, KIT_TIER).id;
+        activate(g, *g.net.find(id));
+    }
+    if (!enterLedger(g)) fail("enterLedger refused an owner");
+    return g;
+}
+
+// The doctrine slot of the main rack: a gateway whose subnet is built for one doctrine.
+void fitKit(GameState& g, Doctrine d) {
+    auto& v = g.net.machines;
+    for (auto& m : v) if (m.bay >= 0) unplug(g, m);
+    v.erase(std::remove_if(v.begin(), v.end(), [](const Machine& m) { return m.job == Job::Gateway || m.job == Job::Compute || m.job == Job::Jammer; }),
+            v.end());
+    int gw = owned(g, Job::Gateway, KIT_TIER).id;
+    if (!activate(g, *g.net.find(gw)).ok) fail("kit: the gateway has no slot");
+    std::vector<Job> bay = d == Doctrine::Fortress ? std::vector<Job>{Job::Compute, Job::Compute, Job::Relay}
+                                                   : std::vector<Job>{Job::Jammer, Job::Jammer, Job::Proxy};
+    for (Job j : bay) {
+        int id = owned(g, j, KIT_TIER).id;
+        if (!plugIn(g, *g.net.find(id), *g.net.find(gw)).ok) fail("kit: a machine wouldn't plug in");
+    }
+    setRole(g, *g.net.find(gw), d == Doctrine::Fortress ? BayRole::Siege : BayRole::Stealth);
+    loadPrograms(g, d);
+}
+
+// Climb one tower with one kit. Returns floors taken.
+int climb(GameState g, int tower, Doctrine kit, uint64_t entropy, int attempts, int* runsUsed) {
+    int runs = 0;
+    for (int a = 0; a < attempts && g.floorsCleared(tower) < kFloors; ++a) {
+        repairAll(g);
+        for (auto& m : g.net.machines) if (m.bay >= 0 || m.job == Job::Gateway) m.condition = 100;
+        fitKit(g, kit);
+        Target t = makeTowerFloor(g, tower, g.floorsCleared(tower));
+        towerPrep(g, t, true);
+        g.credits = std::max(g.credits, 30000);
+        playFloor(g, t, entropy * 104729 + static_cast<uint64_t>(a));
+        ++runs;
+        checkInvariants(g);
+    }
+    if (runsUsed) *runsUsed = runs;
+    return g.floorsCleared(tower);
 }
 
 }  // namespace
@@ -696,7 +965,143 @@ void selfTest() {
         roundTrip(h);
         CHECK(upgradeHome(h).ok || h.net.home()->tier <= 3, "N0 never passes tier 3");
     }
-    if (!problems) std::printf("selftest: keypad marks, programs, jammer/vault, traits, memorial, subnets, strikes, prototypes - OK\n");
+    // 0.6 - the composite lock: keypad marks carry into the rotor's start; each stage judges itself.
+    {
+        Rng rr(42);
+        for (int n = 0; n < 200; ++n) {
+            Lock c = makeLock(LockType::Composite, rr, 5);
+            std::string outer = c.secret;
+            CHECK(c.stage == 0 && c.cur() == LockType::Keypad && c.inner.size() == 4, "a composite starts as a keypad");
+            for (int i = 0; i < 4; ++i) CHECK(std::abs(c.inner[size_t(i)] - outer[size_t(i)]) <= 2, "every rotor wheel is within 2 of its keypad digit");
+            std::string err;
+            std::string wrong = outer.substr(1) + outer.substr(0, 1);
+            CHECK(c.guess(wrong, err) && c.history.back().hit == 0 && c.stage == 0, "a keypad miss stays on stage 1");
+            CHECK(c.guess(outer, err) && c.stage == 1 && !c.open && c.cur() == LockType::Rotor, "the right keypad code wakes the rotor");
+            CHECK(c.history.empty() && c.outerRows.size() == 2 && c.carried() && c.secret == c.inner, "the rotor starts its own feedback");
+            CHECK(c.used == 2, "one shared guess budget");
+            CHECK(c.guess(c.inner, err) && c.open, "the rotor opens the door");
+        }
+        Lock k = makeLock(LockType::Composite, rr, 0);
+        std::string err;
+        CHECK(k.maxGuesses == bal::FORTRESS_GUESSES && k.peek() == 0 && k.known(0), "PEEK works on the keypad stage");
+        k.guess(k.secret, err);
+        CHECK(k.peeked.empty() && !k.known(0) && k.peek() == 0, "...and again on the rotor stage");
+        CHECK(lockHasOddNearRule(LockType::Composite) && lockRuleText(LockType::Composite).find("2 notches") != std::string::npos,
+              "the composite's near-miss rule is stated");
+    }
+    // 0.6 - Act IV: the Ledger, the towers, prep, re-keying, save v5.
+    {
+        GameState h;
+        h.worldSeed = 11;
+        CHECK(!enterLedger(h) && buildBoard(h).front().kind != Kind::Tower, "no Ledger before the deep job");
+        h = ledgerOwner(11);
+        CHECK(h.act == 4 && !enterLedger(h), "the Ledger opens once, as Act IV");
+        std::vector<Target> b = buildBoard(h);
+        CHECK(b.size() >= 2 && b[0].kind == Kind::Tower && b[1].kind == Kind::Tower, "both towers lead the board");
+        CHECK(b[0].doctrine == Doctrine::Fortress && b[0].lock == LockType::Composite && b[1].doctrine == Doctrine::Biosentinel && b[1].watchdog,
+              "Kessler-Maru is a FORTRESS, Tidewater a BIOSENTINEL");
+        Target f0 = makeTowerFloor(h, 0, 0);
+        bool memo = false;
+        for (auto& f : makeTowerFloor(h, 1, 0).files)
+            if (f.phraseFor == floorId(1, 1) && f.text.find(towerPassphrase(h, 1, 1)) != std::string::npos) memo = true;
+        CHECK(memo, "each BIOSENTINEL floor leaks the next floor's phrase");
+        int c0 = h.credits;
+        CHECK(buyPrep(h, f0, Prep::Plan).ok && h.reports[f0.id] == 3 && h.credits == c0 - bal::PREP_PLAN_COST, "a floor plan is a full report");
+        CHECK(reportView(h, f0).quality == 3, "the plan shows at full quality");
+        CHECK(!f0.backdoor && !buyPrep(h, f0, Prep::Phrase).ok, "FORTRESS: no ports, no phrase for sale");
+        Target b0 = makeTowerFloor(h, 1, 0);
+        CHECK(buyPrep(h, b0, Prep::Phrase).ok && h.knownPhrases.count(b0.id) && !buyPrep(h, b0, Prep::Phrase).ok, "a phrase is bought once");
+        {   // a composite behind a phrase: the phrase opens the keypad only, without showing its code
+            Target c = b0;
+            c.lock = LockType::Composite;
+            RunSession r(h, c, 76);
+            CHECK(r.phrase(c.passphrase) && !r.doorOpen && r.lock.stage == 1 && !r.lock.carried(), "a phrase opens a composite's keypad only, code unseen");
+            double t0 = r.trace;
+            CHECK(!r.phrase(c.passphrase) && r.trace == t0, "the rotor takes no phrases, and costs no time to learn it");
+            r.disconnect();
+            r.settle();
+        }
+        {   // FORTRESS: misses ping the trace
+            RunSession r(h, f0, 77);
+            double t0 = r.trace;
+            std::string err;
+            std::string miss = r.lock.secret.substr(1) + r.lock.secret.substr(0, 1);   // all amber, never the code
+            CHECK(r.guess(miss, err), "a keypad-stage guess");
+            CHECK(r.misses == 1 && r.trace > t0 + bal::COST_GUESS * r.rateNow(), "a FORTRESS miss is logged as a ping");
+            r.trace = 99.9;
+            r.guess(miss, err);
+            CHECK(r.end == End::TraceOut, "traced on the tower");
+            r.settle();
+            CHECK(h.keyOf(0) == 1, "a trace re-keys the tower");
+            CHECK(h.reports.count(f0.id), "the floor plan survives a re-key");
+        }
+        {   // a re-key stales the phrases you hold for that tower (and only on a real trace)
+            RunSession r(h, b0, 79);
+            r.trace = 99.95;
+            std::string err;
+            r.phrase("WRONGWORD");
+            CHECK(r.end == End::TraceOut, "traced at Tidewater");
+            r.settle();
+            CHECK(h.keyOf(1) == 1 && !h.knownPhrases.count(b0.id) && makeTowerFloor(h, 1, 0).passphrase == towerPassphrase(h, 1, 0),
+                  "the re-key stales the bought phrase");
+            roundTrip(h);
+        }
+        {   // FORTRESS: every compute box answers once at the door
+            GameState o = ledgerOwner(13);
+            fitKit(o, Doctrine::Fortress);
+            RunSession r(o, makeTowerFloor(o, 0, 0), 80);
+            int cap = r.emergLeft, extras = 0;
+            std::string err;
+            while (r.extra(err)) ++extras;
+            CHECK(cap == 3 && extras == 3 && r.lock.maxGuesses == bal::FORTRESS_GUESSES + o.deck.breaker + 3, "three answers on a FORTRESS door");
+            r.disconnect();
+            r.settle();
+            roundTrip(h);
+        }
+        {   // BIOSENTINEL: sweeps on the beat after the jammers' hold; a frozen trace lets them pass
+            Target t = makeTowerFloor(h, 1, 0);
+            t.lock = LockType::None;
+            RunSession r(h, t, 78);
+            CHECK(r.nextSweep() == bal::BIO_SWEEP_EVERY - r.secs % bal::BIO_SWEEP_EVERY, "the next sweep is announced");
+            r.freezeLeft = 1000;
+            std::string err;
+            r.startDownload(0, err);
+            while (r.busy() && !r.over()) r.step();
+            CHECK(r.sweeps == 0, "sweeps pass over a frozen trace");
+            r.freezeLeft = 0;
+            int s0 = r.secs;
+            r.trace = 0;
+            for (int i = 0; i < bal::BIO_SWEEP_EVERY + 1 && !r.over(); ++i) { r.startDownload(1, err); r.step(); r.abortAction(); }
+            CHECK(r.sweeps >= 1 || r.secs - s0 < bal::BIO_SWEEP_EVERY, "a sweep pings an unfrozen trace");
+            r.disconnect();
+            r.settle();
+        }
+        {   // clearing a floor moves the tower up; the Boardroom owns it
+            GameState o = ledgerOwner(12);
+            for (int f = 0; f < kFloors; ++f) {
+                Target t = makeTowerFloor(o, 1, f);
+                t.lock = LockType::None;
+                t.watchdog = false;
+                t.doctrine = Doctrine::None;
+                t.traceOverride = 0.1;
+                RunSession r(o, t, 90 + static_cast<uint64_t>(f));
+                std::string err;
+                for (size_t i = 0; i < r.t.files.size(); ++i)
+                    if (r.t.files[i].kind == FileKind::Objective) { r.startDownload(static_cast<int>(i), err); while (r.busy()) r.step(); }
+                CHECK(r.jobDone, "all of a floor's objectives");
+                r.disconnect();
+                Reckoning rk = r.settle();
+                CHECK(rk.floorCleared == f && o.floorsCleared(1) == f + 1, "the floor counts");
+                if (f + 1 == kFloors) CHECK(rk.towerOwned && !rk.storyOutro.empty(), "the Boardroom owns the tower");
+            }
+            std::vector<Target> b2 = buildBoard(o);
+            int towersListed = 0;
+            for (auto& t : b2) if (t.kind == Kind::Tower) ++towersListed;
+            CHECK(towersListed == 1, "an owned tower leaves the board");
+            roundTrip(o);
+        }
+    }
+    if (!problems) std::printf("selftest: keypad marks, programs, jammer/vault, traits, memorial, subnets, strikes, prototypes, composite, ledger - OK\n");
 }
 
 int main(int argc, char** argv) {
@@ -705,6 +1110,7 @@ int main(int argc, char** argv) {
     std::string mode = argc > 3 ? argv[3] : "careful";
     CHAOS = mode == "chaos";
     SUBNET = mode == "subnet";
+    TOWER = mode == "tower";
     std::srand(static_cast<unsigned>(seed));
     auto dir = std::filesystem::temp_directory_path() / ("ghostnet-sim-" + std::to_string(seed) + "-" + mode);
     paths::overrideSaveDir(dir.string());
@@ -715,7 +1121,29 @@ int main(int argc, char** argv) {
     g.credits = bal::START_CREDITS;
     g.mapRunsLeft = bal::RUNS_PER_MAP;
 
-    for (int i = 0; i < runs && !g.deepDone; ++i) {
+    for (int i = 0; i < runs && (!g.deepDone || TOWER); ++i) {
+        if (g.deepDone && TOWER) {   // Act IV: the bot opens the Ledger and climbs with whatever it built
+            if (enterLedger(g)) std::printf("--- ACT IV: THE LEDGER ---\n");
+            int k = -1;
+            for (int c = 0; c < kTowerCount && k < 0; ++c) if (g.floorsCleared(c) < kFloors) k = c;
+            if (k < 0) break;
+            repairAll(g);
+            for (auto& m : g.net.machines) if (!m.active && !m.dark() && m.bay < 0 && m.job != Job::Compute && m.job != Job::Jammer) activate(g, m);
+            bool ready = g.credits >= 2500 && retoolFor(g, towerDoctrine(k));
+            if (!ready) goto farm;   // earn the kit on ordinary listings first
+            {
+            Target t = makeTowerFloor(g, k, g.floorsCleared(k));
+            towerPrep(g, t, true);
+            Reckoning rk = playFloor(g, t, seed * 7919 + static_cast<uint64_t>(i));
+            checkInvariants(g);
+            roundTrip(g);
+            std::printf("run %2d  %-34s %-10s credits %6d  tower %d floors %d/%d  act %d\n", st.runs + st.towerRuns, t.name.c_str(),
+                        rk.end == End::TraceOut ? "TRACED" : rk.end == End::Sacrifice ? "SACRIFICE" : rk.floorCleared >= 0 ? "FLOOR" : "short",
+                        g.credits, k, g.floorsCleared(0), g.floorsCleared(1), g.act);
+            continue;
+            }
+        }
+    farm:
         manage(g);
         std::vector<Target> board = buildBoard(g);
         auto usable = [&](const Target& t) { return !g.burned.count(t.id); };
@@ -788,6 +1216,30 @@ int main(int argc, char** argv) {
     if (problems) { std::printf("problems: %d\n", problems); return 1; }
     if (mode == "deep" && !st.deepWon) { std::printf("FAIL: the deep job was not beaten\n"); return 1; }
     if (mode == "subnet" && st.plugged == 0) { std::printf("FAIL: the subnet bot never used a subnet\n"); return 1; }
+    if (TOWER) {
+        // Kit trials on a fresh owner: a matched build takes each tower; one build against the wrong doctrine fails.
+        int bad = 0;
+        const Doctrine docs[2] = {Doctrine::Fortress, Doctrine::Biosentinel};
+        for (int k = 0; k < kTowerCount; ++k) {
+            GameState o = ledgerOwner(seed * 31 + static_cast<uint64_t>(k));
+            Doctrine d = towerDoctrine(k), wrong = docs[d == Doctrine::Fortress ? 1 : 0];
+            int used = 0, used2 = 0;
+            int got = climb(o, k, d, seed + 1000 * static_cast<uint64_t>(k), 6, &used);
+            int miss = climb(o, k, wrong, seed + 1000 * static_cast<uint64_t>(k) + 500, 6, nullptr);
+            KIT_TIER = 2;   // all of it bought, nothing captured: matching the doctrine is what counts
+            GameState o2 = ledgerOwner(seed * 31 + static_cast<uint64_t>(k));
+            int got2 = climb(o2, k, d, seed + 1000 * static_cast<uint64_t>(k) + 250, 6, &used2);
+            KIT_TIER = 3;
+            std::printf("KIT TRIAL %s (%s): matched kit %d/%d floors in %d runs (T2 kit: %d/%d in %d); %s kit %d/%d floors in 6 runs\n",
+                        towerTitle(k), doctrineName(d), got, kFloors, used, got2, kFloors, used2, doctrineName(wrong), miss, kFloors);
+            if (got < kFloors || got2 < kFloors) { std::printf("FAIL: the matched kit did not take %s\n", towerTitle(k)); ++bad; }
+            if (miss >= kFloors) { std::printf("FAIL: the wrong kit took %s - the doctrine doesn't matter\n", towerTitle(k)); ++bad; }
+        }
+        std::printf("TOWER STATS: tower runs %d floors %d re-keys %d prep %d sweeps %d logged-misses %d programs %d\n", st.towerRuns, st.floors,
+                    st.rekeys, st.prepBought, st.sweeps, st.misses, st.programs);
+        if (!g.deepDone || g.act != 4) { std::printf("FAIL: the bot never reached Act IV\n"); ++bad; }
+        if (bad) return 1;
+    }
     std::printf("problems: none\n");
     return 0;
 }

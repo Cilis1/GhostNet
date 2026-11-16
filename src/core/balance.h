@@ -129,4 +129,20 @@ constexpr int    FREEZE_SECS     = 4;                 // the trace stands still
 constexpr int    BURST_SECS      = 5;                 // download seconds at double speed
 constexpr double BURST_TRACE_MULT = 1.5;              // ...while the trace climbs faster
 
+// ---- Act IV - THE LEDGER: corp towers (0.6) ---------------------------------------
+// Indexed by [doctrine - 1][floor]: FORTRESS is a wall at the door, BIOSENTINEL a clock inside.
+constexpr double TOWER_TRACE[2][3]  = {{3.0, 3.3, 3.6}, {3.6, 3.9, 4.2}};   // %/s; the deep job is 4.4
+constexpr int    TOWER_OBJ_MB[2][3] = {{30, 35, 40}, {60, 70, 80}};         // each of a floor's three objective files
+constexpr int    TOWER_REWARD[3]    = {1500, 2500, 9000};  // paid for the floor's objectives; the Boardroom is the jackpot
+constexpr double TOWER_PAY_MULT  = 2.5;               // paydata vs. an ordinary security-5 file
+constexpr int    PREP_PLAN_COST  = 350;               // FLOOR PLAN: a full-quality report, no scout needed
+constexpr int    PREP_PHRASE_COST[3] = {700, 1000, 1400};   // a bought maintenance phrase (BIOSENTINEL: FORTRESS has no ports)
+// FORTRESS (Kessler-Maru): a composite lock on a tiny shared budget, no maintenance ports; misses are logged.
+constexpr int    FORTRESS_GUESSES   = 1;              // keypad + rotor share this, + BREAKER, + one per compute box / SIEGE subnet
+constexpr double FORTRESS_MISS_SPIKE = 4.0;           // every wrong guess pings the trace (jammers/SIEGE cut it)
+// BIOSENTINEL (Tidewater BioSys): a hungrier watchdog and regular sentinel sweeps.
+constexpr double BIO_RAMP        = 1.0;               // +100% trace rate per minute (a normal watchdog is +50%)
+constexpr int    BIO_SWEEP_EVERY = 12;                // seconds between sweeps (jammers soften them; they don't delay them)
+constexpr double BIO_SWEEP_SPIKE = 6.0;               // a sweep's ping; it passes over a frozen trace
+
 }  // namespace bal

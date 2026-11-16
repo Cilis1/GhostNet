@@ -43,3 +43,12 @@ const char* advisorRole(Advisor a);
 const char* voteName(Vote v);
 PanelView panelBriefing(const GameState& g, const Target& t);
 PanelView panelReview(const GameState& g);
+
+// Act IV heist prep: intel on a tower floor, bought with credits between runs. Never a second currency,
+// never a timer - you pay once and you know it, until a trace re-keys the doors.
+enum class Prep { Plan = 0, Phrase = 1 };
+const char* prepName(Prep p);                 // "FLOOR PLAN"
+const char* prepText(Prep p);
+int prepCost(const Target& t, Prep p);
+bool prepAvailable(const GameState& g, const Target& t, Prep p, std::string* why = nullptr);
+Result buyPrep(GameState& g, const Target& t, Prep p);

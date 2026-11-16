@@ -42,6 +42,18 @@ RunSession::RunSession(GameState& gs, const Target& tg, uint64_t entropy) : g(gs
         Tone::Dim);
     if (t.deep) say("THE DEEP JOB. Three archives. HELIOS answers this one personally.", Tone::Story);
     else if (t.kind == Kind::Story) say("Contract: " + storyInfo(t.storyIndex).title, Tone::Story);
+    else if (t.kind == Kind::Tower)
+        say(std::string(towerTitle(t.tower)) + ", floor " + std::to_string(t.floor + 1) + " of " + std::to_string(kFloors) + ". DOCTRINE: " +
+                doctrineName(t.doctrine) + ".",
+            Tone::Story);
+    if (t.doctrine == Doctrine::Fortress)
+        say("FORTRESS: a keypad, then a rotor, on one small budget. Every miss is logged (+" + std::to_string(spikeSize(bal::FORTRESS_MISS_SPIKE)) +
+                "% trace). Each compute box can answer once.",
+            Tone::Warn);
+    if (t.doctrine == Doctrine::Biosentinel)
+        say("BIOSENTINEL: sentinels sweep every " + std::to_string(bal::BIO_SWEEP_EVERY) + "s (+" + std::to_string(spikeSize(bal::BIO_SWEEP_SPIKE)) +
+                "% each; a frozen trace lets them pass).",
+            Tone::Warn);
     if (t.stealable && g.netUnlocked) say("This server's hardware is detachable.", Tone::Warn);
     if (t.watchdog) {
         say("A watchdog wakes up. It gets faster the longer you stay.", Tone::Bad);
@@ -56,8 +68,16 @@ RunSession::RunSession(GameState& gs, const Target& tg, uint64_t entropy) : g(gs
 
 double RunSession::rateNow(double mult) const {
     double r = effectiveTraceRate(g, t) * mult;
-    if (t.watchdog) r *= 1.0 + bal::WATCHDOG_RAMP * std::max(0, secs - jamDelay) / 60.0;
+    if (t.watchdog) {
+        double ramp = t.doctrine == Doctrine::Biosentinel ? bal::BIO_RAMP : bal::WATCHDOG_RAMP;
+        r *= 1.0 + ramp * std::max(0, secs - jamDelay) / 60.0;
+    }
     return r;
+}
+
+int RunSession::nextSweep() const {
+    if (t.doctrine != Doctrine::Biosentinel || over()) return -1;
+    return bal::BIO_SWEEP_EVERY - secs % bal::BIO_SWEEP_EVERY;
 }
 
 int RunSession::secondsLeft() const {
@@ -71,6 +91,17 @@ bool RunSession::advance(int seconds, double mult) {
         else trace += rateNow(mult);
         secs += 1;
         if (trace >= 100.0) { trace = 100.0; traced(); return true; }
+        // BIOSENTINEL: a sweep on the beat, once the jammers stop holding them back.
+        if (t.doctrine == Doctrine::Biosentinel && secs % bal::BIO_SWEEP_EVERY == 0) {
+            if (freezeLeft > 0) {
+                say("A sentinel sweep passes over the frozen trace.", Tone::Dim);
+            } else {
+                ++sweeps;
+                say("SENTINEL SWEEP (+" + std::to_string(spikeSize(bal::BIO_SWEEP_SPIKE)) + "% trace).", Tone::Bad);
+                emit(Ev::Sweep);
+                if (spike(bal::BIO_SWEEP_SPIKE)) return true;
+            }
+        }
     }
     return false;
 }
@@ -136,9 +167,21 @@ void RunSession::openDoor(bool phrase) {
 bool RunSession::guess(const std::string& raw, std::string& err) {
     if (over() || doorOpen) { err = "The door is already open."; return false; }
     if (lock.sealed()) { err = "The lock is sealed. Use an emergency attempt, a phrase, or disconnect."; return false; }
+    const int stageBefore = lock.stage;
     if (!lock.guess(raw, err)) return false;
     emit(Ev::Guess);
     if (advance(bal::COST_GUESS)) return true;
+    const bool stageOpened = lock.stage != stageBefore;
+    if (stageOpened) {
+        say("OUTER KEYPAD OPEN (" + lock.outerRows.back().guess + "). The rotor behind it wakes: every wheel sits within 2 notches of that digit.",
+            Tone::Good);
+        emit(Ev::Stage);
+    } else if (!lock.open && t.doctrine == Doctrine::Fortress) {
+        ++misses;
+        say("Miss logged (+" + std::to_string(spikeSize(bal::FORTRESS_MISS_SPIKE)) + "% trace).", Tone::Warn);
+        emit(Ev::MissLogged);
+        if (spike(bal::FORTRESS_MISS_SPIKE)) return true;
+    }
     if (lock.open) {
         say("ACCESS GRANTED.", Tone::Good);
         openDoor(false);
@@ -154,8 +197,19 @@ bool RunSession::guess(const std::string& raw, std::string& err) {
 
 bool RunSession::phrase(const std::string& word) {
     if (over() || doorOpen) return false;
+    if (lock.composite() && lock.stage > 0) {   // no time spent: the rotor simply has no maintenance port
+        say("The rotor has no maintenance port. Only the outer keypad took phrases.", Tone::Dim);
+        return false;
+    }
     if (advance(bal::COST_PHRASE)) return false;
     std::string ph = txt::upper(txt::trim(word));
+    if (t.backdoor && !ph.empty() && ph == t.passphrase && lock.composite()) {
+        lock.openOuter();
+        viaPhrase = true;
+        say("The maintenance port opens the outer keypad without showing its code. The rotor behind it starts cold.", Tone::Good);
+        emit(Ev::Stage);
+        return true;
+    }
     if (t.backdoor && !ph.empty() && ph == t.passphrase) {
         say("The maintenance port accepts the phrase. You were invited in.", Tone::Good);
         openDoor(true);
@@ -172,7 +226,8 @@ bool RunSession::extra(std::string& err) {
     if (over() || doorOpen) { err = "The door is already open."; return false; }
     if (!g.netUnlocked) { err = "You have no network."; return false; }
     if (lock.type == LockType::None) { err = "No lock to spend it on."; return false; }
-    if (lock.extraUsed) { err = "One emergency attempt per lock. Ever."; return false; }
+    // A FORTRESS door lets every compute box (and SIEGE subnet) answer once; anywhere else it's one per lock.
+    if (lock.extraUsed && t.doctrine != Doctrine::Fortress) { err = "One emergency attempt per lock. Ever."; return false; }
     if (emergLeft <= 0) { err = "Your network holds no emergency attempts this run."; return false; }
     Machine* who = nullptr;
     Machine* h = g.net.home();
@@ -424,7 +479,8 @@ CaptureQuote RunSession::quote() const {
     CaptureQuote q;
     if (!g.netUnlocked) { q.reason = "You have nowhere to put a server yet."; return q; }
     if (!t.stealable) {
-        if (t.kind == Kind::Story || t.kind == Kind::Side) q.reason = "This place is load-bearing. Its hardware can't be taken.";
+        if (t.kind == Kind::Tower) q.reason = "A tower's iron is bolted to the building. You came for the records.";
+        else if (t.kind == Kind::Story || t.kind == Kind::Side) q.reason = "This place is load-bearing. Its hardware can't be taken.";
         else if (t.kind == Kind::Shrine) q.reason = "Shrines can never be stolen from.";
         else q.reason = "Nothing here is detachable.";
         return q;
@@ -596,6 +652,13 @@ Reckoning RunSession::settle() {
                  "cr" + (t.infoReward.empty() ? "" : " and information"),
              Tone::Good);
     }
+    if (jobCounts && t.kind == Kind::Tower) {
+        g.credits += t.reward;
+        g.stats.earned += t.reward;
+        line(std::string(towerCorp(t.tower)) + (t.floor + 1 == kFloors ? ", the Boardroom" : ", floor " + std::to_string(t.floor + 1)) + ": +" +
+                 std::to_string(t.reward) + "cr",
+             Tone::Good);
+    }
     // The main rack and every subnet bill separately. A subnet that can't be paid powers
     // down on its own; the main rack going unpaid takes its gateways (and so their subnets) with it.
     int bill = 0, mainBill = 0;
@@ -729,6 +792,41 @@ Reckoning RunSession::settle() {
             s.shroud = g.deck.shroud;
             s.relay = startRelay;
             s.proxy = startProxy;
+        }
+    }
+
+    if (t.kind == Kind::Tower) {
+        rk.tower = t.tower;
+        if (jobCounts && g.floorsCleared(t.tower) == t.floor) {   // progress is knowledge: it never goes back down
+            if (g.towerFloor.size() < static_cast<size_t>(kTowerCount)) g.towerFloor.resize(kTowerCount, 0);
+            g.towerFloor[static_cast<size_t>(t.tower)] = t.floor + 1;
+            rk.floorCleared = t.floor;
+            rk.storyTitle = t.floor + 1 == kFloors ? std::string(towerTitle(t.tower)) + " - OWNED" : t.name;
+            rk.storyOutro = floorOutro(t.tower, t.floor);
+            if (t.floor + 1 == kFloors) {
+                rk.towerOwned = true;
+                g.journal.push_back(std::string("THE LEDGER: ") + towerCorp(t.tower) + " owned.");
+                bool all = true;
+                for (int k = 0; k < kTowerCount; ++k) if (g.floorsCleared(k) < kFloors) all = false;
+                if (all) {
+                    rk.ledgerDone = true;
+                    rk.actCards.push_back({"THE LEDGER, BALANCED",
+                                           "Every tower on the Ledger has been read to the last line. Six signatures, one table, "
+                                           "and now one runner who knows what was agreed at it.\n"
+                                           "Nobody rents you anything any more. The machines stay on."});
+                }
+            } else {
+                line("Floor " + std::to_string(t.floor + 2) + " is on your board. The way up stays open - unless they trace you.", Tone::Info);
+            }
+        }
+        if (traceOut) {   // a trace re-keys the whole tower: every phrase you hold for it goes stale
+            if (g.towerKey.size() < static_cast<size_t>(kTowerCount)) g.towerKey.resize(kTowerCount, 0);
+            g.towerKey[static_cast<size_t>(t.tower)] += 1;
+            for (int f = 0; f < kFloors; ++f) g.knownPhrases.erase(floorId(t.tower, f));
+            rk.rekeyed = true;
+            line(std::string(towerCorp(t.tower)) + " RE-KEYS every maintenance door. Your phrases for it are stale; the floors you took stay taken.",
+                 Tone::Bad);
+            g.journal.push_back(std::string(towerCorp(t.tower)) + " re-keyed its doors after a trace.");
         }
     }
 

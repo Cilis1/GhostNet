@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "app.h"
+#include "balance.h"
 #include "gfx.h"
 #include "paths.h"
 #include "world.h"
@@ -123,7 +124,7 @@ struct Driver {
 std::string wrongGuess(const Lock& lock) {
     // A keypad-legal guess (4 distinct digits) that isn't the answer.
     for (const char* g : {"0123", "4567", "8901", "2345"})
-        if (lock.secret != g) return lock.type == LockType::Cipher ? std::string("crane") : std::string(g);
+        if (lock.secret != g) return lock.cur() == LockType::Cipher ? std::string("crane") : std::string(g);
     return "1234";
 }
 
@@ -261,8 +262,42 @@ int App::autoplay(const std::function<void()>& render) {
     if (!d.click("CONTINUE")) return bad();
     if (!d.waitFor([&] { return scr == Scr::Hub && g.netUnlocked; }, "the saved game to load")) return bad();
 
+    // ---- Act IV: fast-forward to an owner (as a finished save would be), then climb by hand -
+    d.step = "the ledger";
+    g.deepDone = true;
+    g.retired = true;
+    g.act = 3;
+    g.credits = 6000;
+    g.deck.breaker = bal::DECK_MAX;
+    if (!d.waitFor([&] { return g.act == 4 && !modals.empty(); }, "the Act IV card")) return bad();
+    if (!d.click("OPEN THE BOARD")) return bad();
+    if (!d.waitFor([&] { return tab == Tab::Board && !board.empty() && board.front().kind == Kind::Tower; }, "the towers on the board")) return bad();
+    Target tower = board.front();
+    if (!d.click(tower.name)) return bad();
+    if (!d.waitFor([&] { return scr == Scr::Brief; }, "the tower briefing")) return bad();
+    if (!d.click("FLOOR PLAN  " + std::to_string(bal::PREP_PLAN_COST) + "cr")) return bad();
+    if (!d.waitFor([&] { return g.reports.count(tower.id) && g.reports.at(tower.id) == 3; }, "the bought floor plan")) return bad();
+    if (!d.clearModals()) return bad();
+    if (!d.click("CONNECT")) return bad();
+    if (!d.waitFor([&] { return scr == Scr::Run && run; }, "the tower connection")) return bad();
+    d.step = "the composite lock";
+    if (!run->lock.composite()) return d.fail("Kessler-Maru's door isn't a composite"), bad();
+    for (char c : run->lock.secret)   // stage 1, the keypad, by mouse
+        if (!d.click(std::string(1, c))) return bad();
+    if (!d.click("OK")) return bad();
+    if (!d.waitFor([&] { return run->lock.stage == 1 && run->lock.carried(); }, "the rotor to wake")) return bad();
+    d.type(run->lock.secret);   // stage 2, the rotor, by keyboard
+    d.key(KEY_ENTER);
+    if (!d.waitFor([&] { return run->doorOpen; }, "the composite to open")) return bad();
+    if (!d.click("JACK OUT")) return bad();
+    if (!d.waitFor([&] { return run && run->over(); }, "the disconnect")) return bad();
+    d.in.click = true;
+    d.frame();
+    if (!d.waitFor([&] { return scr == Scr::Reckon; }, "the tower reckoning", 10.0)) return bad();
+    if (g.act != 4 || g.floorsCleared(tower.tower) != 0) return d.fail("a walk-away changed the tower"), bad();
+
     std::printf("autoplay: played title -> practice -> new game -> contract -> reckoning -> rack -> save & quit -> continue "
-                "with %d frames of clicks and typing, all OK\n",
+                "-> the ledger -> composite lock with %d frames of clicks and typing, all OK\n",
                 d.frames);
     fs::remove_all(saves, ec);
     return 0;

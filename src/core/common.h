@@ -104,12 +104,17 @@ std::string describeEffect(const Machine& m, int tier = 0);
 // ---------------------------------------------------------------------------
 // World
 // ---------------------------------------------------------------------------
-enum class Kind { Open, Hidden, Guarded, Corporate, Shrine, Story, Side, Prototype };
-enum class LockType { None, Keypad, Rotor, Cipher };
+enum class Kind { Open, Hidden, Guarded, Corporate, Shrine, Story, Side, Prototype, Tower };
+// COMPOSITE (0.6): a keypad and then a rotor on one door, one shared guess budget.
+enum class LockType { None, Keypad, Rotor, Cipher, Composite };
+// How a corp tower defends itself (Act IV). Always shown at the briefing, never a surprise.
+enum class Doctrine { None = 0, Fortress = 1, Biosentinel = 2 };
 enum class FileKind { Paydata, Intel, Objective, Honeypot, Log };
 
 const char* kindName(Kind k);
 const char* lockName(LockType l);
+const char* doctrineName(Doctrine d);   // "FORTRESS"
+const char* doctrineText(Doctrine d);   // one paragraph: how it fights and what beats it
 
 struct File {
     std::string name;
@@ -146,6 +151,8 @@ struct Target {
     bool deep = false;          // THE DEEP JOB
     double traceOverride = 0;   // if > 0, replaces the security-based trace rate
     std::string infoReward;     // contracts that pay in information
+    int tower = -1, floor = -1; // Act IV: which corp tower and which floor (0-based)
+    Doctrine doctrine = Doctrine::None;
     bool hasHoneypot() const;
     int objectiveCount() const;
     std::string objectiveDir() const;
@@ -184,7 +191,7 @@ struct GameState {
     int mapIndex = 0;
     int mapRunsLeft = 3;
     int story = 0;                   // contracts completed (= next contract index)
-    int act = 1;                     // 1 RENTING, 2 OWNING, 3 THE DEEP JOB
+    int act = 1;                     // 1 RENTING, 2 OWNING, 3 THE DEEP JOB, 4 THE LEDGER
     bool deepDone = false;           // retired as an owner
     bool retired = false;            // walked away (either ending)
     bool netUnlocked = false;
@@ -201,8 +208,17 @@ struct GameState {
     uint64_t runCounter = 0;
     bool sound = true;
     std::vector<std::string> journal;
+    // Act IV - THE LEDGER (0.6): corp towers you start yourself, after the owner ending.
+    std::vector<int> towerFloor;     // floors cleared per tower (== kFloors when owned)
+    std::vector<int> towerKey;       // how many times each tower re-keyed its doors (after a trace)
+    int floorsCleared(int tower) const { return tower >= 0 && tower < static_cast<int>(towerFloor.size()) ? towerFloor[static_cast<size_t>(tower)] : 0; }
+    int keyOf(int tower) const { return tower >= 0 && tower < static_cast<int>(towerKey.size()) ? towerKey[static_cast<size_t>(tower)] : 0; }
 };
 
 int storyCount();
 constexpr int kDeepId = 8100;
 constexpr int kAnnexSide = 1000;   // the side route that holds the deep job's maintenance phrase
+constexpr int kTowerCount = 2;     // corp towers on the Ledger so far
+constexpr int kFloors = 3;         // floors per tower; the last one is the Boardroom
+constexpr int kTowerIdBase = 8200; // tower floor ids: 8200 + tower * 10 + floor
+constexpr int kMaxAct = 4;

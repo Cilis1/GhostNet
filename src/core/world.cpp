@@ -16,6 +16,7 @@ const char* kindName(Kind k) {
         case Kind::Story: return "CONTRACT";
         case Kind::Side: return "SIDE ROUTE";
         case Kind::Prototype: return "PROTOTYPE";
+        case Kind::Tower: return "CORP TOWER";
     }
     return "?";
 }
@@ -25,8 +26,29 @@ const char* lockName(LockType l) {
         case LockType::Keypad: return "KEYPAD";
         case LockType::Rotor: return "ROTOR";
         case LockType::Cipher: return "CIPHER";
+        case LockType::Composite: return "COMPOSITE";
     }
     return "?";
+}
+const char* doctrineName(Doctrine d) {
+    switch (d) {
+        case Doctrine::Fortress: return "FORTRESS";
+        case Doctrine::Biosentinel: return "BIOSENTINEL";
+        default: return "NONE";
+    }
+}
+const char* doctrineText(Doctrine d) {
+    switch (d) {
+        case Doctrine::Fortress:
+            return "FORTRESS. Every door is a COMPOSITE lock (a keypad, then a rotor) on a tiny shared budget, there are no "
+                   "maintenance ports, and every miss is logged as an alarm ping. Every compute box - and a SIEGE subnet - can "
+                   "answer once at each door. Beat it with SIEGE (CRACK), compute, BREAKER and PEEK.";
+        case Doctrine::Biosentinel:
+            return "BIOSENTINEL. A watchdog on every floor that hunts twice as hungrily, and a sentinel sweep every 12s "
+                   "that pings the trace (a frozen trace lets it pass). Big files: this one is a clock. Beat it with JAMMERS "
+                   "(they hold the hunt back and soften the sweeps), a STEALTH subnet (BLACKOUT), proxies, FREEZE and BURST.";
+        default: return "";
+    }
 }
 
 bool Target::hasHoneypot() const {
@@ -352,6 +374,67 @@ Target makeSide(uint64_t seed, int idx) {
     addLore(t, r);
     return t;
 }
+// ---------------------------------------------------------------------------
+// Act IV - THE LEDGER: corp towers
+// ---------------------------------------------------------------------------
+struct FloorDef {
+    std::string name, dir, blurb;
+    std::vector<std::string> objectives;
+    LockType lock;
+    bool watchdog, honeypot;
+    std::string outro;
+};
+struct TowerDef {
+    std::string corp, title, host;
+    Doctrine doctrine;
+    FloorDef floors[kFloors];
+    std::string boardroomMemo;
+};
+
+const std::vector<TowerDef>& towers() {
+    static const std::vector<TowerDef> v = {
+        {"Kessler-Maru", "KESSLER-MARU TOWER", "tower.kessler-maru.corp", Doctrine::Fortress,
+         {{"Kessler-Maru: Intake Floor", "/intake", "Where the city's compute contracts are signed. Every door is two doors.",
+           {"render_queue.db", "client_roster.enc", "power_contracts.pdf"}, LockType::Composite, false, false,
+           "The intake floor goes quiet. Somewhere above you, a door you haven't met yet just learned your name."},
+          {"Kessler-Maru: Compute Halls", "/halls", "Rows of rented iron, billing by the minute. Locked like a bank.",
+           {"rate_card_2027.xls", "lease_ledger.db", "throttle_policy.pdf"}, LockType::Composite, false, true,
+           "The halls hum on without you. You know now what they charge the city for every second of compute."},
+          {"Kessler-Maru: The Boardroom", "/board", "The room that sets the rent. It has never been opened from outside.",
+           {"board_minutes.enc", "landlord_accord.pdf", "price_floor.db"}, LockType::Composite, true, true,
+           "KESSLER-MARU, OWNED. Not the building - the record of what it charges. You read the minutes where they "
+           "agreed that prices rise whenever runners succeed. You were on the agenda twice."}},
+         "From: chair@kessler-maru\nMotion carried: compute rates track 'unauthorized market activity'.\nWhen runners win, "
+         "everyone's rent goes up. Nobody has to say it out loud."},
+        {"Tidewater BioSys", "TIDEWATER BIOSYS TOWER", "tower.tidewater-biosys.corp", Doctrine::Biosentinel,
+         {{"Tidewater: Wet Labs", "/labs", "Cold rooms and warm servers. Something in the walls is listening.",
+           {"trial_cohort.csv", "consent_waivers.pdf", "lab_telemetry.db"}, LockType::Keypad, true, false,
+           "The wet labs settle. The sentinels keep sweeping a room you already left."},
+          {"Tidewater: Sample Vault", "/vault", "Where the samples go, and the patents that grow from them.",
+           {"sample_registry.db", "patent_chain.enc", "insurer_feed.csv"}, LockType::Cipher, true, true,
+           "The vault seals behind you. The insurer feed explains every claim the clinics on Kettle Street ever denied."},
+          {"Tidewater: The Boardroom", "/board", "The room that decides who gets treated. The sentinels never sleep here.",
+           {"board_minutes.enc", "coverage_map.db", "landlord_accord.pdf"}, LockType::Rotor, true, true,
+           "TIDEWATER BIOSYS, OWNED. The coverage map is a city map with the poor parts greyed out. The landlord accord "
+           "is signed by the same names as Kessler-Maru's. It was always one table."}},
+         "From: chair@tidewater-biosys\nCoverage follows rent. Rent follows the accord.\nThe accord has six signatures. "
+         "Keep the other four out of the minutes."},
+    };
+    return v;
+}
+
+const std::vector<std::string> kTowerPhrases = {"COLDROOM", "BOARDSEAT", "RENTROLL", "CLEANROOM", "IRONLEASE", "TIDEMARK",
+                                                "QUIETVOTE", "GLASSDOOR", "SIXCHAIRS", "PRICEFLOOR", "SAMPLEHOLD", "BLINDTRUST"};
+
+std::string floorPhrase(uint64_t seed, int tower, int floor, int key) {
+    Rng r(seedOf(seed, 0x70E2000 + static_cast<uint64_t>(tower) * 64 + static_cast<uint64_t>(floor) * 8 + static_cast<uint64_t>(key) * 4096));
+    return r.pick(kTowerPhrases);
+}
+
+std::string floorHost(int tower, int floor) {
+    static const char* sub[kFloors] = {"f1", "f2", "board"};
+    return std::string(sub[floor]) + "." + towers()[static_cast<size_t>(tower)].host;
+}
 }  // namespace
 
 int storyCount() { return static_cast<int>(stories().size()); }
@@ -361,6 +444,87 @@ bool contractAvailable(const GameState& g) { return g.story < storyCount() && g.
 // Nothing stops you trying it the moment it appears.
 bool deepListed(const GameState& g) { return (g.story >= 3 || g.act >= 3) && !g.deepDone; }
 const StoryInfo& storyInfo(int idx) { return stories()[static_cast<size_t>(idx)].info; }
+
+bool ledgerOpen(const GameState& g) { return g.deepDone; }
+bool enterLedger(GameState& g) {
+    if (!g.deepDone || g.act >= 4) return false;
+    g.act = 4;
+    if (g.towerFloor.size() < static_cast<size_t>(kTowerCount)) g.towerFloor.resize(kTowerCount, 0);
+    if (g.towerKey.size() < static_cast<size_t>(kTowerCount)) g.towerKey.resize(kTowerCount, 0);
+    g.journal.push_back("THE LEDGER: Kessler-Maru (FORTRESS) and Tidewater BioSys (BIOSENTINEL) are on your board.");
+    return true;
+}
+bool towerOwned(const GameState& g, int tower) { return g.floorsCleared(tower) >= kFloors; }
+int towerOfId(int id) { return id >= kTowerIdBase && id < kTowerIdBase + kTowerCount * 10 ? (id - kTowerIdBase) / 10 : -1; }
+int floorId(int tower, int floor) { return kTowerIdBase + tower * 10 + floor; }
+const char* towerCorp(int tower) { return towers()[static_cast<size_t>(tower)].corp.c_str(); }
+const char* towerTitle(int tower) { return towers()[static_cast<size_t>(tower)].title.c_str(); }
+Doctrine towerDoctrine(int tower) { return towers()[static_cast<size_t>(tower)].doctrine; }
+std::string floorOutro(int tower, int floor) { return towers()[static_cast<size_t>(tower)].floors[floor].outro; }
+std::string towerPassphrase(const GameState& g, int tower, int floor) { return floorPhrase(g.worldSeed, tower, floor, g.keyOf(tower)); }
+
+Target makeTowerFloor(const GameState& g, int tower, int floor) {
+    const TowerDef& d = towers()[static_cast<size_t>(tower)];
+    const FloorDef& f = d.floors[floor];
+    Rng r(seedOf(g.worldSeed, 0x70E3000 + static_cast<uint64_t>(tower) * 16 + static_cast<uint64_t>(floor)));
+    Target t;
+    t.id = floorId(tower, floor);
+    t.tower = tower;
+    t.floor = floor;
+    t.doctrine = d.doctrine;
+    t.kind = Kind::Tower;
+    t.name = f.name;
+    t.host = floorHost(tower, floor);
+    t.blurb = f.blurb;
+    t.security = 5;
+    const int dz = d.doctrine == Doctrine::Fortress ? 0 : 1;
+    t.traceOverride = bal::TOWER_TRACE[dz][floor];
+    t.lock = f.lock;
+    t.watchdog = f.watchdog;
+    t.backdoor = d.doctrine != Doctrine::Fortress;   // FORTRESS: the maintenance ports are welded shut
+    if (t.backdoor) t.passphrase = towerPassphrase(g, tower, floor);
+    t.reward = bal::TOWER_REWARD[floor];
+    for (auto& n : f.objectives) {
+        File o;
+        o.name = n;
+        o.dir = f.dir;
+        o.kind = FileKind::Objective;
+        o.size = bal::TOWER_OBJ_MB[dz][floor] + r.range(-2, 2);
+        t.files.push_back(o);
+    }
+    addPaydata(t, r, 2, bal::TOWER_PAY_MULT, sizeMin(5), sizeMax(5));
+    if (f.honeypot) addHoneypot(t, r);
+    if (floor + 1 < kFloors && !t.backdoor) {   // FORTRESS: nothing to leak, only a grudge
+        File memo;
+        memo.name = "facilities_up.txt";
+        memo.dir = "/home/facilities";
+        memo.kind = FileKind::Intel;
+        memo.size = 1;
+        memo.text = "From: facilities@" + t.host + "\nRequest #" + std::to_string(r.range(2000, 9999)) +
+                    " denied again: no maintenance ports on " + floorHost(tower, floor + 1) + ". Bring a bigger rig or don't come up. - K.";
+        t.files.push_back(memo);
+    } else if (floor + 1 < kFloors) {   // the paper trail upward: the next floor's maintenance phrase
+        File memo;
+        memo.name = "facilities_up.txt";
+        memo.dir = "/home/facilities";
+        memo.kind = FileKind::Intel;
+        memo.size = 1;
+        memo.phraseFor = floorId(tower, floor + 1);
+        memo.text = "From: facilities@" + t.host + "\nThe maintenance door at " + floorHost(tower, floor + 1) + " still answers to '" +
+                    towerPassphrase(g, tower, floor + 1) + "'.\nRotate it if anybody ever gets traced up here. - K.";
+        t.files.push_back(memo);
+    } else {
+        File memo;
+        memo.name = "chair_memo.txt";
+        memo.dir = f.dir;
+        memo.kind = FileKind::Intel;
+        memo.size = 1;
+        memo.text = d.boardroomMemo;
+        t.files.push_back(memo);
+    }
+    addLore(t, r);
+    return t;
+}
 
 std::vector<Target> buildBoard(const GameState& g) {
     std::vector<Target> board;
@@ -497,6 +661,13 @@ std::vector<Target> buildBoard(const GameState& g) {
         addPaydata(t, pr, 2, 1.2, sizeMin(t.security), sizeMax(t.security));
         addHoneypot(t, pr);
         board.push_back(t);
+    }
+    // Act IV: the current floor of every tower you haven't owned yet, at the top of the board.
+    if (ledgerOpen(g)) {
+        std::vector<Target> floors;
+        for (int k = 0; k < kTowerCount; ++k)
+            if (g.floorsCleared(k) < kFloors) floors.push_back(makeTowerFloor(g, k, g.floorsCleared(k)));
+        board.insert(board.begin(), floors.begin(), floors.end());
     }
     return board;
 }

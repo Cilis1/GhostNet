@@ -116,9 +116,22 @@ currency, loot-box machine rolls, and machines that work while you're away.
 * **Subnets are optional.** The deep job is still beatable without a gateway (sims: careful
   mode is unchanged at ~20 runs).
 
+## 0.6.0 — Act IV, the Ledger: how it stays inside the walls
+
+* **Towers never act on their own.** No timers, no raids, no decay. A tower waits on your
+  board until you start a climb, and a floor you've taken stays taken.
+* **The only reaction is to a trace.** A trace-out re-keys that tower's doors, so phrases you
+  held go stale. Nothing you own is lost; floor plans and taken floors are kept.
+* **Doctrines are told, not sprung.** The board and the briefing name each tower's doctrine
+  and what beats it, before you spend anything.
+* **Prep is bought once with credits.** Nothing new to grind: no second currency, no
+  timers on intel.
+* **The deep-job pillar still holds.** The bot's kit trials require that the matched kit
+  takes every floor and that one build sent against the wrong doctrine fails.
+
 ## Deferred backlog
 
 1. ~~A graphical client~~ built in 0.3.0 (see section 6).
 2. More lock families. Each one needs a clearly stated rule for near-miss feedback.
-3. A post-ending "owner" mode with harder seeded deep archives that you start yourself (never on a timer).
+3. ~~A post-ending "owner" mode~~ built in 0.6.0 as Act IV, the Ledger (see below).
 4. Authenticode code signing, to stop the SmartScreen warning (needs a paid certificate held by the owner).

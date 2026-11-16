@@ -151,6 +151,21 @@ void App::handleEvents() {
                 flash = 0.4f, flashColor = C_MAGENTA;
                 floats.push_back({"SPOOFED", C_MAGENTA, Vector2{636, 380}, gx::now});
                 break;
+            case Ev::Stage:
+                sfx::play(sfx::Granted, 0.7f);
+                flash = 0.4f, flashColor = C_CYAN, glitch = 0.4f;
+                floats.push_back({"KEYPAD OPEN - ROTOR WAKES", C_CYAN, Vector2{636, 380}, gx::now});
+                rowsSeen = 0;
+                input.clear();
+                break;
+            case Ev::Sweep:
+                sfx::play(sfx::Deny, 0.8f);
+                flash = 0.35f, flashColor = C_RED, shake = 0.3f;
+                floats.push_back({"SENTINEL SWEEP", C_RED, Vector2{636, 420}, gx::now});
+                break;
+            case Ev::MissLogged:
+                flash = 0.25f, flashColor = C_AMBER, shake = 0.2f;
+                break;
             case Ev::Strike:
                 sfx::play(sfx::Boot);
                 flash = 0.5f, flashColor = Color{255, 140, 60, 255}, glitch = 0.5f, shake = 0.3f;
@@ -246,18 +261,28 @@ void App::drawRun() {
     text(F::Mono, "HAUL", W - 200, 14, 12, C_DIM);
     glowText(F::Display, std::to_string(r.haul) + " CR", W - 24, 30, 20, C_AMBER, Right);
     text(F::Mono, "t+" + std::to_string(r.secs) + "s", W - 200, 36, 12, C_DIM);
+    if (r.t.kind == Kind::Tower) {   // the doctrine is never a surprise: it stays on screen
+        std::string d = std::string(doctrineName(r.t.doctrine)) + "  FLOOR " + std::to_string(r.t.floor + 1) + "/" + std::to_string(kFloors);
+        if (r.nextSweep() >= 0) d += "   SWEEP IN " + std::to_string(r.nextSweep()) + "s";
+        if (r.t.doctrine == Doctrine::Fortress) d += "   MISSES LOGGED " + std::to_string(r.misses);
+        text(F::MonoBold, d, 640, 44, 11, r.nextSweep() >= 0 && r.nextSweep() <= 3 ? pulse(C_RED, 6) : kindColor(Kind::Tower), Center);
+    }
 
     hoverHint.clear();
     drawRoute(Rectangle{20, 84, 296, 604});
     Rectangle mid{332, 84, 604, 604};
     if (!r.doorOpen && !r.over()) {
-        panel(mid, C_MAGENTA, std::string(lockName(r.lock.type)) + " LOCK");
+        panel(mid, C_MAGENTA, r.lock.composite() ? std::string("COMPOSITE LOCK - STAGE ") + (r.lock.stage == 0 ? "1 of 2: KEYPAD" : "2 of 2: ROTOR")
+                                                 : std::string(lockName(r.lock.type)) + " LOCK");
         bool submit = drawLock(Rectangle{mid.x + 20, mid.y + 20, mid.width - 40, mid.height - 100}, r.lock, input, modals.empty(), true);
         float by = mid.y + mid.height - 62;
         bool full = static_cast<int>(input.size()) == r.lock.length();
         if (button(Rectangle{mid.x + 20, by, 130, 44}, "SUBMIT", C_CYAN, full && !r.lock.sealed(), full, 14) || (submit && full)) submitGuess();
         bool known = g.knownPhrases.count(r.t.id) > 0;
-        if (button(Rectangle{mid.x + 160, by, 140, 44}, known ? "USE PHRASE" : "TRY PHRASE", C_GREEN, true, known, 13)) {
+        // No maintenance port: a FORTRESS (announced at the briefing), or a composite's inner rotor.
+        bool noPort = (r.t.kind == Kind::Tower && !r.t.backdoor) || (r.lock.composite() && r.lock.stage > 0);
+        if (noPort) known = false;
+        if (button(Rectangle{mid.x + 160, by, 140, 44}, noPort ? "NO PORT" : known ? "USE PHRASE" : "TRY PHRASE", C_GREEN, !noPort, known, 13)) {
             if (known) {
                 r.phrase(r.t.passphrase);
                 handleEvents();
@@ -265,7 +290,7 @@ void App::drawRun() {
                 openPhraseModal();
             }
         }
-        bool canExtra = r.emergLeft > 0 && !r.lock.extraUsed;
+        bool canExtra = r.emergLeft > 0 && (!r.lock.extraUsed || r.t.doctrine == Doctrine::Fortress);
         if (button(Rectangle{mid.x + 310, by, 150, 44}, "EMERGENCY +1", C_AMBER, canExtra, r.lock.sealed() && canExtra, 13)) {
             std::string err;
             if (!r.extra(err)) toast(err, C_AMBER);
@@ -522,7 +547,7 @@ bool App::drawLock(Rectangle a, Lock& lock, std::string& field, bool interactive
         rowBorn = gx::now;
     }
     int len = lock.length();
-    bool cipher = lock.type == LockType::Cipher;
+    bool cipher = lock.cur() == LockType::Cipher;
     // Header.
     text(F::Mono, "GUESSES LEFT", a.x, a.y, 12, C_DIM);
     pips(a.x + 110, a.y + 1, std::max(0, lock.left()), lock.maxGuesses, lock.left() <= 1 ? C_RED : C_CYAN, 11, 4);
@@ -533,7 +558,34 @@ bool App::drawLock(Rectangle a, Lock& lock, std::string& field, bool interactive
     float rowW = len * (tile + gap) - gap;
     float x0 = a.x + (a.width - rowW) / 2;
     float y = a.y + 80;
-    int rows = std::max<int>(lock.maxGuesses, static_cast<int>(lock.history.size()) + 1);
+    if (lock.composite()) {   // the two stages, and what the first one carries into the second
+        float sx = a.x, sy = a.y + 76;
+        const char* names[2] = {"1  KEYPAD", "2  ROTOR"};
+        for (int st = 0; st < 2; ++st) {
+            bool done = st < lock.stage || lock.open, now = st == lock.stage && !lock.open;
+            Color c = done ? C_GREEN : now ? C_CYAN : C_DIM;
+            Rectangle pr{sx + st * 118, sy, 110, 22};
+            DrawRectangleRec(pr, fade(c, now ? 0.22f : 0.1f));
+            DrawRectangleLinesEx(pr, 1, fade(c, 0.8f));
+            text(F::MonoBold, std::string(names[st]) + (done ? "  OK" : ""), pr.x + pr.width / 2, pr.y + 5, 11, c, Center);
+        }
+        if (lock.stage == 1) {
+            if (lock.carried()) {
+                const std::string& o = lock.outerRows.back().guess;
+                text(F::Mono, "KEYPAD CODE", sx + 250, sy + 5, 11, C_DIM);
+                for (int k = 0; k < 4; ++k) {
+                    Rectangle cr{sx + 340 + k * 26, sy, 22, 22};
+                    DrawRectangleRec(cr, fade(C_GREEN, 0.75f));
+                    text(F::MonoBold, std::string(1, o[static_cast<size_t>(k)]), cr.x + 11, cr.y + 3, 15, C_INK, Center);
+                }
+            } else {
+                text(F::Mono, "opened by phrase - no code carries over", sx + 250, sy + 5, 11, C_DIM);
+            }
+        }
+        y += 34;
+    }
+    int budget = lock.maxGuesses - (lock.composite() && lock.stage == 1 ? static_cast<int>(lock.outerRows.size()) : 0);
+    int rows = std::max<int>(budget, static_cast<int>(lock.history.size()) + 1);
     float rowH = std::min(tile + 8, (a.height - 150) / rows);
     float t = std::min(tile, rowH - 6);
     bool inputRow = interactive && !lock.open && !lock.sealed();
@@ -561,7 +613,7 @@ bool App::drawLock(Rectangle a, Lock& lock, std::string& field, bool interactive
                 text(F::MonoBold, ch, tr.x + t / 2, tr.y + (t - 24) / 2, 24, mk > 0 ? C_INK : mk == 0 ? fade(WHITE, 0.55f) : WHITE, Center);
                 // A corner mark too, so the colours are never the only signal.
                 if (mk >= 0) {
-                    const char* tag = lock.type == LockType::Rotor ? (mk == 2 ? "=" : mk == 1 ? "+-1" : "")
+                    const char* tag = lock.cur() == LockType::Rotor ? (mk == 2 ? "=" : mk == 1 ? "+-1" : "")
                                                                     : (mk == 2 ? "OK" : mk == 1 ? "<>" : "");
                     text(F::MonoBold, tag, tr.x + t - 3, tr.y + 2, 9, C_INK, Right);
                 }
@@ -574,6 +626,11 @@ bool App::drawLock(Rectangle a, Lock& lock, std::string& field, bool interactive
                 if (peeked && !has)   // PEEK: the answer for this box, as a ghost to type over
                     text(F::MonoBold, pc, tr.x + t / 2, tr.y + (t - 24) / 2, 24, fade(C_GREEN, 0.45f), Center);
                 if (peeked) text(F::MonoBold, "PEEK " + pc, tr.x + t / 2, tr.y + t + 1, 8, C_GREEN, Center);
+                else if (lock.composite() && lock.carried()) {   // the carry rule, box by box
+                    int o = lock.outerRows.back().guess[static_cast<size_t>(k)] - '0';
+                    text(F::MonoBold, std::to_string(std::max(0, o - 2)) + "-" + std::to_string(std::min(9, o + 2)), tr.x + t / 2, tr.y + t + 1, 8,
+                         C_AMBER, Center);
+                }
                 if (caret) glowRect(tr, pulse(C_CYAN, 6, 0.4f), 2, 3);
                 else DrawRectangleLinesEx(tr, 1.5f, fade(C_CYAN, 0.7f));
                 if (has) {
@@ -724,6 +781,9 @@ void App::drawReckon() {
         default: title = "THE RECKONING"; sub = "Clean disconnect."; c = C_CYAN; break;
     }
     if (rk.deepWon) title = "THE DEEP JOB", sub = "Done. Every ticket HELIOS ever opened.", c = C_GREEN;
+    if (rk.towerOwned) title = std::string(towerCorp(rk.tower)) + " OWNED", sub = "The Boardroom is read. The tower is off your board.", c = C_GREEN;
+    else if (rk.floorCleared >= 0) title = "FLOOR TAKEN", sub = std::string(towerCorp(rk.tower)) + ": floor " + std::to_string(rk.floorCleared + 2) + " is open to you.", c = kindColor(Kind::Tower);
+    if (rk.rekeyed) sub += "  " + std::string(towerCorp(rk.tower)) + " re-keyed its doors.";
     glowText(F::Display, run ? run->t.name : "", 640, 36, 14, C_DIM, Center);
     chromaText(F::Heavy, title, 640, 60, title.size() > 18 ? 40 : 56, c, Center, 2.0f);
     text(F::Mono, sub, 640, 132, 16, C_TEXT, Center);
@@ -877,6 +937,15 @@ void App::leaveReckoning() {
     if (rk.unlockedNetwork) beats.push_back([this] { showNetworkUnlock(); });
     for (auto it = beats.rbegin(); it != beats.rend(); ++it) (*it)();
     if (rk.boardRefreshed) toast("The board refreshed. New listings; the old ones are forgotten.", C_AMBER);
+    if (rk.tower >= 0) {   // Act IV: what this climb changed, said once on the way out
+        std::string corp = towerCorp(rk.tower);
+        if (rk.ledgerDone) {}   // the act card already says it
+        else if (rk.towerOwned) toast(corp + " is owned. Its boardroom answers to you now.", kindColor(Kind::Tower));
+        else if (rk.floorCleared >= 0)
+            toast(corp + ": floor " + std::to_string(rk.floorCleared + 1) + " of " + std::to_string(kFloors) + " taken. The next floor is on the board.",
+                  kindColor(Kind::Tower));
+        if (rk.rekeyed) toast(corp + " re-keyed after the trace. Floors you took stay taken; old phrases are dead.", C_RED);
+    }
     run.reset();
     refreshBoard();
 }
@@ -887,11 +956,12 @@ void App::leaveReckoning() {
 void App::drawPractice() {
     glowText(F::Display, "PRACTICE RANGE", 640, 40, 30, C_AMBER, Center);
     text(F::Mono, "training hardware - nothing here is real, nothing is billed, no trace", 640, 82, 14, C_DIM, Center);
-    const LockType types[3] = {LockType::Keypad, LockType::Rotor, LockType::Cipher};
-    for (int i = 0; i < 3; ++i) {
+    const LockType types[4] = {LockType::Keypad, LockType::Rotor, LockType::Cipher, LockType::Composite};
+    for (int i = 0; i < 4; ++i) {
         bool cur = practiceOn && practice.type == types[i];
-        if (button(Rectangle{400.0f + i * 166, 112, 150, 40}, lockName(types[i]), C_AMBER, true, cur, 14)) {
-            practice = makeLock(types[i], practiceRng, g.deck.breaker);
+        if (button(Rectangle{317.0f + i * 166, 112, 150, 40}, lockName(types[i]), C_AMBER, true, cur, 14)) {
+            // Practice is generous with the composite: the real FORTRESS budget is set by your kit.
+            practice = makeLock(types[i], practiceRng, g.deck.breaker + (types[i] == LockType::Composite ? 6 : 0));
             practiceOn = true;
             input.clear();
             rowsSeen = 0;

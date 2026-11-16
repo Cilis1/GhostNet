@@ -26,3 +26,15 @@ HardwareSpec hardwareFor(const Target& t);   // per listing (prototype labs vary
 // The stock maintenance phrases HELIOS techs reuse across the city (never the deep job's).
 const std::vector<std::string>& starterPhrases();
 Trait traitFor(Kind k);                      // what a captured machine carries for life
+// Act IV - THE LEDGER (0.6): corp towers, opened by the owner ending.
+bool ledgerOpen(const GameState& g);
+bool enterLedger(GameState& g);               // act 4; true the first time (show the card)
+bool towerOwned(const GameState& g, int tower);
+int towerOfId(int id);                        // -1 if the id isn't a tower floor
+int floorId(int tower, int floor);
+const char* towerCorp(int tower);             // "Kessler-Maru"
+const char* towerTitle(int tower);            // "KESSLER-MARU TOWER"
+Doctrine towerDoctrine(int tower);
+std::string floorOutro(int tower, int floor);
+std::string towerPassphrase(const GameState& g, int tower, int floor);   // at the tower's current key
+Target makeTowerFloor(const GameState& g, int tower, int floor);

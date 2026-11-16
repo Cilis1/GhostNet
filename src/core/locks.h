@@ -19,12 +19,23 @@ struct Lock {
     struct Row { std::string guess; std::vector<int> marks; int hit = 0, nearc = 0; };
     std::vector<Row> history;
     std::vector<int> peeked;     // positions revealed by a PEEK program
+    // COMPOSITE: stage 0 is a keypad, stage 1 a rotor. `secret` always holds the current
+    // stage's answer; the rotor's waits in `inner` until the keypad opens.
+    int stage = 0;
+    std::string inner;
+    std::vector<Row> outerRows;  // the keypad stage's rows, once it has opened
 
     int left() const { return maxGuesses - used; }
     bool sealed() const { return !open && used >= maxGuesses; }
+    // The kind of puzzle in front of you right now (a composite is a keypad, then a rotor).
+    LockType cur() const { return type == LockType::Composite ? (stage == 0 ? LockType::Keypad : LockType::Rotor) : type; }
+    bool composite() const { return type == LockType::Composite; }
     std::string format() const;          // what a guess looks like
     std::string rule() const;            // how feedback works
-    int length() const { return type == LockType::Cipher ? 5 : 4; }
+    int length() const { return cur() == LockType::Cipher ? 5 : 4; }
+    // COMPOSITE: the outer keypad opens and the inner rotor takes over (a FORTRESS phrase does this too).
+    void openOuter();
+    bool carried() const { return !outerRows.empty() && outerRows.back().hit == 4; }   // the keypad's code is known
     // Returns false with err set if the guess is malformed (costs nothing).
     bool guess(const std::string& raw, std::string& err);
     // PEEK: reveal the first position you haven't already pinned down. -1 if there's none left.

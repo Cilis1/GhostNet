@@ -31,6 +31,9 @@ LOCKS
           the code, another box; dark = not in the code.
   ROTOR   4 digits judged per wheel. Amber "+-1" = ONE NOTCH AWAY (not misplaced!).
   CIPHER  5-letter word. Green = right place, amber = elsewhere in the word.
+  COMPOSITE  (Act IV) a KEYPAD, then a ROTOR behind it, on one guess budget.
+          Once the keypad opens, every rotor wheel is within 2 notches of the
+          keypad digit in the same box. The screen shows each box's range.
 
 THE DECK
   Tools you buy for yourself: more attempts, better tools, a quieter
@@ -55,6 +58,18 @@ GHOSTNET (after your first contract)
 THE DEEP JOB
   A HELIOS archive tuned so no deck alone can finish it. Try it whenever it
   appears; if you fall short, the game tells you by how much.
+
+THE LEDGER (Act IV - after the owner ending)
+  Two corp towers, three floors each; the Boardroom makes the tower yours.
+  You start every climb. Nothing is timed and taken floors stay taken.
+  Each tower's DOCTRINE is announced up front:
+    KESSLER-MARU (FORTRESS): composite locks, no maintenance ports, one guess
+      per door (+Breaker), each compute box answers once, misses ping (+4%).
+    TIDEWATER BIOSYS (BIOSENTINEL): watchdogs everywhere and a sentinel sweep
+      every 12s (+6%; jammers soften it, FREEZE lets one pass). Each floor's
+      memo names the next floor's maintenance phrase.
+  HEIST PREP, paid once and kept: FLOOR PLAN 350cr, PHRASE 700-1400cr.
+  Get traced in a tower and it RE-KEYS: your phrases for it go stale.
 
 THE PANEL
   VESPER (risk), LEDGER (money) and MOTH (intel) are advisor AIs in your deck.

@@ -97,6 +97,9 @@ const HelpSection kHelp[] = {
                 "STRIKE per run (BLACKOUT, MIRROR, CRACK) that wears the whole subnet. Three matching T3+ machines act one tier higher "
                 "while together - pull one and it ends. Arm the gateway as decoy and the subnet burns with it."},
     {"THE DEEP JOB", "A HELIOS archive tuned so no deck alone can finish it. Try it any time; fall short and you see how far."},
+    {"THE LEDGER", "After the deep job: corp towers, 3 floors each, every DOCTRINE announced up front. FORTRESS: a COMPOSITE lock "
+                   "(keypad, then a rotor whose wheels sit within 2 of each keypad digit), no ports, each compute box answers once. "
+                   "BIOSENTINEL: sweeps every 12s. Prep costs credits; only a trace re-keys a tower."},
     {"THE PANEL", "VESPER (risk), LEDGER (money) and MOTH (intel) vote before a run. No idle income, no timers: nothing happens while "
                   "you're away."},
 };
@@ -115,6 +118,7 @@ void App::drawTopBar() {
 }
 
 void App::drawHub() {
+    if (modals.empty() && enterLedger(g)) showLedgerCard();   // Act IV: once, after the owner ending
     drawTopBar();
     struct T { Tab t; const char* label; };
     const T tabs[] = {{Tab::Rack, "THE RACK"}, {Tab::Board, "JOB BOARD"}, {Tab::Deck, "THE DECK"},
@@ -653,6 +657,11 @@ void App::drawBoard(Rectangle area) {
     if (board.empty()) refreshBoard();
     std::string head = "LISTING " + std::to_string(g.mapIndex + 1) + "   //   " + std::to_string(g.mapRunsLeft) +
                        " run(s) until the board refreshes (and old listings are forgotten)";
+    if (ledgerOpen(g)) {
+        int owned = 0;
+        for (int k = 0; k < kTowerCount; ++k) owned += towerOwned(g, k) ? 1 : 0;
+        head = "THE LEDGER " + std::to_string(owned) + "/" + std::to_string(kTowerCount) + " towers owned   //   " + head;
+    }
     text(F::Mono, head, area.x, area.y - 2, 13, C_DIM);
     std::string sc = g.netUnlocked ? "SCOUTING CHARGES " + std::to_string(g.net.usableScoutCharges()) : "NO NETWORK YET";
     text(F::MonoBold, sc, area.x + area.width, area.y - 2, 13, C_AMBER, Right);
@@ -677,9 +686,10 @@ void App::drawBoard(Rectangle area) {
         if (hov) glowRect(r, kc, 1.5f, 3);
         else DrawRectangleLinesEx(r, 1, fade(kc, 0.45f));
         if (t.deep) brackets(r, pulse(C_RED, 3), 14, 2);
+        if (t.kind == Kind::Tower) brackets(r, pulse(kc, 2, 0.8f), 14, 2);
         text(F::Display, t.name, x + 18, y + 12, 15, burned ? C_DIM : WHITE);
         text(F::Mono, t.host, x + 18, y + 34, 12, C_DIM);
-        text(F::MonoBold, t.deep ? "THE DEEP JOB" : kindName(t.kind), x + cw - 14, y + 13, 12, kc, Right);
+        text(F::MonoBold, t.deep ? "THE DEEP JOB" : t.kind == Kind::Tower ? "THE LEDGER" : kindName(t.kind), x + cw - 14, y + 13, 12, kc, Right);
         text(F::Mono, "SEC", x + 18, y + 60, 12, C_DIM);
         pips(x + 50, y + 61, t.security, 5, mix(C_GREEN, C_RED, (t.security - 1) / 4.0f), 9, 3);
         text(F::MonoBold, std::string(lockName(t.lock)) + " LOCK", x + 130, y + 59, 12, C_TEXT);
@@ -691,6 +701,12 @@ void App::drawBoard(Rectangle area) {
         float ty = y + 86;
         if (t.kind == Kind::Story && !t.deep) tx += tag(tx, ty, storyInfo(t.storyIndex).title + "  " + std::to_string(t.reward) + "cr", C_MAGENTA, 11) + 6;
         if (t.deep) tx += tag(tx, ty, "5000cr  //  ENDS THE STORY", C_RED, 11) + 6;
+        if (t.kind == Kind::Tower) {
+            tx += tag(tx, ty, doctrineName(t.doctrine), t.doctrine == Doctrine::Fortress ? C_AMBER : C_GREEN, 11) + 6;
+            tx += tag(tx, ty, (t.floor + 1 == kFloors ? std::string("BOARDROOM") : "FLOOR " + std::to_string(t.floor + 1)) + "/" +
+                                  std::to_string(kFloors) + "  " + std::to_string(t.reward) + "cr",
+                      kc, 11) + 6;
+        }
         if (t.kind == Kind::Side) tx += tag(tx, ty, "SIDE ROUTE", C_PURPLE, 11) + 6;
         if (t.stealable && g.net.bestScoutTier() > 0) tx += tag(tx, ty, "HW", C_AMBER, 11) + 6;
         if (g.reports.count(t.id)) tx += tag(tx, ty, "REPORT Q" + std::to_string(g.reports.at(t.id)), C_CYAN, 11) + 6;
@@ -840,6 +856,10 @@ void App::drawRecords(Rectangle area) {
                {"escapes bought with hardware", std::to_string(s.sacrifices), C_RED},
                {"walk-aways", std::to_string(s.walkaways), C_DIM},
                {"deep job attempts", std::to_string(s.deepAttempts), C_RED},
+               {"the ledger", ledgerOpen(g) ? std::string(towerCorp(0)) + " " + std::to_string(g.floorsCleared(0)) + "/" + std::to_string(kFloors) +
+                                                  "   " + towerCorp(1) + " " + std::to_string(g.floorsCleared(1)) + "/" + std::to_string(kFloors)
+                                            : std::string("after the deep job"),
+                ledgerOpen(g) ? kindColor(Kind::Tower) : C_DIM},
                {"earned", cr(s.earned), C_GREEN},
                {"upkeep paid", cr(s.billsPaid), C_AMBER},
                {"fines", cr(s.finesPaid), C_RED},
@@ -927,9 +947,17 @@ void App::drawBrief() {
                 "at the HELIOS Facilities Annex. Pays 5000cr. It also ends the story.";
     else if (t.kind == Kind::Story)
         story = storyInfo(t.storyIndex).briefing;
+    else if (t.kind == Kind::Tower)   // the doctrine is always announced here, never discovered mid-run
+        story = std::string(towerTitle(t.tower)) + ", " + (t.floor + 1 == kFloors ? std::string("THE BOARDROOM") : "FLOOR " + std::to_string(t.floor + 1)) +
+                " of " + std::to_string(kFloors) + ". Pays " + std::to_string(t.reward) + "cr for its three files. " + doctrineText(t.doctrine);
     if (!story.empty()) {
         std::string clean = flow(story);
-        y += para(F::Mono, clean, l.x + 24, y, l.width - 48, 14, C_MAGENTA, 1.35f, 9) + 14;
+        y += para(F::Mono, clean, l.x + 24, y, l.width - 48, 14, t.kind == Kind::Tower ? kc : C_MAGENTA, 1.35f, t.kind == Kind::Tower ? 8 : 9) + 14;
+    }
+    if (t.kind == Kind::Tower) {
+        text(F::Mono, "DOCTRINE", l.x + 24, y, 13, C_DIM);
+        text(F::MonoBold, doctrineName(t.doctrine), l.x + 130, y, 13, t.doctrine == Doctrine::Fortress ? C_AMBER : C_GREEN);
+        y += 22;
     }
     text(F::Mono, "SECURITY", l.x + 24, y, 13, C_DIM);
     pips(l.x + 130, y + 1, t.security, 5, mix(C_GREEN, C_RED, (t.security - 1) / 4.0f), 12, 4);
@@ -949,6 +977,31 @@ void App::drawBrief() {
 
     bool burned = g.burned.count(t.id) > 0;
     float by = l.y + l.height - 74;
+    if (t.kind == Kind::Tower) {   // heist prep: intel bought with credits, kept until a trace re-keys the tower
+        float py = by - 112;
+        text(F::MonoBold, "HEIST PREP", l.x + 24, py - 18, 12, kc);
+        text(F::Mono, "paid once, kept - no timers", l.x + 120, py - 18, 12, C_DIM);
+        const Prep preps[2] = {Prep::Plan, Prep::Phrase};
+        std::string why;
+        for (int i = 0; i < 2; ++i) {
+            Prep p = preps[i];
+            std::string reason;
+            bool can = prepAvailable(g, t, p, &reason);
+            Rectangle br{l.x + 24 + i * 262, py, 250, 36};
+            // Say why a button is dark instead of showing a price you can't pay for something that doesn't exist.
+            bool owned = p == Prep::Plan ? g.reports.count(t.id) && g.reports.at(t.id) >= 3 : g.knownPhrases.count(t.id) > 0;
+            std::string label = p == Prep::Phrase && !t.backdoor ? std::string("NO MAINTENANCE PORT")
+                              : owned                            ? std::string(prepName(p)) + "  OWNED"
+                                                                 : std::string(prepName(p)) + "  " + std::to_string(prepCost(t, p)) + "cr";
+            if (button(br, label, kc, can, false, 12)) {
+                Result r = buyPrep(g, t, p);
+                result(r);
+                if (r.ok) { sfx::play(sfx::Coin); autosave(); }
+            }
+            if (hovered(br)) why = can ? prepText(p) : reason;
+        }
+        if (!why.empty()) para(F::Mono, why, l.x + 24, py + 42, l.width - 48, 12, C_DIM, 1.3f, 2);
+    }
     if (g.netUnlocked && g.net.upkeepTotal() > 0)
         text(F::Mono, "The bill is fixed as you connect: " + std::to_string(g.net.upkeepTotal()) + "cr if anything happens.", l.x + 24, by - 26, 12, C_AMBER);
     if (const Machine* d = g.net.decoy()) text(F::Mono, "Armed to die tonight: " + d->name, l.x + 24, by - 44, 12, C_RED);
@@ -1028,4 +1081,26 @@ void App::drawBrief() {
         yy += 76;
     }
     para(F::MonoBold, pv.verdict, pp.x + 24, pp.y + pp.height - 42, pp.width - 48, 13, WHITE, 1.3f, 2);
+}
+
+// ---------------------------------------------------------------------------
+// Act IV - THE LEDGER
+// ---------------------------------------------------------------------------
+void App::showLedgerCard() {
+    autosave();
+    Modal m;
+    m.cinematic = true;
+    m.title = "ACT FOUR - THE LEDGER";
+    m.body = flow("HELIOS answered the phone. It never set the price. The rent you paid for every second of compute was agreed "
+                  "at one table, by six signatures, in towers you can see from the roof.\n"
+                  "Two of them are on your board now: KESSLER-MARU, a FORTRESS that lives behind its locks, and TIDEWATER BIOSYS, "
+                  "a BIOSENTINEL whose sentinels never stop sweeping. Three floors each. You start every climb yourself; nothing "
+                  "happens while you're away; what you learn on a floor stays learned - unless they trace you, and re-key.");
+    m.buttons = {"OPEN THE BOARD"};
+    m.accent = kindColor(Kind::Tower);
+    m.onPick = [this](int, const std::string&) {
+        tab = Tab::Board;
+        refreshBoard();
+    };
+    pushModal(m);
 }

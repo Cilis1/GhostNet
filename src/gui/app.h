@@ -153,6 +153,7 @@ private:
     void handleEvents();
     void finishRun();
     void leaveReckoning();
+    void showLedgerCard();
     void showNetworkUnlock();
     void startCapture();
     void openPhraseModal();
