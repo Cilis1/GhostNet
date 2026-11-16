@@ -1,0 +1,16 @@
+build/
+build-*/
+out/
+*.exe
+*.res
+*.obj
+*.o
+ghostnet-signing-key.pem
+*.pem
+payload/
+bin/
+ghostnet-manifest.txt
+ghostnet-manifest.sig
+__pycache__/
+.vscode/
+.vs/
