@@ -1,6 +1,6 @@
 # GhostNet
 
-> *A game about a runner who stops renting and starts owning.*
+> *A game about a netrunner who stops renting and starts owning.*
 
 **GHOSTNET** is a neon hacking game for Windows, written in C++17 on raylib. In
 this city, server space is real estate. You rent a room called THE RACK, take
