@@ -63,6 +63,10 @@ struct Widget {
     std::string label;
 };
 extern std::vector<Widget> widgets;
+// Every string drawn this frame, kept only while recordText is on (the autoplay test reads the screen).
+extern bool recordText;
+extern std::vector<std::string> drawnText;
+bool onScreen(const std::string& needle);   // some string drawn last frame contains needle
 
 // ---- fonts -----------------------------------------------------------------
 enum class F { Display, Heavy, Mono, MonoBold };

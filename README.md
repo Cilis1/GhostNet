@@ -127,6 +127,15 @@ all four locks with no trace and no bill.
       maintenance ports (so no phrase). You get one guess for the whole door, plus one per
       Breaker level. Each compute box (and a SIEGE subnet) answers *once* per door. Every
       miss is logged as an alarm ping (+4% trace).
+    * **Kessler codes persist (0.7).** A Kessler floor keeps its code between connections.
+      Your earlier attempts come back as **LOGGED** rows that cost nothing. A keypad you
+      already found shows **KEYPAD KNOWN**: typing it costs one guess and is never a miss.
+      The rotor behind it gets **arrows** (up = the wheel is higher, down = lower), and
+      **CODES LEFT** counts every answer that still fits. Misses fill a 6-slot **ALARM
+      LOG**; a 7th miss seals the door and re-keys that floor only. A trace still re-keys
+      every floor. The matched kit takes each floor on its first visit; any other kit can
+      win with patience. BREAKER 0 without compute can't, because the one guess always goes
+      on re-entering the keypad.
     * **Tidewater BioSys, BIOSENTINEL.** Ordinary locks, but a watchdog on every floor and a
       **sentinel sweep** every 12s (+6% trace). Jammers soften a sweep but can't delay it;
       FREEZE lets one pass. Each floor's facilities memo names the next floor's
@@ -137,12 +146,15 @@ all four locks with no trace and no bill.
     each box's range, and both stages give their own feedback.
   * **Heist prep** is paid for once and kept: a **FLOOR PLAN** (350cr) is a full-quality
     report, and a **MAINTENANCE PHRASE** (700/1000/1400cr, Biosentinel only) opens the
-    door outright.
+    door outright. A **TUMBLER SURVEY** (600/900/1200cr, Fortress only) names a Kessler
+    keypad's four digits but not their order, and lasts until that floor re-keys.
+  * **FORTRESS DRILL** in the practice range is a Kessler door on your real budget. Press
+    RECONNECT to practise against the same code and its logged rows.
   * **Re-key:** the only thing a tower does to you is react to a trace. Get traced on a floor
     and that tower re-keys every door: phrases you held for it go stale. Floor plans and
     taken floors are kept.
   * Floors pay 1500 / 2500 / 9000cr. Records shows your progress on the Ledger. Saves from
-    any earlier version carry over (save format v5).
+    any earlier version carry over (save format v6).
 * **The Panel:** VESPER (risk), LEDGER (money) and MOTH (intel) are advisor AIs. They read
   your meters and vote before each run. They never solve a lock.
 * **Never in this game:** idle income, offline progress, build timers, raids, a second currency, gacha or levelling.
@@ -181,7 +193,7 @@ all, for CI. That build only takes `--shots DIR`.
   * the installer's JSON / manifest / file-name validation tests;
   * `ghostnet_sim`, an automated player (`tests/sim_bot.cpp`) that plays the real rules end to end. It solves locks only from their feedback and learns passphrases only by reading files. There are five modes: `careful`, `chaos` (lockouts, trace-outs, decoy sacrifices, unpaid bills), `deep`, `subnet` (gateways, strikes and prototype captures over 70 runs), and `tower` (Act IV). Tower mode plays on past the deep job into the Ledger. Then it runs *kit trials*: an owner with the kit matched to a tower's doctrine must take all 3 floors of both towers, and a single build sent against the wrong doctrine must fail. Deep fails unless the bot builds a network and beats the deep job, after one doomed early attempt that checks the shortfall readout.
 * `gui_autoplay` (headless builds): the game plays its own UI through a simulated 1600×1000 window using only mouse clicks and typing: practice range, new game, every hub tab, the first contract (lock typed and clicked), the reckoning, naming N0, buying, storing and switching on a machine, save & quit, continue, then the Act IV card, buying a floor plan and solving a composite lock (keypad clicked, rotor typed). A dead button or mouse mapping that misses fails the build.
-* `build/GhostNet --shots shots` drives every screen of the actual front end and saves 35 screenshots. CI does this on every push and uploads them as the **screenshots** artifact.
+* `build/GhostNet --shots shots` drives every screen of the actual front end and saves 37 screenshots. CI does this on every push and uploads them as the **screenshots** artifact.
 * `GhostNet-Setup.exe --selftest`: the downloader's offline security self-test.
 
 ## Releasing

@@ -330,20 +330,31 @@ int App::screenshotTour(const std::string& dir, const std::function<void()>& ren
     else {
         Target fortT = *fort, bioT = *bio;
         buyPrep(g, fortT, Prep::Plan);
-        brief = fortT;
-        go(Scr::Brief);
-        shot("33-brief-fortress");
-        connect(fortT);
+        buyPrep(g, fortT, Prep::Survey);
+        connect(fortT);   // the first connection: two keypad misses, then the code; a rotor miss with arrows
         std::string k = run->lock.secret;
-        run->guess(k.substr(1) + k.substr(0, 1), err);   // a logged miss
-        run->guess(k, err);                             // the keypad opens; the rotor wakes
+        run->guess(k.substr(1) + k.substr(0, 1), err);
+        run->guess(k.substr(2) + k.substr(0, 2), err);
+        run->guess(k, err);
         std::string near = run->lock.secret;
         near[0] = near[0] == '9' ? '8' : static_cast<char>(near[0] + 1);
+        near[2] = near[2] < '2' ? '9' : static_cast<char>(near[2] - 2);
         run->guess(near, err);
         input = "4";
         handleEvents();
         floats.clear();
         shot("34-lock-composite", 1.0f);
+        run->disconnect();
+        run->settle();
+        run.reset();
+        brief = fortT;   // the briefing now reads the floor's record: alarm log, KEYPAD KNOWN, the estimate
+        go(Scr::Brief);
+        shot("33-brief-fortress");
+        connect(fortT);   // the second connection: the same code, every row LOGGED for free
+        input.clear();
+        handleEvents();
+        floats.clear();
+        shot("36-lock-logged", 1.0f);
         run->disconnect();
         run.reset();
         buyPrep(g, bioT, Prep::Phrase);
@@ -361,6 +372,16 @@ int App::screenshotTour(const std::string& dir, const std::function<void()>& ren
         run->disconnect();
         run.reset();
     }
+    drillConnect(true);   // FORTRESS DRILL on the real budget, one reconnect in
+    {
+        std::string dc = practice.outer;
+        practice.guess(dc.substr(1) + dc.substr(0, 1), err);
+        drillRows.push_back({0, practice.history.back().guess});
+        drillConnect(false);
+    }
+    go(Scr::Practice);
+    shot("37-practice-drill");
+    drillOn = false;
     practice = makeLock(LockType::Cipher, practiceRng, 0);
     practiceOn = true;
     practice.guess("crane", err);

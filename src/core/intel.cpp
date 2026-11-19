@@ -6,6 +6,7 @@
 #include "balance.h"
 #include "locks.h"
 #include "rules.h"
+#include "run.h"
 #include "text.h"
 #include "world.h"
 
@@ -127,8 +128,9 @@ PanelView panelBriefing(const GameState& g, const Target& t) {
                  : phrase                   ? bal::COST_PHRASE
                                             : static_cast<int>((baseGuesses(t.lock) + g.deck.breaker) * 0.75) * bal::COST_GUESS;
     const int cut = g.netUnlocked ? g.net.jamSpikeCut() : 0;
+    const FortressOutlook fo = fortressOutlook(g, t);
     if (t.lock == LockType::Composite) {   // a keypad and a rotor; misses ping the trace
-        int guesses = phrase ? 4 : 6;
+        int guesses = fo.active ? fo.likely : phrase ? 4 : 6;
         lockCost = (phrase ? bal::COST_PHRASE : 0) + guesses * bal::COST_GUESS;
         if (t.doctrine == Doctrine::Fortress)
             lockCost += static_cast<int>((guesses - 1) * bal::FORTRESS_MISS_SPIKE * (100 - cut) / 100.0 / eff);
@@ -203,6 +205,20 @@ PanelView panelBriefing(const GameState& g, const Target& t) {
     if (g.net.externalCount() >= bal::MAX_EXTERNAL && t.stealable)
         say(Advisor::Ledger, "You own " + std::to_string(bal::MAX_EXTERNAL) + " machines already. Scrap something before you try to capture.");
 
+    Vote fortressMv = Vote::Go;
+    if (fo.active) {   // MOTH counts the field; it never names a code
+        std::string ml = fo.keypadKnown ? "The keypad is KNOWN from your logged attempts"
+                                        : "Keypad: " + std::to_string(fo.codes) + " of 5040 codes still fit";
+        if (fo.rotorCodes >= 0) ml += ", rotor: " + std::to_string(fo.rotorCodes) + " setting(s)";
+        ml += ". This door usually needs " + std::to_string(fo.likely) + " guess(es); you bring " + std::to_string(fo.budget) +
+              (fo.emergency > 0 ? " + " + std::to_string(fo.emergency) + " emergency" : std::string()) + ". Alarm log " +
+              std::to_string(fo.alarms) + "/" + std::to_string(bal::FORTRESS_ALARM_LOG) + ".";
+        if (!fo.survey && !fo.keypadKnown) ml += " A TUMBLER SURVEY would name its four digits.";
+        if (fo.budget + fo.emergency < 2) ml = "One guess can't open a two-stage door - you'd spend it every night on the keypad. Bring BREAKER or compute. " + ml;
+        say(Advisor::Moth, ml);   // first, so the panel card shows it
+        if (fo.budget + fo.emergency < fo.likely) fortressMv = Vote::Caution;
+        if (fo.budget + fo.emergency < 2) fortressMv = Vote::Abort;
+    }
     Vote mv = Vote::Go;
     if (!reported) {
         if (g.net.usableScoutCharges() > 0) {
@@ -214,6 +230,7 @@ PanelView panelBriefing(const GameState& g, const Target& t) {
     } else {
         say(Advisor::Moth, "Report on file at quality " + std::to_string(quality) + "/3. Re-reading it is free.");
     }
+    if (fortressMv == Vote::Abort || (fortressMv == Vote::Caution && mv == Vote::Go)) mv = fortressMv;
     if (phrase && t.lock == LockType::Composite)
         say(Advisor::Moth, "You hold the phrase. It opens the outer keypad only - the rotor still has to be turned by hand.");
     else if (phrase) say(Advisor::Moth, "You've read the maintenance phrase for this door. Use it and skip the lock.");
@@ -299,14 +316,22 @@ PanelView panelReview(const GameState& g) {
 // ---------------------------------------------------------------------------
 // Heist prep (Act IV)
 // ---------------------------------------------------------------------------
-const char* prepName(Prep p) { return p == Prep::Plan ? "FLOOR PLAN" : "MAINTENANCE PHRASE"; }
+const char* prepName(Prep p) { return p == Prep::Plan ? "FLOOR PLAN" : p == Prep::Phrase ? "MAINTENANCE PHRASE" : "TUMBLER SURVEY"; }
 const char* prepText(Prep p) {
-    return p == Prep::Plan ? "A full-quality report: security, objectives, trace window, and every bait file named. No scout needed."
-                           : "The floor's maintenance phrase, from a fixer who used to clean there. Good until a trace re-keys the tower.";
+    switch (p) {
+        case Prep::Plan: return "A full-quality report: security, objectives, trace window, and every bait file named. No scout needed.";
+        case Prep::Phrase: return "The floor's maintenance phrase, from a fixer who used to clean there. Good until a trace re-keys the tower.";
+        case Prep::Survey:
+            return "A tech who services the keypads names this floor's four digits - not their order. Good until the floor re-keys "
+                   "(a trace, or a full alarm log).";
+    }
+    return "";
 }
 int prepCost(const Target& t, Prep p) {
+    const int f = std::max(0, std::min(kFloors - 1, t.floor));
     if (p == Prep::Plan) return bal::PREP_PLAN_COST;
-    return bal::PREP_PHRASE_COST[std::max(0, std::min(kFloors - 1, t.floor))];
+    if (p == Prep::Survey) return bal::PREP_SURVEY_COST[f];
+    return bal::PREP_PHRASE_COST[f];
 }
 bool prepAvailable(const GameState& g, const Target& t, Prep p, std::string* why) {
     auto no = [&](const std::string& s) { if (why) *why = s; return false; };
@@ -314,6 +339,12 @@ bool prepAvailable(const GameState& g, const Target& t, Prep p, std::string* why
     if (p == Prep::Plan && g.reports.count(t.id) && g.reports.at(t.id) >= 3) return no("You already hold the full floor plan.");
     if (p == Prep::Phrase && !t.backdoor) return no("FORTRESS: there are no maintenance ports to sell a phrase for.");
     if (p == Prep::Phrase && g.knownPhrases.count(t.id)) return no("You already hold this floor's phrase.");
+    if (p == Prep::Survey && !isFortressFloor(t)) return no("Only a FORTRESS keypad has tumblers worth surveying.");
+    if (p == Prep::Survey) {
+        auto it = g.fortress.find(t.id);
+        if (it != g.fortress.end() && it->second.survey) return no("You already hold this floor's survey (until it re-keys).");
+        if (fortressOutlook(g, t).keypadKnown) return no("Your logged attempts already found this keypad's code.");
+    }
     if (g.credits < prepCost(t, p)) return no("Not enough credits (" + txt::cr(prepCost(t, p)) + ").");
     return true;
 }
@@ -325,6 +356,12 @@ Result buyPrep(GameState& g, const Target& t, Prep p) {
     if (p == Prep::Plan) {
         g.reports[t.id] = 3;
         return {true, "Floor plan bought for " + txt::cr(cost) + ". The report is on file at full quality."};
+    }
+    if (p == Prep::Survey) {
+        g.fortress[t.id].survey = true;
+        std::string d = fortressLock(g, t).surveyDigits();
+        g.journal.push_back("Tumbler survey, " + t.host + ": the keypad's digits are " + d + " (any order).");
+        return {true, "Survey bought for " + txt::cr(cost) + ". The keypad's digits are " + d + ", in some order. In your journal."};
     }
     g.knownPhrases.insert(t.id);
     g.journal.push_back("Passphrase for " + t.host + ": " + t.passphrase + " (bought)");

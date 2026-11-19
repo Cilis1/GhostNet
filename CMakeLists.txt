@@ -3,7 +3,7 @@ cmake_policy(SET CMP0091 NEW)   # lets us pick the static MSVC runtime
 
 project(GhostNet LANGUAGES C CXX)
 
-set(GHOSTNET_VERSION "0.6.1" CACHE STRING "Version stamped into the binaries")
+set(GHOSTNET_VERSION "0.7.0" CACHE STRING "Version stamped into the binaries")
 set(GHOSTNET_REPO "Cilis1/GhostNet" CACHE STRING "GitHub owner/repo the installer is pinned to")
 set(GHOSTNET_SIGNING_PUBKEY_HEX "" CACHE STRING "Optional ECDSA P-256 public key (X||Y hex) the installer requires")
 
@@ -145,7 +145,8 @@ add_test(NAME sim_subnet COMMAND ghostnet_sim 3 70 subnet)
 foreach(seed 7 11 23 42)
   add_test(NAME sim_deep_${seed} COMMAND ghostnet_sim ${seed} 70 deep)
 endforeach()
-# Act IV: beat the deep job, open the Ledger, climb; kit trials prove the doctrines matter.
+# Act IV: beat the deep job, open the Ledger, climb; kit trials prove the doctrines matter, and the 0.7
+# Kessler trials (first visit, patience, slow, wall) prove persistent codes reward patience but not a bare deck.
 foreach(seed 3 7 19)
   add_test(NAME sim_tower_${seed} COMMAND ghostnet_sim ${seed} 110 tower)
 endforeach()

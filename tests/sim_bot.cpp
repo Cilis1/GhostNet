@@ -19,6 +19,7 @@
 #include <iostream>
 #include <map>
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -50,9 +51,11 @@ struct Solver {
     std::vector<std::string> cands;
     std::vector<std::set<int>> wheels;
     std::string last;
+    bool directional = false;   // 0.7: a composite's rotor also says which way each wheel lies
     // A composite's rotor stage: every wheel within 2 notches of the keypad digit in its box.
     void carry(const Lock& L) {
         kind = LockType::Rotor;
+        directional = L.directional();
         wheels.clear();
         for (int i = 0; i < 4; ++i) {
             std::set<int> s;
@@ -60,6 +63,17 @@ struct Solver {
             for (int v = 0; v <= 9; ++v) if (k < 0 || std::abs(v - k) <= 2) s.insert(v);
             wheels.push_back(s);
         }
+    }
+    // TUMBLER SURVEY: the keypad's four digits, unordered.
+    void survey(const std::string& digits) {
+        if (kind != LockType::Keypad || digits.size() != 4) return;
+        std::vector<std::string> keep;
+        for (auto& w : cands) {
+            std::string sorted = w;
+            std::sort(sorted.begin(), sorted.end());
+            if (sorted == digits) keep.push_back(w);
+        }
+        cands.swap(keep);
     }
     // What PEEK / CRACK showed on screen: box i is exactly c.
     void pin(int i, char c) {
@@ -92,13 +106,13 @@ struct Solver {
             for (auto& w : wheels) {
                 int best = *w.begin(), bestScore = 99;
                 for (int v : w) {
-                    int same = 0, adj = 0, far = 0;
+                    int same = 0, adj = 0, far = 0, adjUp = 0, farUp = 0;
                     for (int o : w) {
                         if (o == v) ++same;
-                        else if (std::abs(o - v) == 1) ++adj;
-                        else ++far;
+                        else if (std::abs(o - v) == 1) { ++adj; adjUp += o > v; }
+                        else { ++far; farUp += o > v; }
                     }
-                    int sc = std::max({same, adj, far});
+                    int sc = directional ? std::max({same, adjUp, adj - adjUp, farUp, far - farUp}) : std::max({same, adj, far});
                     if (sc < bestScore) { bestScore = sc; best = v; }
                 }
                 g += char('0' + best);
@@ -158,7 +172,8 @@ struct Solver {
                 for (int o : wheels[i]) {
                     int d = std::abs(o - v);
                     int m = d == 0 ? 2 : d == 1 ? 1 : 0;
-                    if (m == row.marks[static_cast<size_t>(i)]) keep.insert(o);
+                    bool dirOk = row.dir.size() != 4 || (o > v ? 1 : o < v ? -1 : 0) == row.dir[static_cast<size_t>(i)];
+                    if (m == row.marks[static_cast<size_t>(i)] && dirOk) keep.insert(o);
                 }
                 wheels[i] = keep;
             }
@@ -265,6 +280,8 @@ void solveDoor(RunSession& r) {
     }
     Solver s(r.lock.type);
     if (r.lock.composite() && r.lock.stage == 1) s.carry(r.lock);
+    if (r.lock.stage == 0) s.survey(r.lock.surveyDigits());
+    for (auto& row : r.lock.history) s.feed(row);   // FORTRESS: the logged attempts on screen
     int stage = r.lock.stage;
     size_t pinned = 0;
     for (int i = 0; i < 24 && !r.doorOpen && !r.over(); ++i) {
@@ -287,9 +304,10 @@ void solveDoor(RunSession& r) {
         }
         std::string err;
         if (!r.guess(guess, err)) { fail("lock rejected a well-formed guess: " + err); r.disconnect(); return; }
-        if (r.lock.stage != stage) {   // the keypad opened: the rotor starts from its digits
+        if (r.lock.stage != stage) {   // the keypad opened: the rotor starts from its digits (and any logged rotor rows)
             stage = r.lock.stage;
             s.carry(r.lock);
+            for (auto& row : r.lock.history) s.feed(row);
             pinned = 0;
         } else if (!r.lock.history.empty()) {
             s.feed(r.lock.history.back());
@@ -489,10 +507,12 @@ void manage(GameState& g) {
 // Act IV: the careful bot on a tower floor. Prep is bought with credits, the
 // floor is played, and nothing happens unless the player starts it.
 // ---------------------------------------------------------------------------
-void towerPrep(GameState& g, const Target& t, bool buyPhrase) {
+void towerPrep(GameState& g, const Target& t, bool buyPhrase, bool buySurvey = true) {
     int reserve = 2 * g.net.upkeepTotal() + 300;
     if (prepAvailable(g, t, Prep::Plan) && g.credits - prepCost(t, Prep::Plan) >= reserve && buyPrep(g, t, Prep::Plan).ok) ++st.prepBought;
     if (buyPhrase && prepAvailable(g, t, Prep::Phrase) && g.credits - prepCost(t, Prep::Phrase) >= reserve && buyPrep(g, t, Prep::Phrase).ok)
+        ++st.prepBought;
+    if (buySurvey && prepAvailable(g, t, Prep::Survey) && g.credits - prepCost(t, Prep::Survey) >= reserve && buyPrep(g, t, Prep::Survey).ok)
         ++st.prepBought;
 }
 
@@ -503,12 +523,15 @@ void loadPrograms(GameState& g, Doctrine d) {
     else { buyProgram(g, Program::Freeze); buyProgram(g, Program::Burst); }
 }
 
+bool lastDoorOpened = false;   // did the last playFloor get through the door at all
+
 Reckoning playFloor(GameState& g, const Target& t, uint64_t entropy) {
     ReportView rep = reportView(g, t);
     (void)panelBriefing(g, t);
     RunSession r(g, t, entropy);
     ++st.towerRuns;
     solveDoor(r);
+    lastDoorOpened = r.doorOpen;
     playInside(r, false, false, rep);
     if (!r.over()) r.disconnect();
     st.sweeps += r.sweeps;
@@ -609,8 +632,11 @@ GameState ledgerOwner(uint64_t seed) {
 // The doctrine slot of the main rack: a gateway whose subnet is built for one doctrine.
 void fitKit(GameState& g, Doctrine d) {
     auto& v = g.net.machines;
-    for (auto& m : v) if (m.bay >= 0) unplug(g, m);
-    v.erase(std::remove_if(v.begin(), v.end(), [](const Machine& m) { return m.job == Job::Gateway || m.job == Job::Compute || m.job == Job::Jammer; }),
+    std::set<int> oldKit;   // the last kit's bay members go with it (repeated fittings mustn't pile up spares)
+    for (auto& m : v) if (m.bay >= 0) { oldKit.insert(m.id); unplug(g, m); }
+    v.erase(std::remove_if(v.begin(), v.end(), [&](const Machine& m) {
+                return m.job == Job::Gateway || m.job == Job::Compute || m.job == Job::Jammer || oldKit.count(m.id);
+            }),
             v.end());
     int gw = owned(g, Job::Gateway, KIT_TIER).id;
     if (!activate(g, *g.net.find(gw)).ok) fail("kit: the gateway has no slot");
@@ -622,6 +648,34 @@ void fitKit(GameState& g, Doctrine d) {
     }
     setRole(g, *g.net.find(gw), d == Doctrine::Fortress ? BayRole::Siege : BayRole::Stealth);
     loadPrograms(g, d);
+}
+
+// 0.7 - a Kessler-Maru climb with a persistent code: how many connections it takes, which floors fell on
+// their first visit, how often the alarm log filled, and whether any door opened at all.
+struct Climb { int floors = 0, runs = 0, firstVisit = 0, alarmRekeys = 0, traceRekeys = 0, opened = 0; };
+Climb climbKessler(GameState g, Doctrine kit, int breaker, bool survey, uint64_t entropy, int attempts, int floorsWanted = kFloors) {
+    Climb c;
+    std::set<int> visited;
+    for (int a = 0; a < attempts && g.floorsCleared(0) < floorsWanted; ++a) {
+        repairAll(g);
+        for (auto& m : g.net.machines) if (m.bay >= 0 || m.job == Job::Gateway) m.condition = 100;
+        fitKit(g, kit);
+        g.deck.breaker = breaker;
+        int floor = g.floorsCleared(0);
+        Target t = makeTowerFloor(g, 0, floor);
+        towerPrep(g, t, true, survey);
+        g.credits = std::max(g.credits, 30000);
+        bool first = visited.insert(floor).second;
+        Reckoning rk = playFloor(g, t, entropy * 104729 + static_cast<uint64_t>(a));
+        ++c.runs;
+        if (lastDoorOpened) ++c.opened;
+        if (rk.floorCleared >= 0 && first) ++c.firstVisit;
+        if (rk.alarmRekeyed) ++c.alarmRekeys;
+        if (rk.rekeyed) ++c.traceRekeys;
+        checkInvariants(g);
+    }
+    c.floors = g.floorsCleared(0);
+    return c;
 }
 
 // Climb one tower with one kit. Returns floors taken.
@@ -979,6 +1033,260 @@ void selfTest() {
         roundTrip(h);
         CHECK(upgradeHome(h).ok || h.net.home()->tier <= 3, "N0 never passes tier 3");
     }
+    // 0.7 - Kessler-Maru keeps its code: logged rows, the alarm log, directional rotors, CODES LEFT, save v6.
+    {
+        auto sealFloor0 = [](GameState& o, uint64_t salt) {   // a fresh code on floor 0 via its alarm log; returns misses spent
+            int spent = 0;
+            for (int conn = 0; conn < 20; ++conn) {
+                Target f = makeTowerFloor(o, 0, 0);
+                RunSession r(o, f, salt + static_cast<uint64_t>(conn));
+                std::string err;
+                bool sealed = false;
+                for (const auto& c : {std::string("0123"), std::string("4567"), std::string("8901"), std::string("2345"), std::string("6789"),
+                                      std::string("1032"), std::string("5476"), std::string("9810"), std::string("3254")}) {
+                    if (r.lock.stage != 0 || r.lock.left() <= 0 || c == r.lock.secret) continue;
+                    bool dup = false;
+                    for (auto& row : r.lock.history) dup = dup || row.guess == c;
+                    if (dup) continue;
+                    r.trace = 0;
+                    if (r.guess(c, err)) ++spent;
+                    if (r.alarmSealed) { sealed = true; break; }
+                }
+                r.disconnect();
+                Reckoning rk = r.settle();
+                if (sealed) { CHECK(rk.alarmRekeyed, "a full alarm log re-keys at settle"); return spent; }
+            }
+            return -1;
+        };
+        // 1. The same code on every connection until a re-key.
+        GameState o = ledgerOwner(21);
+        o.deck.breaker = bal::DECK_MAX;
+        Target f = makeTowerFloor(o, 0, 0);
+        CHECK(isFortressFloor(f) && fortressSeed(o, 0, 0) != fortressSeed(o, 0, 1), "each Kessler floor has its own code");
+        std::string out1, in1;
+        {
+            RunSession a(o, f, 1001);
+            out1 = a.lock.outer;
+            in1 = a.lock.inner;
+            a.disconnect();
+            a.settle();
+            RunSession b(o, f, 1002);
+            CHECK(b.lock.outer == out1 && b.lock.inner == in1 && b.lock.secret == out1, "a Kessler code is the same on the next connection");
+            b.disconnect();
+            b.settle();
+            CHECK(!o.fortress.count(f.id), "a connection that tried nothing leaves no record");
+        }
+        // 2. Logged rows are free; the known keypad costs one guess and isn't a miss.
+        {
+            std::string miss = out1.substr(1) + out1.substr(0, 1);
+            RunSession c(o, f, 1003);
+            std::string err;
+            int c0 = o.credits;
+            CHECK(c.guess(miss, err) && c.alarms() == 1, "a miss goes on the alarm log");
+            c.disconnect();
+            c.settle();
+            CHECK(o.credits < c0, "a Kessler connection that spends a guess is billed");
+            RunSession d(o, f, 1004);
+            CHECK(d.lock.history.size() == 1 && d.lock.history[0].logged && d.lock.history[0].guess == miss && d.lock.used == 0 &&
+                      d.lock.liveRows() == 0, "a logged row is shown and costs nothing");
+            CHECK(d.lock.codesLeft() < 5040 && d.lock.codesLeft() > 1, "the logged row narrows CODES LEFT");
+            CHECK(d.guess(out1, err) && d.lock.stage == 1 && d.alarms() == 1, "finding the keypad");
+            d.disconnect();
+            d.settle();
+            RunSession e(o, f, 1005);
+            CHECK(e.lock.keypadKnown() && e.lock.stage == 0 && e.lock.codesLeft() == 1, "KEYPAD KNOWN on the next connection");
+            int m0 = e.misses, a0 = e.alarms();
+            CHECK(e.guess(out1, err) && e.lock.used == 1 && e.misses == m0 && e.alarms() == a0 && e.lock.stage == 1,
+                  "re-entering the known keypad spends one guess and isn't a miss");
+            std::string rmiss = e.lock.inner;
+            rmiss[0] = static_cast<char>(rmiss[0] == '9' ? '0' : rmiss[0] + 1);
+            CHECK(e.guess(rmiss, err) && e.lock.history.back().dir.size() == 4, "a rotor row carries arrows");
+            e.disconnect();
+            e.settle();
+            RunSession h(o, f, 1006);
+            std::string err2;
+            CHECK(h.guess(out1, err2) && h.lock.stage == 1 && h.lock.history.size() == 1 && h.lock.history[0].logged && h.lock.history[0].guess == rmiss,
+                  "the logged rotor rows replay when the keypad opens");
+            CHECK(h.lock.used == 1, "...for nothing");
+            h.disconnect();
+            h.settle();
+        }
+        // 3. The 7th miss seals the door and re-keys only that floor; a trace re-keys every Kessler floor.
+        {
+            const uint64_t s1 = fortressSeed(o, 0, 1), s2 = fortressSeed(o, 0, 2), s0 = fortressSeed(o, 0, 0);
+            const int before = fortressMissesOn(o, f);
+            int spent = sealFloor0(o, 2000);
+            CHECK(spent >= 0 && before + spent == bal::FORTRESS_ALARM_LOG + 1, "the 7th miss on a code seals the door");
+            CHECK(fortressSeed(o, 0, 0) != s0 && fortressSeed(o, 0, 1) == s1 && fortressSeed(o, 0, 2) == s2 && o.keyOf(0) == 0,
+                  "a full alarm log re-keys that floor only");
+            CHECK(o.fortress.count(f.id) && o.fortress[f.id].rekeys == 1 && o.fortress[f.id].rows.empty() && fortressMissesOn(o, f) == 0,
+                  "the new code starts with a clean log");
+            RunSession r(o, makeTowerFloor(o, 0, 0), 2100);
+            CHECK(r.lock.outer != out1 || r.lock.inner != in1, "the code differs after the alarm re-key");
+            r.disconnect();
+            r.settle();
+            const uint64_t a0 = fortressSeed(o, 0, 0), a1 = fortressSeed(o, 0, 1), a2 = fortressSeed(o, 0, 2);
+            RunSession t(o, makeTowerFloor(o, 0, 1), 2200);
+            std::string err;
+            t.trace = 99.9;
+            t.guess(t.lock.secret.substr(1) + t.lock.secret.substr(0, 1), err);
+            CHECK(t.end == End::TraceOut, "traced at Kessler");
+            Reckoning rk = t.settle();
+            CHECK(rk.rekeyed && !rk.alarmRekeyed && o.keyOf(0) == 1, "a trace re-keys the tower");
+            CHECK(fortressSeed(o, 0, 0) != a0 && fortressSeed(o, 0, 1) != a1 && fortressSeed(o, 0, 2) != a2, "...every Kessler floor");
+            bool none = true;
+            for (int fl = 0; fl < kFloors; ++fl) none = none && !o.fortress.count(floorId(0, fl));
+            CHECK(none, "...and wipes every floor's log");
+        }
+        // 3b. A sealed door takes no emergency answers or programs; a survey is bought once and named in order.
+        {
+            GameState q = ledgerOwner(22);
+            q.deck.breaker = bal::DECK_MAX;
+            q.credits = 50000;
+            Target t = makeTowerFloor(q, 0, 0);
+            CHECK(prepAvailable(q, t, Prep::Survey) && buyPrep(q, t, Prep::Survey).ok && !buyPrep(q, t, Prep::Survey).ok, "a survey is bought once per code");
+            CHECK(!prepAvailable(q, makeTowerFloor(q, 1, 0), Prep::Survey), "surveys are Kessler only");
+            RunSession r(q, t, 2300);
+            std::string d = r.lock.outer;
+            std::sort(d.begin(), d.end());
+            CHECK(r.lock.surveyed && r.lock.surveyDigits() == d && r.lock.codesLeft() == 24, "the survey names the digits: 24 orders left");
+            CHECK(r.lock.guessesLikely() <= 5, "a survey shortens the estimate");
+            r.disconnect();
+            r.settle();
+        }
+        // 4. Directional marks, every wheel position against every guess.
+        {
+            Rng rr(23);
+            Lock base = makeLock(LockType::Composite, rr, 0);
+            std::string err;
+            base.maxGuesses = 50;
+            CHECK(base.guess(base.outer, err) && base.directional(), "the composite's rotor is directional");
+            bool ok = true;
+            for (int w = 0; w <= 9; ++w)
+                for (int gs = 0; gs <= 9; ++gs) {
+                    Lock L = base;
+                    L.secret = std::string(4, static_cast<char>('0' + w));
+                    if (!L.guess(std::string(4, static_cast<char>('0' + gs)), err)) { ok = false; continue; }
+                    const Lock::Row& row = L.history.back();
+                    int wantMark = w == gs ? 2 : std::abs(w - gs) == 1 ? 1 : 0, wantDir = w > gs ? 1 : w < gs ? -1 : 0;
+                    for (int i = 0; i < 4; ++i)
+                        ok = ok && row.dir.size() == 4 && row.marks[static_cast<size_t>(i)] == wantMark && row.dir[static_cast<size_t>(i)] == wantDir;
+                }
+            CHECK(ok, "every wheel position 0-9 marks and points the right way");
+            Lock plain = makeLock(LockType::Rotor, rr, 0);
+            plain.guess("5555", err);
+            CHECK(plain.history.back().dir.empty() && !plain.directional(), "a plain rotor keeps its old marks");
+        }
+        // 5. CODES LEFT against a brute-force count, 200 locks (keypad and rotor stages).
+        {
+            Rng rr(24);
+            int wrongCounts = 0;
+            for (int n = 0; n < 200; ++n) {
+                Lock L = makeLock(LockType::Composite, rr, 0);
+                L.maxGuesses = 20;
+                std::string err;
+                bool rotor = n % 2 == 1;
+                L.surveyed = n % 3 == 0;
+                if (n % 5 == 0) L.peek();
+                if (rotor) L.guess(L.outer, err);
+                int rows = rr.range(0, 3);
+                for (int k = 0; k < rows && !L.open; ++k) {
+                    std::string g;
+                    if (L.stage == 0) {
+                        std::string d = "0123456789";
+                        for (int i = 9; i > 0; --i) std::swap(d[static_cast<size_t>(i)], d[static_cast<size_t>(rr.range(0, i))]);
+                        g = d.substr(0, 4);
+                    } else for (int i = 0; i < 4; ++i) g += static_cast<char>('0' + rr.range(0, 9));
+                    if (g != L.secret) L.guess(g, err);
+                }
+                if (L.open) continue;
+                if (n % 7 == 0) L.peek();
+                long brute = 0;
+                auto fits = [&](const std::string& code) {
+                    Lock P = L;
+                    P.secret = code;
+                    for (auto& row : L.history) {
+                        Lock Q = P;
+                        Q.history.clear();
+                        Q.used = 0;
+                        Q.maxGuesses = 5;
+                        Q.open = false;
+                        if (!Q.guess(row.guess, err) || Q.history.empty() || Q.history.back().marks != row.marks || Q.history.back().dir != row.dir) return false;
+                    }
+                    for (int pz : L.peeked) if (code[static_cast<size_t>(pz)] != L.secret[static_cast<size_t>(pz)]) return false;
+                    if (L.stage == 0 && L.surveyed) {
+                        std::string a = code, b = L.outer;
+                        std::sort(a.begin(), a.end());
+                        std::sort(b.begin(), b.end());
+                        if (a != b) return false;
+                    }
+                    if (L.stage == 1)
+                        for (int i = 0; i < 4; ++i) if (std::abs(code[static_cast<size_t>(i)] - L.outer[static_cast<size_t>(i)]) > 2) return false;
+                    return true;
+                };
+                for (int c = 0; c < 10000; ++c) {
+                    std::string code = {static_cast<char>('0' + c / 1000), static_cast<char>('0' + c / 100 % 10), static_cast<char>('0' + c / 10 % 10),
+                                        static_cast<char>('0' + c % 10)};
+                    if (L.stage == 0 && (code[0] == code[1] || code[0] == code[2] || code[0] == code[3] || code[1] == code[2] || code[1] == code[3] ||
+                                         code[2] == code[3]))
+                        continue;
+                    if (fits(code)) ++brute;
+                }
+                if (brute != L.codesLeft()) ++wrongCounts;
+            }
+            CHECK(wrongCounts == 0, "CODES LEFT matches a brute-force count on 200 locks");
+        }
+        // 10. Save v6 round-trips FORTRESS records; v1-v5 headers still load; bad lines are dropped.
+        {
+            namespace fs = std::filesystem;
+            GameState v = ledgerOwner(25);
+            FortressRecord& r0 = v.fortress[floorId(0, 1)];
+            r0.rekeys = 2;
+            r0.survey = true;
+            r0.rows = {{0, "0123"}, {0, "4567"}, {1, "5555"}};
+            r0.peeks = {{0, 2}};
+            std::string err;
+            CHECK(saveGame(v, &err), "save v6");
+            GameState w;
+            CHECK(loadGame(w, &err) && w.fortress.size() == 1 && w.fortress.count(floorId(0, 1)), "load v6");
+            const FortressRecord& r1 = w.fortress[floorId(0, 1)];
+            CHECK(r1.rekeys == 2 && r1.survey && r1.rows.size() == 3 && r1.rows[2].stage == 1 && r1.rows[2].guess == "5555" && r1.peeks.size() == 1 &&
+                      r1.peeks[0] == std::make_pair(0, 2) && fortressSeed(w, 0, 1) == fortressSeed(v, 0, 1),
+                  "FORTRESS records round-trip");
+            std::string text;
+            {
+                std::ifstream in(savePath());
+                std::ostringstream ss;
+                ss << in.rdbuf();
+                text = ss.str();
+            }
+            for (int ver = 1; ver <= 5; ++ver) {
+                std::string old = text;
+                old.replace(0, old.find('\n'), "GHOSTNET " + std::to_string(ver));
+                { std::ofstream outF(savePath(), std::ios::trunc); outF << old; }
+                GameState x;
+                CHECK(loadGame(x, &err) && x.credits == v.credits, "an older save header still loads");
+            }
+            std::string bad = text;
+            size_t endAt = bad.rfind("end\n");
+            // floor ids: Kessler 8200-8202, Tidewater 8210-8212
+            bad.insert(endAt, "frow 8201 0 1123\nfrow 8201 2 0123\nfrow 8201 0 12a4\nfrow 8201 1 99999\nfortress 8202 x 1\nfortress 8200 0 1\n"
+                              "fortress 8205 0 1\nfortress 8210 0 1\nfrow 8202\nfpeek 8201 0 7\nfpeek 8201 0 3\nfortress 99999999999 0 0\n");
+            for (int i = 0; i < 9; ++i) bad.insert(bad.rfind("end\n"), "frow 8201 1 1234\n");
+            { std::ofstream outF(savePath(), std::ios::trunc); outF << bad; }
+            GameState y;
+            CHECK(loadGame(y, &err), "a save with bad FORTRESS lines still loads");
+            CHECK(floorId(0, 1) == 8201 && !y.fortress.count(8202) && !y.fortress.count(8205) && y.fortress.count(8200) && y.fortress.count(8201) &&
+                      static_cast<int>(y.fortress[8201].rows.size()) == bal::FORTRESS_ROWS_MAX && y.fortress[8201].peeks.size() == 2,
+                  "bad FORTRESS lines are dropped and rows capped");
+            CHECK(!y.fortress.count(floorId(1, 0)), "Tidewater floors keep no FORTRESS record");
+            GameState z = v;
+            z.deepDone = false;
+            z.act = 3;
+            CHECK(saveGame(z, &err) && loadGame(y, &err) && y.fortress.empty(), "no Ledger, no FORTRESS records");
+            fs::remove(savePath());
+        }
+    }
     // 0.6.1 - a capture hold charges every second it shows, the last one included.
     {
         Target t = testTarget(LockType::None);
@@ -1211,7 +1519,7 @@ void selfTest() {
             roundTrip(o);
         }
     }
-    if (!problems) std::printf("selftest: keypad marks, programs, jammer/vault, traits, memorial, subnets, strikes, prototypes, composite, ledger, capture timing, lock input, save recovery - OK\n");
+    if (!problems) std::printf("selftest: keypad marks, programs, jammer/vault, traits, memorial, subnets, strikes, prototypes, composite, ledger, capture timing, lock input, save recovery, kessler records - OK\n");
 }
 
 int main(int argc, char** argv) {
@@ -1330,7 +1638,34 @@ int main(int argc, char** argv) {
         // Kit trials on a fresh owner: a matched build takes each tower; one build against the wrong doctrine fails.
         int bad = 0;
         const Doctrine docs[2] = {Doctrine::Fortress, Doctrine::Biosentinel};
+        {   // 0.7 - Kessler-Maru: the wall is the first visit. The matched kit takes every floor on its first visit; the wrong
+            // kit can't, but patience, surveys and BREAKER get it there later; BREAKER 0 never opens a door.
+            const uint64_t ks = seed * 31;
+            GameState o = ledgerOwner(ks);
+            Climb matched = climbKessler(o, Doctrine::Fortress, bal::DECK_MAX, false, seed + 11, 6);
+            Climb wrongK = climbKessler(o, Doctrine::Biosentinel, bal::DECK_MAX, false, seed + 22, 9);
+            Climb patient = climbKessler(o, Doctrine::Biosentinel, bal::DECK_MAX, true, seed + 33, 9);
+            Climb slow = climbKessler(o, Doctrine::Biosentinel, 1, true, seed + 44, 6, 1);
+            Climb wall = climbKessler(o, Doctrine::Biosentinel, 0, true, seed + 55, 10, 1);
+            KIT_TIER = 2;   // all of it bought, nothing captured
+            Climb bought = climbKessler(ledgerOwner(ks), Doctrine::Fortress, bal::DECK_MAX, false, seed + 66, 6);
+            KIT_TIER = 3;
+            std::printf("KIT TRIAL KESSLER-MARU TOWER (FORTRESS): matched kit %d/%d floors on first visits (%d runs; T2 kit %d/%d in %d); "
+                        "BIOSENTINEL kit %d/%d on first visits (%d/%d in %d runs)\n",
+                        matched.firstVisit, kFloors, matched.runs, bought.floors, kFloors, bought.runs, wrongK.firstVisit, kFloors,
+                        wrongK.floors, kFloors, wrongK.runs);
+            std::printf("KESSLER PATIENCE: BREAKER 3 + surveys %d/%d floors in %d runs (alarm re-keys %d, traced %d); BREAKER 1 + survey floor 1 "
+                        "%s in %d runs; BREAKER 0 opened %d door(s) in %d runs\n",
+                        patient.floors, kFloors, patient.runs, patient.alarmRekeys, patient.traceRekeys, slow.floors >= 1 ? "taken" : "NOT taken",
+                        slow.runs, wall.opened, wall.runs);
+            if (matched.firstVisit < kFloors || bought.floors < kFloors) { std::printf("FAIL: the matched kit did not take every Kessler floor on its first visit\n"); ++bad; }
+            if (wrongK.firstVisit >= kFloors) { std::printf("FAIL: the wrong kit took every Kessler floor on its first visit - the doctrine doesn't matter\n"); ++bad; }
+            if (patient.floors < kFloors || patient.runs > 9 || patient.alarmRekeys > 0) { std::printf("FAIL: patience with surveys did not climb Kessler cleanly in 9\n"); ++bad; }
+            if (slow.floors < 1 || slow.runs > 6) { std::printf("FAIL: BREAKER 1 + survey did not take floor 1 within 6\n"); ++bad; }
+            if (wall.opened > 0 || wall.floors > 0) { std::printf("FAIL: BREAKER 0 opened a Kessler door\n"); ++bad; }
+        }
         for (int k = 0; k < kTowerCount; ++k) {
+            if (towerDoctrine(k) == Doctrine::Fortress) continue;   // trialled above
             GameState o = ledgerOwner(seed * 31 + static_cast<uint64_t>(k));
             Doctrine d = towerDoctrine(k), wrong = docs[d == Doctrine::Fortress ? 1 : 0];
             int used = 0, used2 = 0;
@@ -1348,6 +1683,7 @@ int main(int argc, char** argv) {
         std::printf("TOWER STATS: tower runs %d floors %d re-keys %d prep %d sweeps %d logged-misses %d programs %d\n", st.towerRuns, st.floors,
                     st.rekeys, st.prepBought, st.sweeps, st.misses, st.programs);
         if (!g.deepDone || g.act != 4) { std::printf("FAIL: the bot never reached Act IV\n"); ++bad; }
+        if (problems) { std::printf("problems in the kit trials: %d\n", problems); return 1; }
         if (bad) return 1;
     }
     std::printf("problems: none\n");

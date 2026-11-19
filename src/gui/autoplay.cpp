@@ -140,6 +140,8 @@ int App::autoplay(const std::function<void()>& render) {
 
     Driver d(*this, render);
     auto bad = [&] { return 1; };
+    gx::recordText = true;
+    struct TextOff { ~TextOff() { gx::recordText = false; } } textOff;
 
     // ---- title -> practice range: type a guess, click keys, leave -------------
     d.step = "practice range";
@@ -154,6 +156,19 @@ int App::autoplay(const std::function<void()>& render) {
         if (!d.click(std::string(1, c))) return bad();
     if (!d.click("OK")) return bad();
     if (!d.waitFor([&] { return practice.history.size() == 2; }, "the clicked guess to register")) return bad();
+    d.step = "fortress drill";   // the real Kessler budget; a reconnect keeps the code and replays the row for free
+    if (!d.click("FORTRESS DRILL")) return bad();
+    if (!d.waitFor([&] { return drillOn && practice.composite() && practice.maxGuesses == drillBudget(); }, "the drill door")) return bad();
+    {
+        const std::string drillCode = practice.outer;
+        d.type(wrongGuess(practice));
+        d.key(KEY_ENTER);
+        if (!d.waitFor([&] { return practice.history.size() == 1 && practice.sealed(); }, "the drill guess")) return bad();
+        if (!d.click("RECONNECT")) return bad();
+        if (!d.waitFor([&] { return drillConnections == 2; }, "the drill reconnect")) return bad();
+        if (practice.outer != drillCode || practice.used != 0 || practice.history.size() != 1 || !practice.history[0].logged)
+            return d.fail("the drill didn't keep its code and log"), bad();
+    }
     if (!d.click("BACK")) return bad();
     if (!d.waitFor([&] { return scr == Scr::Title; }, "the title screen")) return bad();
 
@@ -278,15 +293,69 @@ int App::autoplay(const std::function<void()>& render) {
     if (!d.click("FLOOR PLAN  " + std::to_string(bal::PREP_PLAN_COST) + "cr")) return bad();
     if (!d.waitFor([&] { return g.reports.count(tower.id) && g.reports.at(tower.id) == 3; }, "the bought floor plan")) return bad();
     if (!d.clearModals()) return bad();
+    d.step = "the tumbler survey";
+    if (!d.click("TUMBLER SURVEY  " + std::to_string(bal::PREP_SURVEY_COST[0]) + "cr")) return bad();
+    if (!d.waitFor([&] { return g.fortress.count(tower.id) && g.fortress.at(tower.id).survey; }, "the bought survey")) return bad();
+    if (!d.clearModals()) return bad();
     if (!d.click("CONNECT")) return bad();
     if (!d.waitFor([&] { return scr == Scr::Run && run; }, "the tower connection")) return bad();
     d.step = "the composite lock";
     if (!run->lock.composite()) return d.fail("Kessler-Maru's door isn't a composite"), bad();
-    for (char c : run->lock.secret)   // stage 1, the keypad, by mouse
+    if (!d.waitFor([&] { return gx::onScreen("ALARM LOG  0/" + std::to_string(bal::FORTRESS_ALARM_LOG)); }, "the ALARM LOG meter")) return bad();
+    if (!run->lock.surveyed || !gx::onScreen("SURVEY") || run->lock.codesLeft() != 24 || !gx::onScreen("CODES LEFT 24"))
+        return d.fail("the survey isn't on the lock"), bad();
+    const std::string outer = run->lock.outer, inner = run->lock.inner;
+    {   // a keypad miss by mouse: the digits in the wrong order
+        std::string miss = outer.substr(1) + outer.substr(0, 1);
+        for (char c : miss)
+            if (!d.click(std::string(1, c))) return bad();
+        if (!d.click("OK")) return bad();
+        if (!d.waitFor([&] { return run->lock.history.size() == 1 && run->alarms() == 1; }, "the logged miss")) return bad();
+        if (!d.waitFor([&] { return gx::onScreen("ALARM LOG  1/" + std::to_string(bal::FORTRESS_ALARM_LOG)); }, "the ALARM LOG to count the miss"))
+            return bad();
+    }
+    for (char c : outer)   // stage 1, the keypad, by mouse
         if (!d.click(std::string(1, c))) return bad();
     if (!d.click("OK")) return bad();
     if (!d.waitFor([&] { return run->lock.stage == 1 && run->lock.carried(); }, "the rotor to wake")) return bad();
-    d.type(run->lock.secret);   // stage 2, the rotor, by keyboard
+    std::string rmiss = inner;
+    rmiss[0] = rmiss[0] == '9' ? '8' : static_cast<char>(rmiss[0] + 1);
+    d.type(rmiss);   // a rotor miss by keyboard: arrows on the screen
+    d.key(KEY_ENTER);
+    if (!d.waitFor([&] { return run->lock.history.size() == 1 && run->lock.history.back().dir.size() == 4; }, "a rotor row with arrows")) return bad();
+    if (!d.waitFor([&] { return gx::onScreen("CODES LEFT"); }, "the rotor's CODES LEFT")) return bad();
+    if (!d.click("JACK OUT")) return bad();
+    if (!d.waitFor([&] { return run && run->over(); }, "the disconnect")) return bad();
+    d.in.click = true;
+    d.frame();
+    if (!d.waitFor([&] { return scr == Scr::Reckon; }, "the tower reckoning", 10.0)) return bad();
+    if (g.act != 4 || g.floorsCleared(tower.tower) != 0) return d.fail("a walk-away changed the tower"), bad();
+    for (double until = GetTime() + 10.0; GetTime() < until && scr == Scr::Reckon;) {
+        if (!d.find("CONTINUE").empty()) d.click("CONTINUE");
+        else if (!d.find("SKIP").empty()) d.click("SKIP");
+        else d.frame();
+    }
+    if (!d.waitFor([&] { return scr == Scr::Hub; }, "the hub after the tower")) return bad();
+    if (!d.clearModals()) return bad();
+
+    d.step = "reconnect: the same code";
+    if (tab != Tab::Board && !d.click("JOB BOARD")) return bad();
+    if (!d.waitFor([&] { return tab == Tab::Board; }, "the board")) return bad();
+    if (!d.click(tower.name)) return bad();
+    if (!d.waitFor([&] { return scr == Scr::Brief; }, "the tower briefing again")) return bad();
+    if (!d.click("CONNECT")) return bad();
+    if (!d.waitFor([&] { return scr == Scr::Run && run; }, "the second tower connection")) return bad();
+    if (run->lock.outer != outer || run->lock.inner != inner) return d.fail("Kessler-Maru re-keyed between connections"), bad();
+    if (!run->lock.keypadKnown() || run->lock.used != 0 || run->lock.history.size() != 2 || !run->lock.history[0].logged)
+        return d.fail("the logged rows didn't come back free"), bad();
+    if (!d.waitFor([&] { return gx::onScreen("KEYPAD KNOWN") && gx::onScreen("LOGGED"); }, "KEYPAD KNOWN and the LOGGED rows")) return bad();
+    for (char c : outer)
+        if (!d.click(std::string(1, c))) return bad();
+    if (!d.click("OK")) return bad();
+    if (!d.waitFor([&] { return run->lock.stage == 1; }, "the known keypad")) return bad();
+    if (run->lock.used != 1 || run->alarms() != 2 || run->lock.history.size() != 1 || !run->lock.history[0].logged)
+        return d.fail("the known keypad cost more than one guess, or the rotor rows didn't replay"), bad();
+    d.type(inner);
     d.key(KEY_ENTER);
     if (!d.waitFor([&] { return run->doorOpen; }, "the composite to open")) return bad();
     if (!d.click("JACK OUT")) return bad();
@@ -294,10 +363,9 @@ int App::autoplay(const std::function<void()>& render) {
     d.in.click = true;
     d.frame();
     if (!d.waitFor([&] { return scr == Scr::Reckon; }, "the tower reckoning", 10.0)) return bad();
-    if (g.act != 4 || g.floorsCleared(tower.tower) != 0) return d.fail("a walk-away changed the tower"), bad();
 
     std::printf("autoplay: played title -> practice -> new game -> contract -> reckoning -> rack -> save & quit -> continue "
-                "-> the ledger -> composite lock with %d frames of clicks and typing, all OK\n",
+                "-> the ledger -> survey -> composite lock -> reconnect to the same code with %d frames of clicks and typing, all OK\n",
                 d.frames);
     fs::remove_all(saves, ec);
     return 0;

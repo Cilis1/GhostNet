@@ -129,6 +129,26 @@ currency, loot-box machine rolls, and machines that work while you're away.
 * **The deep-job pillar still holds.** The bot's kit trials require that the matched kit
   takes every floor and that one build sent against the wrong doctrine fails.
 
+## 0.7.0 — Kessler codes persist: patience counts, the wall moves to the first visit
+
+* **The problem.** A Kessler door re-rolled every connection, so a deck without the matched
+  kit faced the same lottery every time: about 0.2% to open with 4 guesses. Patience taught
+  you nothing.
+* **The fix: the code stays.** It changes only when a player action re-keys it: a trace (the
+  whole tower) or a full alarm log (that floor). Nothing is timed, and nothing changes
+  while you're away. Your rows are kept as guesses, never as marks, and replayed as LOGGED
+  rows for free.
+* **The alarm log keeps it honest.** 6 misses fill it; the 7th seals the door and re-keys
+  that floor. Brute force still fails; careful play needs 5 misses or fewer (4 with a
+  survey).
+* **More information, not more guesses.** Directional rotor arrows, a CODES LEFT counter
+  (MOTH counts, never names), and a TUMBLER SURVEY bought with credits. No new currency,
+  no timers.
+* **The wall, reworded.** The matched kit takes every floor on its first visit, and the
+  wrong kit can't. Patience gets the wrong kit there later (bot: BREAKER 3 plus surveys
+  climbs all three floors within 9 connections, with no alarm re-keys). BREAKER 0 without
+  compute never opens a door, because its one guess goes on the keypad every time.
+
 ## Deferred backlog
 
 1. ~~A graphical client~~ built in 0.3.0 (see section 6).

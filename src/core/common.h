@@ -185,6 +185,17 @@ struct Stats {
     std::vector<std::string> log;    // short run history, newest last
 };
 
+// A FORTRESS floor's memory between connections (0.7). Only guesses are stored - the marks are
+// recomputed from the code, which comes from the world seed, so nothing here can lie about the lock.
+struct FortressRecord {
+    struct Row { int stage = 0; std::string guess; };   // stage 0 = the keypad, 1 = the rotor
+    int rekeys = 0;                  // times this floor's alarm log filled (part of its code's seed)
+    bool survey = false;             // TUMBLER SURVEY bought for the current code
+    std::vector<Row> rows;           // logged attempts on the current code, oldest first
+    std::vector<std::pair<int, int>> peeks;   // (stage, box) shown by PEEK / CRACK on the current code
+    bool blank() const { return rekeys == 0 && !survey && rows.empty() && peeks.empty(); }
+};
+
 struct GameState {
     uint64_t worldSeed = 0;
     int credits = 0;
@@ -211,6 +222,8 @@ struct GameState {
     // Act IV - THE LEDGER (0.6): corp towers you start yourself, after the owner ending.
     std::vector<int> towerFloor;     // floors cleared per tower (== kFloors when owned)
     std::vector<int> towerKey;       // how many times each tower re-keyed its doors (after a trace)
+    // 0.7 - a FORTRESS floor keeps its code until it re-keys: what you tried there stays logged.
+    std::map<int, FortressRecord> fortress;   // floor id -> record (Kessler-Maru floors not yet taken)
     int floorsCleared(int tower) const { return tower >= 0 && tower < static_cast<int>(towerFloor.size()) ? towerFloor[static_cast<size_t>(tower)] : 0; }
     int keyOf(int tower) const { return tower >= 0 && tower < static_cast<int>(towerKey.size()) ? towerKey[static_cast<size_t>(tower)] : 0; }
 };

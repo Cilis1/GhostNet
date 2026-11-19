@@ -46,7 +46,8 @@ PanelView panelReview(const GameState& g);
 
 // Act IV heist prep: intel on a tower floor, bought with credits between runs. Never a second currency,
 // never a timer - you pay once and you know it, until a trace re-keys the doors.
-enum class Prep { Plan = 0, Phrase = 1 };
+// 0.7: TUMBLER SURVEY (FORTRESS only) names a floor's keypad digits, unordered, until that floor re-keys.
+enum class Prep { Plan = 0, Phrase = 1, Survey = 2 };
 const char* prepName(Prep p);                 // "FLOOR PLAN"
 const char* prepText(Prep p);
 int prepCost(const Target& t, Prep p);

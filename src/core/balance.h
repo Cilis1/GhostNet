@@ -140,6 +140,11 @@ constexpr int    PREP_PHRASE_COST[3] = {700, 1000, 1400};   // a bought maintena
 // FORTRESS (Kessler-Maru): a composite lock on a tiny shared budget, no maintenance ports; misses are logged.
 constexpr int    FORTRESS_GUESSES   = 1;              // keypad + rotor share this, + BREAKER, + one per compute box / SIEGE subnet
 constexpr double FORTRESS_MISS_SPIKE = 4.0;           // every wrong guess pings the trace (jammers/SIEGE cut it)
+// 0.7: the code persists per floor until a re-key. Misses fill an ALARM LOG; one more miss on a full log
+// seals the door and re-keys that floor. Never timed: only your own misses fill it.
+constexpr int    FORTRESS_ALARM_LOG = 6;
+constexpr int    FORTRESS_ROWS_MAX  = FORTRESS_ALARM_LOG + 2;   // + the keypad's code and the rotor's, once found
+constexpr int    PREP_SURVEY_COST[3] = {600, 900, 1200};  // TUMBLER SURVEY: names the keypad's four digits, unordered
 // BIOSENTINEL (Tidewater BioSys): a hungrier watchdog and regular sentinel sweeps.
 constexpr double BIO_RAMP        = 1.0;               // +100% trace rate per minute (a normal watchdog is +50%)
 constexpr int    BIO_SWEEP_EVERY = 12;                // seconds between sweeps (jammers soften them; they don't delay them)

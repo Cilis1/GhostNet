@@ -10,10 +10,103 @@
 #include "text.h"
 #include "world.h"
 
+// ---------------------------------------------------------------------------
+// FORTRESS floors (0.7): one code per floor until a re-key, attempts logged
+// ---------------------------------------------------------------------------
+bool isFortressFloor(const Target& t) { return t.kind == Kind::Tower && t.doctrine == Doctrine::Fortress && t.lock == LockType::Composite; }
+
+namespace {
+// Replays a record's rows and boxes for one stage onto the lock. Rows that don't fit the stage are skipped.
+void applyRecord(Lock& L, const FortressRecord& r, int stage) {
+    for (auto& row : r.rows) if (row.stage == stage) L.replay(row.guess);
+    for (auto& pk : r.peeks)
+        if (pk.first == stage && pk.second >= 0 && pk.second < L.length() &&
+            std::find(L.peeked.begin(), L.peeked.end(), pk.second) == L.peeked.end())
+            L.peeked.push_back(pk.second);
+}
+// A stage's code, for telling a logged miss from a logged find.
+int recordMisses(const GameState& g, const Target& t, const FortressRecord& r) {
+    Rng rng(fortressSeed(g, t.tower, t.floor));
+    Lock L = makeLock(LockType::Composite, rng, 0);
+    int n = 0;
+    for (auto& row : r.rows) n += row.guess != (row.stage == 0 ? L.outer : L.inner);
+    return n;
+}
+}  // namespace
+
+Lock fortressLock(const GameState& g, const Target& t) {
+    Rng rng(fortressSeed(g, t.tower, t.floor));
+    Lock L = makeLock(LockType::Composite, rng, g.deck.breaker);
+    auto it = g.fortress.find(t.id);
+    if (it != g.fortress.end()) {
+        L.surveyed = it->second.survey;
+        applyRecord(L, it->second, 0);
+    }
+    return L;
+}
+
+FortressOutlook fortressOutlook(const GameState& g, const Target& t) {
+    FortressOutlook o;
+    if (!isFortressFloor(t)) return o;
+    o.active = true;
+    Lock L = fortressLock(g, t);
+    auto it = g.fortress.find(t.id);
+    if (it != g.fortress.end()) {
+        o.alarms = recordMisses(g, t, it->second);
+        o.logged = static_cast<int>(it->second.rows.size());
+    }
+    o.survey = L.surveyed;
+    o.surveyDigits = L.surveyDigits();
+    o.keypadKnown = L.keypadKnown();
+    o.codes = L.codesLeft();
+    o.likely = L.guessesLikely();
+    if (o.keypadKnown && it != g.fortress.end()) {   // the rotor behind it, as the logged rows left it
+        Lock R = L;
+        R.maxGuesses = R.used + 1;
+        std::string err;
+        if (R.guess(R.outer, err) && R.stage == 1) {
+            applyRecord(R, it->second, 1);
+            o.rotorCodes = R.codesLeft();
+            o.likely = 1 + R.guessesLikely();
+        }
+    }
+    o.budget = bal::FORTRESS_GUESSES + g.deck.breaker;
+    o.emergency = g.netUnlocked ? g.net.computeCapacity() : 0;
+    return o;
+}
+
+int fortressMissesOn(const GameState& g, const Target& t) {
+    auto it = g.fortress.find(t.id);
+    return it == g.fortress.end() || !isFortressFloor(t) ? 0 : recordMisses(g, t, it->second);
+}
+
+FortressRecord* RunSession::record() { return fortress ? &g.fortress[t.id] : nullptr; }
+
+int RunSession::alarms() const {
+    if (!fortress) return 0;
+    auto it = g.fortress.find(t.id);
+    return it == g.fortress.end() ? 0 : recordMisses(g, t, it->second);
+}
+
+void RunSession::logRow(int stage, const std::string& guess) {
+    if (!fortress || alarmSealed) return;
+    FortressRecord& r = *record();
+    for (auto& row : r.rows) if (row.stage == stage && row.guess == guess) return;   // re-entering a known code logs nothing new
+    if (static_cast<int>(r.rows.size()) < bal::FORTRESS_ROWS_MAX) r.rows.push_back({stage, guess});
+}
+
+void RunSession::logPeek(int pos) {
+    if (!fortress || alarmSealed || pos < 0) return;
+    FortressRecord& r = *record();
+    std::pair<int, int> pk{lock.stage, pos};
+    if (std::find(r.peeks.begin(), r.peeks.end(), pk) == r.peeks.end()) r.peeks.push_back(pk);
+}
+
 RunSession::RunSession(GameState& gs, const Target& tg, uint64_t entropy) : g(gs), t(tg) {
     g.runCounter += 1;
     Rng rng(seedOf(g.worldSeed ^ entropy, g.runCounter));
-    lock = makeLock(t.lock, rng, g.deck.breaker);
+    fortress = isFortressFloor(t);
+    lock = fortress ? fortressLock(g, t) : makeLock(t.lock, rng, g.deck.breaker);
     doorOpen = t.lock == LockType::None;
     emergLeft = g.netUnlocked ? g.net.computeCapacity() : 0;
     startRelay = g.net.relayBonus();
@@ -50,6 +143,18 @@ RunSession::RunSession(GameState& gs, const Target& tg, uint64_t entropy) : g(gs
         say("FORTRESS: a keypad, then a rotor, on one small budget. Every miss is logged (+" + std::to_string(spikeSize(bal::FORTRESS_MISS_SPIKE)) +
                 "% trace). Each compute box can answer once.",
             Tone::Warn);
+    if (fortress) {
+        const int logged = static_cast<int>(lock.history.size());
+        auto rec = g.fortress.find(t.id);
+        const bool tried = rec != g.fortress.end() && (!rec->second.rows.empty() || !rec->second.peeks.empty());
+        say(std::string(tried ? "This floor's code hasn't changed since you last tried it." : "This floor keeps its code until a re-key.") +
+                " ALARM LOG " + std::to_string(alarms()) + "/" + std::to_string(bal::FORTRESS_ALARM_LOG) +
+                " - one more miss on a full log seals the door and re-keys the floor.",
+            alarms() >= bal::FORTRESS_ALARM_LOG ? Tone::Bad : Tone::Info);
+        if (logged > 0) say(std::to_string(logged) + " LOGGED ATTEMPT(S) on screen. They cost nothing tonight.", Tone::Dim);
+        if (lock.keypadKnown()) say("KEYPAD KNOWN. Re-entering it costs one guess and is never a miss.", Tone::Good);
+        if (lock.surveyed) say("TUMBLER SURVEY: the keypad's digits are " + lock.surveyDigits() + ", in some order.", Tone::Good);
+    }
     if (t.doctrine == Doctrine::Biosentinel)
         say("BIOSENTINEL: sentinels sweep every " + std::to_string(bal::BIO_SWEEP_EVERY) + "s (+" + std::to_string(spikeSize(bal::BIO_SWEEP_SPIKE)) +
                 "% each; a frozen trace lets them pass).",
@@ -169,17 +274,42 @@ bool RunSession::guess(const std::string& raw, std::string& err) {
     if (lock.sealed()) { err = "The lock is sealed. Use an emergency attempt, a phrase, or disconnect."; return false; }
     const int stageBefore = lock.stage;
     if (!lock.guess(raw, err)) return false;
+    const bool stageOpened = lock.stage != stageBefore;
+    // FORTRESS: the attempt goes on the floor's record the moment it's made (a trace re-keys it anyway).
+    logRow(stageBefore, stageOpened ? lock.outerRows.back().guess : lock.history.back().guess);
     emit(Ev::Guess);
     if (advance(bal::COST_GUESS)) return true;
-    const bool stageOpened = lock.stage != stageBefore;
     if (stageOpened) {
         say("OUTER KEYPAD OPEN (" + lock.outerRows.back().guess + "). The rotor behind it wakes: every wheel sits within 2 notches of that digit.",
             Tone::Good);
         emit(Ev::Stage);
+        if (fortress) {   // what you learned about this rotor before stays learned
+            auto it = g.fortress.find(t.id);
+            if (it != g.fortress.end()) applyRecord(lock, it->second, 1);
+            if (!lock.history.empty())
+                say(std::to_string(lock.history.size()) + " LOGGED rotor attempt(s) replayed. They cost nothing tonight.", Tone::Dim);
+        }
     } else if (!lock.open && t.doctrine == Doctrine::Fortress) {
         ++misses;
-        say("Miss logged (+" + std::to_string(spikeSize(bal::FORTRESS_MISS_SPIKE)) + "% trace).", Tone::Warn);
+        say("Miss logged (+" + std::to_string(spikeSize(bal::FORTRESS_MISS_SPIKE)) + "% trace)." +
+                (fortress ? " ALARM LOG " + std::to_string(alarms()) + "/" + std::to_string(bal::FORTRESS_ALARM_LOG) + "." : std::string()),
+            Tone::Warn);
         emit(Ev::MissLogged);
+        if (fortress && alarms() > bal::FORTRESS_ALARM_LOG) {
+            // One miss past a full log: the door seals for the night and the floor re-keys. Nothing you own is lost.
+            FortressRecord* rec = record();
+            rec->rekeys += 1;
+            rec->rows.clear();
+            rec->peeks.clear();
+            rec->survey = false;
+            alarmSealed = true;
+            lock.used = std::max(lock.used, lock.maxGuesses);
+            say("ALARM LOG OVERFLOW. " + std::string(towerCorp(t.tower)) + " seals this door and RE-KEYS the floor: a new code, "
+                "your logged attempts and survey are void. Floors you took stay taken.",
+                Tone::Bad);
+        } else if (fortress && alarms() == bal::FORTRESS_ALARM_LOG) {
+            say("ALARM LOG FULL. One more miss on this code seals the door and re-keys the floor.", Tone::Bad);
+        }
         if (spike(bal::FORTRESS_MISS_SPIKE)) return true;
     }
     if (lock.open) {
@@ -190,7 +320,8 @@ bool RunSession::guess(const std::string& raw, std::string& err) {
             Tone::Bad);
         emit(Ev::Lockout);
         if (spike(bal::LOCKOUT_SPIKE)) return true;
-        if (!lock.extraUsed && emergLeft > 0) say("Your network is holding an emergency attempt.", Tone::Warn);
+        if (!alarmSealed && (!lock.extraUsed || t.doctrine == Doctrine::Fortress) && emergLeft > 0)
+            say("Your network is holding an emergency attempt.", Tone::Warn);
     }
     return true;
 }
@@ -226,6 +357,7 @@ bool RunSession::extra(std::string& err) {
     if (over() || doorOpen) { err = "The door is already open."; return false; }
     if (!g.netUnlocked) { err = "You have no network."; return false; }
     if (lock.type == LockType::None) { err = "No lock to spend it on."; return false; }
+    if (alarmSealed) { err = "The alarm log sealed this door. Nothing holds it open tonight."; return false; }
     // A FORTRESS door lets every compute box (and SIEGE subnet) answer once; anywhere else it's one per lock.
     if (lock.extraUsed && t.doctrine != Doctrine::Fortress) { err = "One emergency attempt per lock. Ever."; return false; }
     if (emergLeft <= 0) { err = "Your network holds no emergency attempts this run."; return false; }
@@ -274,6 +406,7 @@ bool RunSession::programUsable(int slot, std::string* why) const {
             break;
         case Program::Peek:
             if (!atDoor || lock.type == LockType::None) return no("PEEK needs a closed lock in front of you.");
+            if (alarmSealed) return no("The alarm log sealed this door; its old code is void.");
             {
                 bool any = false;
                 for (int i = 0; i < lock.length(); ++i) if (!lock.known(i)) any = true;
@@ -305,6 +438,7 @@ bool RunSession::runProgram(int slot, std::string& err) {
             break;
         case Program::Peek: {
             int pos = lock.peek();
+            logPeek(pos);
             std::string ch = pos >= 0 ? txt::upper(lock.secret.substr(static_cast<size_t>(pos), 1)) : "?";
             say("PEEK. Position " + std::to_string(pos + 1) + " is '" + ch + "'.", Tone::Info);
             break;
@@ -352,6 +486,7 @@ bool RunSession::strikeUsable(int gwId, std::string* why) const {
             break;
         case BayRole::Siege: {
             if (doorOpen || lock.type == LockType::None) return no("CRACK needs a closed lock in front of you.");
+            if (alarmSealed) return no("The alarm log sealed this door; its old code is void.");
             bool any = false;
             for (int i = 0; i < lock.length(); ++i) if (!lock.known(i)) any = true;
             if (!any) return no("You already know every box.");
@@ -384,6 +519,7 @@ bool RunSession::strike(int gwId, std::string& err) {
             for (int k = 0; k < bal::STRIKE_CRACK; ++k) {
                 int pos = lock.peek();
                 if (pos < 0) break;
+                logPeek(pos);
                 got += (got.empty() ? "" : ", ") + std::string("box ") + std::to_string(pos + 1) + " = '" +
                        txt::upper(lock.secret.substr(static_cast<size_t>(pos), 1)) + "'";
             }
@@ -604,7 +740,9 @@ Reckoning RunSession::settle() {
     const bool traceOut = end == End::TraceOut;
     const bool sacrifice = end == End::Sacrifice;
     const bool jobCounts = jobDone && !traceOut;   // a trace-out loses the night
-    const bool billable = jobCounts || haul > 0 || traceOut || sacrifice || end == End::Steal;
+    // FORTRESS: an attempt on a persistent code is work - patience costs the bill, so it isn't free brute force.
+    const bool fortressWork = fortress && lock.used > 0;
+    const bool billable = jobCounts || haul > 0 || traceOut || sacrifice || end == End::Steal || fortressWork;
     rk.billable = billable;
     auto line = [&](const std::string& s, Tone tone = Tone::Normal) { rk.lines.push_back({s, tone}); };
 
@@ -821,15 +959,39 @@ Reckoning RunSession::settle() {
                 line("Floor " + std::to_string(t.floor + 2) + " is on your board. The way up stays open - unless they trace you.", Tone::Info);
             }
         }
+        if (rk.floorCleared >= 0) g.fortress.erase(t.id);   // a taken floor needs no record
         if (traceOut) {   // a trace re-keys the whole tower: every phrase you hold for it goes stale
             if (g.towerKey.size() < static_cast<size_t>(kTowerCount)) g.towerKey.resize(kTowerCount, 0);
             g.towerKey[static_cast<size_t>(t.tower)] += 1;
-            for (int f = 0; f < kFloors; ++f) g.knownPhrases.erase(floorId(t.tower, f));
+            for (int f = 0; f < kFloors; ++f) {
+                g.knownPhrases.erase(floorId(t.tower, f));
+                g.fortress.erase(floorId(t.tower, f));   // FORTRESS: every logged attempt and survey goes stale too
+            }
             rk.rekeyed = true;
-            line(std::string(towerCorp(t.tower)) + " RE-KEYS every maintenance door. Your phrases for it are stale; the floors you took stay taken.",
-                 Tone::Bad);
+            if (t.doctrine == Doctrine::Fortress)
+                line(std::string(towerCorp(t.tower)) + " RE-KEYS every door. Your logged attempts and surveys there are void; the floors you took stay taken.",
+                     Tone::Bad);
+            else
+                line(std::string(towerCorp(t.tower)) + " RE-KEYS every maintenance door. Your phrases for it are stale; the floors you took stay taken.",
+                     Tone::Bad);
             g.journal.push_back(std::string(towerCorp(t.tower)) + " re-keyed its doors after a trace.");
         }
+        if (fortress && !traceOut && rk.floorCleared < 0) {
+            if (alarmSealed) {
+                rk.alarmRekeyed = true;
+                line(std::string(towerCorp(t.tower)) + " re-keyed floor " + std::to_string(t.floor + 1) +
+                         ": the alarm log filled. A new code waits; your old attempts are void.",
+                     Tone::Bad);
+                g.journal.push_back(std::string(towerCorp(t.tower)) + " re-keyed floor " + std::to_string(t.floor + 1) + " after its alarm log filled.");
+            }
+            rk.alarms = alarms();
+            if (!alarmSealed && lock.used > 0)
+                line("ALARM LOG " + std::to_string(rk.alarms) + "/" + std::to_string(bal::FORTRESS_ALARM_LOG) +
+                         " on this floor. The code stays the same until it fills or they trace you.",
+                     rk.alarms >= bal::FORTRESS_ALARM_LOG - 1 ? Tone::Warn : Tone::Info);
+        }
+        auto rec = g.fortress.find(t.id);
+        if (rec != g.fortress.end() && rec->second.blank()) g.fortress.erase(rec);
     }
 
     if (jobCounts && t.kind == Kind::Story && !t.deep) {

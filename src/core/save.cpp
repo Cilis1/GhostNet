@@ -11,11 +11,29 @@
 
 #include "balance.h"
 #include "paths.h"
+#include "world.h"
 
 namespace fs = std::filesystem;
 
 namespace {
-constexpr int kVersion = 5;   // v1 (0.1.x), v2 (0.2-0.3), v3 (0.4) and v4 (0.5) saves still load; new fields default
+constexpr int kVersion = 6;   // v1 (0.1.x), v2 (0.2-0.3), v3 (0.4), v4 (0.5) and v5 (0.6) saves still load; new fields default
+
+// v6: a FORTRESS floor record may only name a Kessler-Maru floor (a FORTRESS tower's floor id).
+bool fortressFloorId(int id) {
+    int tower = towerOfId(id);
+    if (tower < 0) return false;
+    int floor = id - floorId(tower, 0);
+    return floor >= 0 && floor < kFloors && towerDoctrine(tower) == Doctrine::Fortress;
+}
+bool digits4(const std::string& s, bool distinct) {
+    if (s.size() != 4) return false;
+    for (char c : s) if (c < '0' || c > '9') return false;
+    if (distinct)
+        for (int i = 0; i < 4; ++i)
+            for (int j = i + 1; j < 4; ++j)
+                if (s[static_cast<size_t>(i)] == s[static_cast<size_t>(j)]) return false;
+    return true;
+}
 
 std::string esc(const std::string& s) {
     static const char* hex = "0123456789ABCDEF";
@@ -86,6 +104,11 @@ bool saveGame(const GameState& g, std::string* err) {
     for (int sd : g.sidesBurned) o << "sideburned " << sd << "\n";
     for (size_t i = 0; i < g.towerFloor.size() || i < g.towerKey.size(); ++i)   // v5: Act IV towers
         o << "tower " << i << " " << g.floorsCleared(static_cast<int>(i)) << " " << g.keyOf(static_cast<int>(i)) << "\n";
+    for (auto& [id, r] : g.fortress) {   // v6: FORTRESS floor records - guesses only, never marks
+        o << "fortress " << id << " " << r.rekeys << " " << (r.survey ? 1 : 0) << "\n";
+        for (auto& row : r.rows) o << "frow " << id << " " << row.stage << " " << row.guess << "\n";
+        for (auto& pk : r.peeks) o << "fpeek " << id << " " << pk.first << " " << pk.second << "\n";
+    }
     for (auto& j : g.journal) o << "journal " << esc(j) << "\n";
     for (auto& l : g.stats.log) o << "log " << esc(l) << "\n";
     o << "end\n";
@@ -256,6 +279,28 @@ bool loadFrom(const std::string& file, GameState& g, std::string* err) {
             n.towerFloor[at] = clampi(fl, 0, kFloors);
             n.towerKey[at] = clampi(key, 0, 1000000);
         }
+        else if (k == "fortress") {
+            long long id = -1, rekeys = 0;
+            int survey = 0;
+            if (!(is >> id >> rekeys >> survey) || id < 0 || id > 100000 || !fortressFloorId(static_cast<int>(id))) continue;
+            FortressRecord& r = n.fortress[static_cast<int>(id)];
+            r.rekeys = clampi(rekeys, 0, 1000000);
+            r.survey = survey != 0;
+        } else if (k == "frow") {
+            long long id = -1, stage = -1;
+            std::string guess;
+            if (!(is >> id >> stage >> guess) || id < 0 || id > 100000 || !fortressFloorId(static_cast<int>(id))) continue;
+            if ((stage != 0 && stage != 1) || !digits4(guess, stage == 0)) continue;
+            FortressRecord& r = n.fortress[static_cast<int>(id)];
+            if (static_cast<int>(r.rows.size()) < bal::FORTRESS_ROWS_MAX) r.rows.push_back({static_cast<int>(stage), guess});
+        } else if (k == "fpeek") {
+            long long id = -1, stage = -1, box = -1;
+            if (!(is >> id >> stage >> box) || id < 0 || id > 100000 || !fortressFloorId(static_cast<int>(id))) continue;
+            if ((stage != 0 && stage != 1) || box < 0 || box > 3) continue;
+            FortressRecord& r = n.fortress[static_cast<int>(id)];
+            std::pair<int, int> pk{static_cast<int>(stage), static_cast<int>(box)};
+            if (std::find(r.peeks.begin(), r.peeks.end(), pk) == r.peeks.end()) r.peeks.push_back(pk);
+        }
         else if (k == "journal") { std::string t; is >> t; n.journal.push_back(unesc(t)); }
         else if (k == "log") { std::string t; is >> t; n.stats.log.push_back(unesc(t)); }
         else if (k == "end") { end = true; break; }
@@ -284,7 +329,12 @@ bool loadFrom(const std::string& file, GameState& g, std::string* err) {
     if (n.stats.captures > 0 && n.act < 2) n.act = 2;      // 0.1.x saves: derive the act from history
     if (n.stats.sacrifices > 0 && n.act < 3) n.act = 3;
     if (n.netUnlocked && !n.net.home()) n.netUnlocked = false;
-    if (!n.deepDone) { n.towerFloor.clear(); n.towerKey.clear(); if (n.act > 3) n.act = 3; }   // the Ledger opens after the deep job
+    if (!n.deepDone) { n.towerFloor.clear(); n.towerKey.clear(); n.fortress.clear(); if (n.act > 3) n.act = 3; }   // the Ledger opens after the deep job
+    for (auto it = n.fortress.begin(); it != n.fortress.end();) {   // a taken floor keeps no record; an empty record is no record
+        int tower = towerOfId(it->first);
+        bool taken = it->first - floorId(tower, 0) < n.floorsCleared(tower);
+        it = taken || it->second.blank() ? n.fortress.erase(it) : std::next(it);
+    }
     g = n;
     return true;
 }

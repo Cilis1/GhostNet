@@ -65,10 +65,17 @@ THE LEDGER (Act IV - after the owner ending)
   Each tower's DOCTRINE is announced up front:
     KESSLER-MARU (FORTRESS): composite locks, no maintenance ports, one guess
       per door (+Breaker), each compute box answers once, misses ping (+4%).
+      Since 0.7 a floor KEEPS ITS CODE between connections: earlier attempts
+      return as LOGGED rows that cost nothing, a found keypad shows KEYPAD
+      KNOWN (1 guess, never a miss), the rotor shows arrows (up = wheel higher),
+      and CODES LEFT counts what still fits. 6 misses fill the ALARM LOG; the
+      7th seals the door and re-keys that floor. A trace re-keys them all.
     TIDEWATER BIOSYS (BIOSENTINEL): watchdogs everywhere and a sentinel sweep
       every 12s (+6%; jammers soften it, FREEZE lets one pass). Each floor's
       memo names the next floor's maintenance phrase.
-  HEIST PREP, paid once and kept: FLOOR PLAN 350cr, PHRASE 700-1400cr.
+  HEIST PREP, paid once and kept: FLOOR PLAN 350cr, PHRASE 700-1400cr,
+  TUMBLER SURVEY 600-1200cr (Kessler: the keypad's digits, unordered).
+  PRACTICE RANGE > FORTRESS DRILL: a Kessler door on your real budget.
   Get traced in a tower and it RE-KEYS: your phrases for it go stale.
 
 THE PANEL

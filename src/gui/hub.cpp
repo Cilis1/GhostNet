@@ -100,6 +100,10 @@ const HelpSection kHelp[] = {
     {"THE LEDGER", "After the deep job: corp towers, 3 floors each, every DOCTRINE announced up front. FORTRESS: a COMPOSITE lock "
                    "(keypad, then a rotor whose wheels sit within 2 of each keypad digit), no ports, each compute box answers once. "
                    "BIOSENTINEL: sweeps every 12s. Prep costs credits; only a trace re-keys a tower."},
+    {"KESSLER CODES", "A FORTRESS floor keeps its code between connections. Your rows come back LOGGED and cost nothing; a found keypad "
+                      "shows KEYPAD KNOWN (typing it costs 1, never a miss). Rotor arrows say which way each wheel lies. CODES LEFT counts "
+                      "what still fits. A TUMBLER SURVEY names the keypad's digits. 6 misses fill the ALARM LOG; the 7th seals the door "
+                      "and re-keys that floor. A trace re-keys them all. FORTRESS DRILL in practice uses your real budget."},
     {"THE PANEL", "VESPER (risk), LEDGER (money) and MOTH (intel) vote before a run. No idle income, no timers: nothing happens while "
                   "you're away."},
 };
@@ -966,7 +970,9 @@ void App::drawBrief() {
     text(F::MonoBold, lockName(t.lock), l.x + 130, y, 13, C_TEXT);
     y += 22;
     text(F::Mono, "TRACE", l.x + 24, y, 13, C_DIM);
-    text(F::MonoBold, std::string(dangerWord(effectiveTraceRate(g, t))) + (t.watchdog ? "  + WATCHDOG" : ""), l.x + 130, y, 13,
+    // The report rates the server; this line rates it through your route - say both when they differ.
+    std::string effW = dangerWord(effectiveTraceRate(g, t)), baseW = dangerWord(baseTraceRate(t));
+    text(F::MonoBold, effW + (effW != baseW ? " via your route (" + baseW + " raw)" : std::string()) + (t.watchdog ? "  + WATCHDOG" : ""), l.x + 130, y, 13,
          t.watchdog ? C_RED : C_AMBER);
     y += 22;
     if (g.knownPhrases.count(t.id)) {
@@ -981,19 +987,25 @@ void App::drawBrief() {
         float py = by - 112;
         text(F::MonoBold, "HEIST PREP", l.x + 24, py - 18, 12, kc);
         text(F::Mono, "paid once, kept - no timers", l.x + 120, py - 18, 12, C_DIM);
-        const Prep preps[2] = {Prep::Plan, Prep::Phrase};
+        const Prep preps[3] = {Prep::Plan, Prep::Phrase, Prep::Survey};
         std::string why;
-        for (int i = 0; i < 2; ++i) {
+        const float bw = (l.width - 48 - 2 * 8) / 3;
+        for (int i = 0; i < 3; ++i) {
             Prep p = preps[i];
             std::string reason;
             bool can = prepAvailable(g, t, p, &reason);
-            Rectangle br{l.x + 24 + i * 262, py, 250, 36};
+            Rectangle br{l.x + 24 + i * (bw + 8), py, bw, 36};
             // Say why a button is dark instead of showing a price you can't pay for something that doesn't exist.
-            bool owned = p == Prep::Plan ? g.reports.count(t.id) && g.reports.at(t.id) >= 3 : g.knownPhrases.count(t.id) > 0;
-            std::string label = p == Prep::Phrase && !t.backdoor ? std::string("NO MAINTENANCE PORT")
-                              : owned                            ? std::string(prepName(p)) + "  OWNED"
-                                                                 : std::string(prepName(p)) + "  " + std::to_string(prepCost(t, p)) + "cr";
-            if (button(br, label, kc, can, false, 12)) {
+            auto fr = g.fortress.find(t.id);
+            bool owned = p == Prep::Plan     ? g.reports.count(t.id) && g.reports.at(t.id) >= 3
+                       : p == Prep::Phrase   ? g.knownPhrases.count(t.id) > 0
+                                             : fr != g.fortress.end() && fr->second.survey;
+            std::string label = p == Prep::Phrase && !t.backdoor        ? std::string("NO MAINTENANCE PORT")
+                              : p == Prep::Survey && !isFortressFloor(t) ? std::string("NO TUMBLERS (NOT FORTRESS)")
+                              : owned                                    ? std::string(prepName(p)) + "  OWNED"
+                                                                         : std::string(prepName(p)) + "  " + std::to_string(prepCost(t, p)) + "cr";
+            float fsz = textWidth(F::MonoBold, label, 12) > bw - 14 ? (textWidth(F::MonoBold, label, 11) > bw - 14 ? 10 : 11) : 12;
+            if (button(br, label, kc, can, false, fsz)) {
                 Result r = buyPrep(g, t, p);
                 result(r);
                 if (r.ok) { sfx::play(sfx::Coin); autosave(); }

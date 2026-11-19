@@ -58,10 +58,31 @@ struct Reckoning {
     std::string storyTitle, storyOutro, infoReward;
     int tower = -1, floorCleared = -1;   // Act IV: the floor this run took (if any)
     bool towerOwned = false, ledgerDone = false, rekeyed = false;
+    bool alarmRekeyed = false;           // FORTRESS: the alarm log filled and this floor re-keyed
+    int alarms = -1;                     // FORTRESS: misses on the floor's alarm log after the run (-1: not a FORTRESS floor)
     bool unlockedNetwork = false;
     bool boardRefreshed = false;
     std::string sacrificed, captured;
 };
+
+// FORTRESS (0.7): what a floor's record says about its door right now, for the briefing and MOTH.
+struct FortressOutlook {
+    bool active = false;          // a Kessler-Maru floor with a persistent code
+    int alarms = 0;               // misses on the alarm log (of bal::FORTRESS_ALARM_LOG)
+    int logged = 0;               // logged attempts
+    bool survey = false;
+    std::string surveyDigits;     // ascending, when surveyed
+    bool keypadKnown = false;
+    long codes = 0;               // keypad codes that still fit
+    long rotorCodes = -1;         // rotor settings that still fit (-1 until the keypad is known)
+    int likely = 0;               // guesses this door usually still needs
+    int budget = 0;               // your guesses per connection (1 + BREAKER)
+    int emergency = 0;            // + compute boxes / SIEGE subnets that can answer
+};
+bool isFortressFloor(const Target& t);
+int fortressMissesOn(const GameState& g, const Target& t);   // the alarm log: logged rows that weren't a stage's code
+FortressOutlook fortressOutlook(const GameState& g, const Target& t);
+Lock fortressLock(const GameState& g, const Target& t);   // the floor's door as it stands, logged rows replayed
 
 class RunSession {
 public:
@@ -132,6 +153,10 @@ public:
     double rateNow(double mult = 1.0) const;
     int nextSweep() const;           // BIOSENTINEL: seconds until the next sentinel sweep (-1 if none)
     int sweeps = 0, misses = 0;      // doctrine pings tonight
+    // FORTRESS (0.7): the floor's code persists; attempts are logged to its record as they happen.
+    bool fortress = false;
+    bool alarmSealed = false;        // the alarm log overflowed tonight: the door is sealed and the floor re-keyed
+    int alarms() const;              // misses on this floor's alarm log right now
     int secondsLeft() const;
     Reckoning settle();             // call once, after over()
 
@@ -140,6 +165,9 @@ private:
     bool spike(double amount);
     int spikeSize(double base) const;   // after jammers, for the log
     void traced();
+    FortressRecord* record();
+    void logRow(int stage, const std::string& guess);
+    void logPeek(int pos);
     void openDoor(bool phrase);
     void finishDownload();
     void finishCapture();

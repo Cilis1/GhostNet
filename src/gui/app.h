@@ -98,6 +98,14 @@ public:
     // practice
     Lock practice;
     bool practiceOn = false;
+    // FORTRESS DRILL (0.7): a composite on your real Kessler budget; RECONNECT replays your rows as LOGGED.
+    bool drillOn = false;
+    Lock drillBase;                                     // the drill's code (until its alarm log fills)
+    std::vector<std::pair<int, std::string>> drillRows; // (stage, guess) logged so far
+    int drillConnections = 0, drillRekeys = 0;
+    int drillBudget() const;
+    int drillAlarms() const;
+    void drillConnect(bool fresh);
     bool practiceFromHub = false;
     size_t rowsSeen = 0;
     float rowBorn = 0;
