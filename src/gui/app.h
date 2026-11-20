@@ -29,6 +29,12 @@ struct Modal {
     std::vector<std::string> chips;
     std::string chipNote;
     int chipShift = 0;
+    // A pick list (the ACCORD job picker): one row per option with a note under it. The first button stays
+    // disabled until a row is picked, and onPick gets the row index in `field`.
+    std::vector<std::string> picks, pickNotes;
+    std::vector<Color> pickColors;
+    int pick = -1;
+    std::string pickVerb;               // the first button reads pickVerb + the picked row
     std::function<void(int choice, const std::string& field)> onPick;
 };
 
@@ -172,6 +178,7 @@ private:
 
 const char* actName(int act);
 Color jobColor(Job j);
+Color doctrineColor(Doctrine d);
 Color kindColor(Kind k);
 Color roleColor(BayRole r);
 Color toneColor(Tone t);

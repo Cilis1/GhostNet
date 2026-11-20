@@ -51,6 +51,17 @@ Color kindColor(Kind k) {
         case Kind::Side: return C_PURPLE;
         case Kind::Prototype: return Color{255, 70, 40, 255};   // black-site red-orange
         case Kind::Tower: return Color{120, 200, 255, 255};     // corporate glass blue
+        case Kind::Site: return Color{255, 196, 60, 255};       // service-site gold: chairman iron behind it
+    }
+    return C_TEXT;
+}
+
+Color doctrineColor(Doctrine d) {
+    switch (d) {
+        case Doctrine::Fortress: return C_AMBER;
+        case Doctrine::Biosentinel: return C_GREEN;
+        case Doctrine::Loadshed: return Color{255, 150, 40, 255};   // grid orange
+        case Doctrine::None: break;
     }
     return C_TEXT;
 }
@@ -380,12 +391,14 @@ void App::drawModals() {
         gx::layer = static_cast<int>(i) + 1;
         Modal& m = modals[i];
         DrawRectangle(0, 0, W, H, Color{2, 1, 8, static_cast<unsigned char>(m.cinematic ? 215 : 170)});
-        float w = m.cinematic ? 860.0f : 600.0f;
+        float w = m.cinematic ? 860.0f : m.picks.empty() ? 600.0f : 720.0f;
         float bodySize = m.cinematic ? 18.0f : 15.0f;
         auto lines = wrap(F::Mono, m.body, w - 70, bodySize);
         float bodyH = lines.size() * bodySize * 1.4f;
         bool chips = m.input && !m.chips.empty();
-        float h = 70 + (m.cinematic ? 40 : 0) + bodyH + (m.input ? 64 : 0) + (chips ? 78 : 0) + 80;
+        const float rowH = 34;
+        float pickH = m.picks.empty() ? 0 : m.picks.size() * rowH + 14;
+        float h = 70 + (m.cinematic ? 40 : 0) + bodyH + (m.input ? 64 : 0) + (chips ? 78 : 0) + pickH + 80;
         Rectangle r{(W - w) / 2, (H - h) / 2, w, h};
         panel(r, m.accent, "", 0.97f);
         float y = r.y + 26;
@@ -399,6 +412,28 @@ void App::drawModals() {
         for (auto& l : lines) {
             text(F::Mono, l, r.x + 35, y, bodySize, C_TEXT);
             y += bodySize * 1.4f;
+        }
+        if (!m.picks.empty()) {
+            y += 8;
+            for (size_t k = 0; k < m.picks.size(); ++k) {
+                Rectangle row{r.x + 35, y, w - 70, rowH - 4};
+                Color pc = k < m.pickColors.size() ? m.pickColors[k] : m.accent;
+                bool sel = m.pick == static_cast<int>(k);
+                bool hov = !sel && gx::layer == gx::topLayer && hovered(row);
+                DrawRectangleRec(row, fade(pc, sel ? 0.18f : hov ? 0.09f : 0.04f));
+                if (sel) glowRect(row, pc, 1.5f, 2);
+                else DrawRectangleLinesEx(row, 1, fade(pc, hov ? 0.6f : 0.25f));
+                text(F::MonoBold, m.picks[k], row.x + 10, row.y + 8, 13, sel ? WHITE : pc);
+                if (k < m.pickNotes.size()) text(F::Mono, m.pickNotes[k], row.x + 112, row.y + 9, 11, sel ? C_TEXT : C_DIM);
+                if (gx::layer == gx::topLayer && hitArea(row, m.picks[k])) {
+                    m.pick = static_cast<int>(k);
+                    sfx::play(sfx::Click);
+                }
+                y += rowH;
+            }
+            y += 6;
+            m.field = m.pick >= 0 ? std::to_string(m.pick) : "";
+            if (!m.buttons.empty()) m.buttons[0] = m.pick >= 0 ? m.pickVerb + m.picks[static_cast<size_t>(m.pick)] : "PICK A JOB";
         }
         bool enter = false;
         if (m.input) {
@@ -419,7 +454,8 @@ void App::drawModals() {
         float bx = r.x + w - 34 - m.buttons.size() * (bw + gap) + gap;
         for (size_t b = 0; b < m.buttons.size(); ++b) {
             Color c = b == 0 ? m.accent : C_DIM;
-            if (button(Rectangle{bx + b * (bw + gap), r.y + h - 66, bw, bh}, m.buttons[b], c, true, b == 0)) picked = static_cast<int>(b);
+            bool ok = b != 0 || m.picks.empty() || m.pick >= 0;
+            if (button(Rectangle{bx + b * (bw + gap), r.y + h - 66, bw, bh}, m.buttons[b], c, ok, b == 0)) picked = static_cast<int>(b);
         }
         if (chips) {
             // Starter phrases: three at a time, rotating every few seconds.
@@ -441,7 +477,7 @@ void App::drawModals() {
             if (button(Rectangle{r.x + w - 35 - 90, cy + 24, 90, 34}, "MORE >", C_DIM, pages > 1, false, 11)) m.chipShift += 1;
         }
         if (gx::layer == gx::topLayer) {
-            if (enter && picked < 0) picked = 0;
+            if (enter && picked < 0 && (m.picks.empty() || m.pick >= 0)) picked = 0;
             if (gx::keyPressed(KEY_ESCAPE) && m.buttons.size() > 1 && picked < 0) picked = static_cast<int>(m.buttons.size()) - 1;
         }
         if (picked >= 0) {

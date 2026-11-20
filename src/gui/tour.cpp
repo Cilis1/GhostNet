@@ -402,6 +402,93 @@ int App::screenshotTour(const std::string& dir, const std::function<void()>& ren
         g.towerFloor[1] = keepFloor;
         tidyHousePower(g);
     }
+    // 0.9 CHAIRMAN IRON: Halden Grid's LOADSHED, a pinned service site, the ACCORD picker, the gold plate.
+    if (const Target* h = findTarget([](const Target& t) { return t.kind == Kind::Tower && t.doctrine == Doctrine::Loadshed; })) {
+        Target ht = *h;
+        brief = ht;
+        go(Scr::Brief);
+        shot("41-brief-loadshed");
+        buyPrep(g, ht, Prep::Phrase);
+        connect(ht);
+        run->phrase(ht.passphrase);
+        for (size_t i = 0; i < run->t.files.size(); ++i)
+            if (run->t.files[i].kind == FileKind::Objective && run->startDownload(static_cast<int>(i), err)) break;
+        for (int s = 0; s < 40 && !run->over() && !run->shedding(); ++s) {
+            if (!run->busy())
+                for (size_t i = 0; i < run->t.files.size(); ++i)
+                    if (!run->t.files[i].taken && run->startDownload(static_cast<int>(i), err)) break;
+            run->step();
+            run->trace = std::min(run->trace, 45.0);   // staging: keep the line open until the grid sheds
+        }
+        if (!run->shedding()) { std::fprintf(stderr, "no shed on Halden Grid\n"); ++failures; }
+        traceShown = static_cast<float>(run->trace);
+        handleEvents();
+        floats.clear();
+        shot("42-run-loadshed", 1.0f);
+        run->disconnect();
+        run.reset();
+    } else {
+        std::fprintf(stderr, "no Halden Grid on the Ledger\n");
+        ++failures;
+    }
+    {
+        if (g.towerFloor.size() < static_cast<size_t>(kTowerCount)) g.towerFloor.resize(kTowerCount, 0);
+        if (g.siteState.size() < static_cast<size_t>(kTowerCount)) g.siteState.resize(kTowerCount, 0);
+        std::vector<int> keepFloors = g.towerFloor;
+        g.towerFloor[1] = kFloors;
+        g.siteState[1] = 1;   // Tidewater owned, its Boardroom maintenance log read: OSSUARY is pinned
+        tab = Tab::Board;
+        go(Scr::Hub);
+        dismiss();
+        refreshBoard();
+        boardScroll = 1e6f;   // the sites sit at the end of the board
+        shot("43-board-site");
+        boardScroll = 0;
+        if (const Target* st = findTarget([](const Target& t) { return t.kind == Kind::Site; })) {
+            Target site = *st;
+            while (g.net.externalCount() >= bal::MAX_EXTERNAL) {   // make room: the rack is at its limit of owned machines
+                int victim = -1;
+                for (auto& m : g.net.machines)
+                    if (!m.home && m.job != Job::Gateway && m.bay < 0 && g.net.decoyId != m.id) victim = m.id;
+                if (victim < 0 || !scrap(g, victim).ok) break;
+            }
+            brief = site;
+            go(Scr::Brief);
+            shot("44-brief-site");
+            connect(site);
+            run->phrase(site.passphrase);
+            handleEvents();
+            floats.clear();
+            startCapture();
+            if (modals.empty() || modals.back().picks.empty()) { std::fprintf(stderr, "no ACCORD picker\n"); ++failures; }
+            else modals.back().pick = static_cast<int>(Job::Jammer);
+            shot("45-accord-picker", 1.0f);
+            modals.clear();
+            if (!run->startHold(Job::Jammer, err)) { std::fprintf(stderr, "ACCORD hold refused: %s\n", err.c_str()); ++failures; }
+            for (int s = 0; s < 200 && run->busy() && !run->over(); ++s) {
+                run->step();
+                run->trace = std::min(run->trace, 60.0);
+            }
+            run->events.clear();
+            run->settle();
+            run.reset();
+            int iron = -1;
+            for (auto& m : g.net.machines) if (m.accord()) iron = m.id;
+            if (iron < 0) { std::fprintf(stderr, "no ACCORD machine after the hold\n"); ++failures; }
+            if (Machine* m = g.net.find(iron); m && !m->active) activate(g, *m);
+            tab = Tab::Rack;
+            go(Scr::Hub);
+            dismiss();
+            selMachine = iron;
+            shot("46-rack-accord");
+            selMachine = -1;
+        } else {
+            std::fprintf(stderr, "no service site on the board\n");
+            ++failures;
+        }
+        g.towerFloor = keepFloors;
+        tidyHousePower(g);
+    }
     drillConnect(true);   // FORTRESS DRILL on the real budget, one reconnect in
     {
         std::string dc = practice.outer;

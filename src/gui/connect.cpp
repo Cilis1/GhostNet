@@ -74,6 +74,8 @@ void App::connect(const Target& t) {
     handleEvents();
 }
 
+static const Color kShedColor{255, 150, 40, 255};   // grid orange
+
 void App::handleEvents() {
     if (!run) return;
     for (auto& e : run->events) {
@@ -171,6 +173,22 @@ void App::handleEvents() {
                 flash = 0.5f, flashColor = Color{255, 140, 60, 255}, glitch = 0.5f, shake = 0.3f;
                 floats.push_back({e.text, Color{255, 140, 60, 255}, Vector2{636, 380}, gx::now});
                 break;
+            case Ev::Shed:   // LOADSHED: only loud when it took something of yours
+                if (e.text.empty()) break;
+                sfx::play(sfx::Deny, 0.6f);
+                flash = 0.3f, flashColor = kShedColor, glitch = 0.5f;
+                floats.push_back({"LOADSHED - " + e.text, kShedColor, Vector2{636, 420}, gx::now});
+                break;
+            case Ev::SiteFound:
+                sfx::play(sfx::Coin);
+                flash = 0.4f, flashColor = kindColor(Kind::Site);
+                toast("HELIOS service site " + e.text + " - pinned in your journal, with its phrase.", kindColor(Kind::Site));
+                break;
+            case Ev::AccordFreeze:
+                sfx::play(sfx::Boot);
+                flash = 0.45f, flashColor = C_CYAN, glitch = 0.4f;
+                floats.push_back({e.text + " FREEZES THE TRACE", kindColor(Kind::Site), Vector2{636, 380}, gx::now});
+                break;
         }
     }
     run->events.clear();
@@ -185,6 +203,21 @@ void App::submitGuess() {
     }
     input.clear();
     handleEvents();
+}
+
+// One line per ACCORD job for the picker (the full text is on the machine card once it's yours).
+static std::string accordLine(Job j) {
+    auto n = [](int v) { return std::to_string(v); };
+    switch (j) {
+        case Job::Relay: return "+" + n(bal::ACCORD_RELAY) + "% download; the rack's relay cap rises to " + n(bal::RELAY_CAP + bal::ACCORD_RELAY_LIFT) + "%";
+        case Job::Proxy: return "-" + n(bal::ACCORD_PROXY) + "% trace; the rack's proxy cap rises to " + n(bal::PROXY_CAP + bal::ACCORD_PROXY_LIFT) + "%";
+        case Job::Scout: return n(bal::ACCORD_SCOUT_CHARGES) + " charges; every new tower or site report gives up a secret";
+        case Job::Compute: return n(bal::ACCORD_COMPUTE) + " emergency attempts a run; compute cap " + n(bal::COMPUTE_MAX + 1);
+        case Job::Jammer: return "watchdog +" + n(bal::ACCORD_JAM_DELAY) + "s, spikes -" + n(bal::ACCORD_JAM_SPIKE) + "%, FREEZES itself at " + n(bal::ACCORD_FREEZE_AT) + "% once";
+        case Job::Vault: return "keeps 100% of " + n(bal::ACCORD_VAULT_FILES) + " files; one tower objective survives a trace";
+        case Job::Gateway: return "a subnet of " + n(bal::ACCORD_GATE_SLOTS) + " slots, " + n(bal::ACCORD_GATE_POWER) + " power, every member a tier up";
+    }
+    return "";
 }
 
 void App::startCapture() {
@@ -204,6 +237,32 @@ void App::startCapture() {
     if (q.rackFull) body += "\nYour rack is full: it would go to cold storage.";
     if (q.honeypot) body += "\nThe bait already went off: it arrives worse.";
     if (q.viaPhrase) body += "\nYou came in by passphrase: the hold is shorter.";
+    if (q.accord) {
+        // CHAIRMAN IRON: any job, chosen now and for good - no re-image, no scrap, never a decoy.
+        Modal m;
+        m.title = "ACCORD // " + q.ironName;
+        m.body = "Chairman iron. ACCORD grade, tier 5, no trait, signal 1, " + std::to_string(q.upkeep) + "cr a run flat.\n" +
+                 "Hold the line for " + std::to_string(q.holdSecs) + "s while the trace runs x1.5 (about " + std::to_string(q.secondsLeft) +
+                 "s left at the normal rate).\nThe job you pick is PERMANENT: it can't be re-imaged, scrapped or armed as the decoy. "
+                 "Unpaid, it goes dark like anything else.";
+        for (int k = 0; k < kJobCount; ++k) {
+            Job j = static_cast<Job>(k);
+            m.picks.push_back(jobName(j));
+            m.pickNotes.push_back(accordLine(j));
+            m.pickColors.push_back(jobColor(j));
+        }
+        m.pickVerb = "HOLD AS ";
+        m.buttons = {"PICK A JOB", "CANCEL"};
+        m.accent = C_AMBER;
+        m.onPick = [this](int c, const std::string& f) {
+            if (c != 0 || !run || f.empty()) return;
+            std::string err;
+            if (!run->startHold(static_cast<Job>(std::stoi(f)), err)) toast(err, C_AMBER);
+            else sfx::play(sfx::Alarm, 0.6f);
+        };
+        pushModal(m);
+        return;
+    }
     Modal m;
     m.title = "CAPTURE HARDWARE";
     m.body = body;
@@ -261,10 +320,19 @@ void App::drawRun() {
     text(F::Mono, "HAUL", W - 200, 14, 12, C_DIM);
     glowText(F::Display, std::to_string(r.haul) + " CR", W - 24, 30, 20, C_AMBER, Right);
     text(F::Mono, "t+" + std::to_string(r.secs) + "s", W - 200, 36, 12, C_DIM);
-    if (r.t.kind == Kind::Tower) {   // the doctrine is never a surprise: it stays on screen
-        std::string d = std::string(doctrineName(r.t.doctrine)) + "  FLOOR " + std::to_string(r.t.floor + 1) + "/" + std::to_string(kFloors);
+    if (r.t.kind == Kind::Tower || r.t.kind == Kind::Site) {   // the doctrine is never a surprise: it stays on screen
+        std::string d = std::string(doctrineName(r.t.doctrine)) +
+                        (r.t.kind == Kind::Site ? std::string("  SERVICE SITE ") + siteName(r.t.tower)
+                                                : "  FLOOR " + std::to_string(r.t.floor + 1) + "/" + std::to_string(kFloors));
         if (r.nextSweep() >= 0) d += "   SWEEP IN " + std::to_string(r.nextSweep()) + "s";
-        Color dc = r.nextSweep() >= 0 && r.nextSweep() <= 3 ? pulse(C_RED, 6) : kindColor(Kind::Tower);
+        Color dc = r.nextSweep() >= 0 && r.nextSweep() <= 3 ? pulse(C_RED, 6) : kindColor(r.t.kind);
+        if (r.shedding()) {
+            d += "   SHEDDING - SUBNETS DARK " + std::to_string(r.shedLeft()) + "s";
+            dc = pulse(kShedColor, 6);
+        } else if (r.nextShed() >= 0) {
+            d += "   SHED IN " + std::to_string(r.nextShed()) + "s";
+            if (r.nextShed() <= 3) dc = pulse(kShedColor, 4);
+        }
         if (r.fortress) {   // the ALARM LOG: your own misses on this code; one more on a full log seals the door
             int al = std::min(r.alarms(), bal::FORTRESS_ALARM_LOG);
             bool full = al >= bal::FORTRESS_ALARM_LOG;

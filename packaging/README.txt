@@ -66,7 +66,7 @@ THE DEEP JOB
   appears; if you fall short, the game tells you by how much.
 
 THE LEDGER (Act IV - after the owner ending)
-  Two corp towers, three floors each; the Boardroom makes the tower yours.
+  Three corp towers, three floors each; the Boardroom makes the tower yours.
   You start every climb. Nothing is timed and taken floors stay taken.
   Each tower's DOCTRINE is announced up front:
     KESSLER-MARU (FORTRESS): composite locks, no maintenance ports, one guess
@@ -79,6 +79,15 @@ THE LEDGER (Act IV - after the owner ending)
     TIDEWATER BIOSYS (BIOSENTINEL): watchdogs everywhere and a sentinel sweep
       every 12s (+6%; jammers soften it, FREEZE lets one pass). Each floor's
       memo names the next floor's maintenance phrase.
+    HALDEN GRID (LOADSHED, 0.9): the fastest trace. Every 15s the grid sheds
+      for 3s and every subnet not on HOUSE POWER goes dark. No spike; the
+      main rack and your deck keep working; the decoy stays armed.
+  CHAIRMAN IRON (0.9): an owned tower's Boardroom keeps a maintenance_log.txt.
+    Read it and a HELIOS SERVICE SITE goes on your board (CITADEL, OSSUARY,
+    FURNACE). Get in and hold a capture: its ACCORD machine is tier 5 in any
+    job you pick - for good. No re-job, no scrap, never the decoy; 60cr a run
+    flat; dark when unpaid like everything else. A trace there only re-keys
+    the door.
   HEIST PREP, paid once and kept: FLOOR PLAN 350cr, PHRASE 700-1400cr,
   TUMBLER SURVEY 600-1200cr (Kessler: the keypad's digits, unordered).
   PRACTICE RANGE > FORTRESS DRILL: a Kessler door on your real budget.

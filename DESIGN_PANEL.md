@@ -176,6 +176,35 @@ currency, loot-box machine rolls, and machines that work while you're away.
   * Nothing became free. Every run that does something still sends a bill, and the
     bill-switches-off rule is untouched.
 
+## 0.9.0 — Chairman iron, part one: the outer ring
+
+* **The ask.** Tower rewards that feel extremely broken, earned late and never handed out:
+  a Boardroom maintenance log that leads to a capture you have to work for. Part one ships
+  the outer ring; the inner chairs and the signature machines follow in 0.10.
+* **Halden Grid (LOADSHED).** A third outer tower: keypad, rotor and cipher doors with ports, trace
+  3.4 / 3.7 / 4.0%/s, objectives 62 / 72 / 82MB. Every 15s the grid sheds for 3s and every
+  subnet not on HOUSE POWER goes dark: no spike, no damage, and the decoy stays armed through
+  a shed. It's the one doctrine that rewards the 0.8 dividend, and the matched kit is a
+  SPEED subnet the house keeps lit.
+* **Service sites.** Reading an owned Boardroom's `maintenance_log.txt` pins that tower's
+  site (CITADEL, OSSUARY, FURNACE), along with its phrase. It never expires. A site is
+  security 5 at 4.4%/s under the parent doctrine. A trace re-keys only its door and costs
+  nothing else, so it keeps the decoy's rules. It leaves the board when its machine is
+  taken.
+* **ACCORD iron (MONOLITH, LEVIATHAN, COLOSSUS).** A tier 5 whose job is picked at the hold,
+  from all seven, for good (panel answer 6: no re-image). It never takes a ticket (answer 4),
+  can't be scrapped, is allowed on STANDBY (answer 3), and costs 60cr a run flat: signal 1,
+  no trait, 2cr a point to repair. Unpaid, it goes dark like everything else. Each job breaks
+  one ceiling, never the hard caps: relay 45 (rack cap 60), proxy 30 (cap 42), scout secrets,
+  compute ×2, a self-FREEZE at 80%, a vault that keeps a tower objective, a 4-slot gateway.
+* **Results (sim bot, 12 seeds of `chairs`, 140 runs).** In 10 of 12 seeds the bot owns all
+  three towers and takes ACCORD iron. The other two stall on Tidewater's Boardroom. The first
+  ACCORD lands between runs 22 and 118. Every site falls to a prepared hold on its first try.
+  Without the phrase, CITADEL's door never opens, so the log is the real key. Halden's kit
+  trial takes 3/3 floors with the matched kit and 2/3 with a FORTRESS build.
+* **Fixed on the way.** A composite door opened by phrase lost the shorter phrase hold once
+  the rotor opened. It now keeps the ×0.6.
+
 ## Deferred backlog
 
 1. ~~A graphical client~~ built in 0.3.0 (see section 6).
