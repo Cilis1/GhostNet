@@ -122,8 +122,15 @@ RunSession::RunSession(GameState& gs, const Target& tg, uint64_t entropy) : g(gs
         for (auto* gw : g.net.openBays())
             if (g.net.bayOnline(*gw)) strikeBays.push_back(gw->id);
     }
+    g.net.shed = false;
     for (auto& m : g.net.machines) {
         m.usedThisRun = false;
+        m.answeredThisRun = 0;
+        if (g.net.online(m) && !m.home && m.accord() && m.job == Job::Jammer && !accordFreeze) {
+            accordFreeze = true;
+            accordFreezeName = m.name;
+        }
+        if (g.net.online(m) && !m.home && m.accord() && m.job == Job::Vault) accordVault = true;
         if (g.net.online(m) && !m.home) billIds.push_back(m.id);
         if (m.job == Job::Gateway && m.bay < 0 && g.net.housePowered(m.id)) houseBays.push_back(m.id);
     }
@@ -162,6 +169,27 @@ RunSession::RunSession(GameState& gs, const Target& tg, uint64_t entropy) : g(gs
         say("BIOSENTINEL: sentinels sweep every " + std::to_string(bal::BIO_SWEEP_EVERY) + "s (+" + std::to_string(spikeSize(bal::BIO_SWEEP_SPIKE)) +
                 "% each; a frozen trace lets them pass).",
             Tone::Warn);
+    if (t.doctrine == Doctrine::Loadshed) {
+        int dark = 0;
+        for (auto* gw : g.net.openBays()) if (g.net.bayOnline(*gw) && !g.net.housePowered(gw->id)) ++dark;
+        say("LOADSHED: every " + std::to_string(bal::LOADSHED_EVERY) + "s the grid sheds for " + std::to_string(bal::LOADSHED_SECS) + "s and your subnets go dark" +
+                (dark ? " (" + std::to_string(dark) + " of yours exposed; HOUSE POWER keeps a subnet lit)." : std::string(" - you have none exposed tonight.")),
+            dark ? Tone::Warn : Tone::Dim);
+    }
+    if (t.kind == Kind::Tower) {   // an ACCORD vault kept one of this floor's objectives offline through an earlier trace
+        auto vh = g.vaultHeld.find(t.id);
+        if (vh != g.vaultHeld.end())
+            for (auto& f : t.files)
+                if (f.kind == FileKind::Objective && f.name == vh->second && !f.taken) {
+                    f.taken = true;
+                    heldObjective = f.name;
+                    say("Your ACCORD vault still holds " + f.name + " offline from last time: it counts as taken.", Tone::Good);
+                }
+    }
+    if (t.kind == Kind::Site)
+        say(std::string("HELIOS SERVICE SITE ") + siteName(t.tower) + ". One unimaged ACCORD unit: " + ironName(t.tower) + ". Under " +
+                towerCorp(t.tower) + "'s doctrine.",
+            Tone::Story);
     if (t.stealable && g.netUnlocked) say("This server's hardware is detachable.", Tone::Warn);
     if (t.watchdog) {
         say("A watchdog wakes up. It gets faster the longer you stay.", Tone::Bad);
@@ -188,6 +216,18 @@ int RunSession::nextSweep() const {
     return bal::BIO_SWEEP_EVERY - secs % bal::BIO_SWEEP_EVERY;
 }
 
+bool RunSession::shedAt(int s) const {
+    return t.doctrine == Doctrine::Loadshed && s >= bal::LOADSHED_EVERY && s % bal::LOADSHED_EVERY < bal::LOADSHED_SECS;
+}
+bool RunSession::shedding() const { return !over() && shedAt(secs); }
+int RunSession::nextShed() const {
+    if (t.doctrine != Doctrine::Loadshed || over()) return -1;
+    if (shedAt(secs)) return 0;
+    return bal::LOADSHED_EVERY - secs % bal::LOADSHED_EVERY;
+}
+int RunSession::shedLeft() const { return shedding() ? bal::LOADSHED_SECS - secs % bal::LOADSHED_EVERY : 0; }
+void RunSession::endShed() { g.net.shed = false; }
+
 int RunSession::secondsLeft() const {
     double r = rateNow(anchoring ? bal::ANCHOR_TRACE_MULT : 1.0);
     return r <= 0 ? 999 : static_cast<int>((100.0 - trace) / r);
@@ -199,6 +239,32 @@ bool RunSession::advance(int seconds, double mult) {
         else trace += rateNow(mult);
         secs += 1;
         if (trace >= 100.0) { trace = 100.0; traced(); return true; }
+        // ACCORD jammer: once a night, the trace freezes on its own when it gets close.
+        if (accordFreeze && freezeLeft == 0 && trace >= bal::ACCORD_FREEZE_AT) {
+            accordFreeze = false;
+            freezeLeft = bal::FREEZE_SECS;
+            say(accordFreezeName + " (ACCORD) FREEZES the trace at " + std::to_string(static_cast<int>(trace)) + "% for " + std::to_string(bal::FREEZE_SECS) + "s.",
+                Tone::Info);
+            emit(Ev::AccordFreeze, accordFreezeName);
+        }
+        // LOADSHED: the grid drops (and restores) every subnet not on HOUSE POWER.
+        if (t.doctrine == Doctrine::Loadshed) {
+            bool was = g.net.shed, now = shedAt(secs);
+            if (now != was) {
+                int exposed = 0;
+                g.net.shed = false;
+                for (auto* gw : g.net.openBays()) if (g.net.bayOnline(*gw) && !g.net.housePowered(gw->id)) ++exposed;
+                g.net.shed = now;
+                if (now) {
+                    ++sheds;
+                    if (exposed) say("LOADSHED. The grid drops your subnets for " + std::to_string(bal::LOADSHED_SECS) + "s.", Tone::Bad);
+                    else say("The grid sheds load. Nothing of yours was on it.", Tone::Dim);
+                    emit(Ev::Shed, exposed ? "SUBNETS DARK" : "");
+                } else if (exposed) {
+                    say("Grid restored. Your subnets come back.", Tone::Dim);
+                }
+            }
+        }
         // BIOSENTINEL: a sweep on the beat, once the jammers stop holding them back.
         if (t.doctrine == Doctrine::Biosentinel && secs % bal::BIO_SWEEP_EVERY == 0) {
             if (freezeLeft > 0) {
@@ -226,6 +292,7 @@ bool RunSession::spike(double amount) {
 
 void RunSession::traced() {
     act = Act::None;
+    endShed();   // the ticket closes on the rack as it really is: a shed doesn't disarm the decoy
     if (const Machine* b = g.net.decoy()) {
         std::string name = b->name;
         int id = b->id;
@@ -267,7 +334,7 @@ void RunSession::traced() {
 
 void RunSession::openDoor(bool phrase) {
     doorOpen = true;
-    viaPhrase = phrase;
+    viaPhrase = viaPhrase || phrase;   // a composite's keypad opened by phrase still counts for the hold
     emit(phrase ? Ev::PhraseOk : Ev::AccessGranted);
     advance(bal::COST_LS);   // listing the files
 }
@@ -368,8 +435,10 @@ bool RunSession::extra(std::string& err) {
     Machine* h = g.net.home();
     if (h && h->working() && h->job == Job::Compute && !h->usedThisRun) who = h;
     else
-        for (auto& m : g.net.machines)
-            if (g.net.online(m) && m.job == Job::Compute && !m.usedThisRun && (!who || m.tier > who->tier)) who = &m;
+        for (auto& m : g.net.machines)   // an ACCORD compute answers twice
+            if (g.net.online(m) && m.job == Job::Compute && m.answeredThisRun < (m.accord() ? bal::ACCORD_COMPUTE : 1) &&
+                (!who || m.tier > who->tier))
+                who = &m;
     if (!who)   // a SIEGE subnet answers through its gateway
         for (auto& m : g.net.machines)
             if (m.job == Job::Gateway && g.net.bayOnline(m) && m.role == BayRole::Siege && !m.usedThisRun) { who = &m; break; }
@@ -377,7 +446,8 @@ bool RunSession::extra(std::string& err) {
     lock.maxGuesses += 1;
     lock.extraUsed = true;
     emergLeft -= 1;
-    who->usedThisRun = true;
+    who->answeredThisRun += 1;
+    who->usedThisRun = who->job != Job::Compute || who->answeredThisRun >= (who->accord() ? bal::ACCORD_COMPUTE : 1);
     say(who->name + " spins up and holds the lock open for one more guess.", Tone::Good);
     emit(Ev::Extra, who->name);
     if (!who->home) {
@@ -552,6 +622,24 @@ bool RunSession::read(int i) {
         say("Noted in your journal: passphrase for " + host + ".", Tone::Good);
         emit(Ev::PhraseLearned, host);
     }
+    if (f.revealsSite >= 0 && f.revealsSite < kTowerCount) {   // CHAIRMAN IRON: the Boardroom's maintenance log
+        int k = f.revealsSite;
+        if (g.siteState.size() < static_cast<size_t>(kTowerCount)) g.siteState.resize(kTowerCount, 0);
+        bool news = g.siteState[static_cast<size_t>(k)] == 0;
+        if (news) g.siteState[static_cast<size_t>(k)] = 1;
+        if (g.siteState[static_cast<size_t>(k)] == 1 && !g.knownPhrases.count(siteId(k))) {
+            g.knownPhrases.insert(siteId(k));
+            g.journal.push_back("Passphrase for " + siteHost(k) + ": " + sitePassphrase(g, k) + " (Boardroom maintenance log)");
+        }
+        if (news) {
+            g.journal.push_back(std::string("CHAIRMAN IRON: ") + towerCorp(k) + "'s chair iron, " + ironName(k) + ", is serviced at HELIOS SERVICE SITE " +
+                                siteName(k) + ". It goes on your board once the tower is yours.");
+            say(std::string("HELIOS SERVICE SITE ") + siteName(k) + ": noted, with its maintenance phrase. " +
+                    (towerOwned(g, k) ? "It's on your board now." : "It goes on your board once this tower is yours."),
+                Tone::Story);
+            emit(Ev::SiteFound, siteName(k));
+        }
+    }
     if (f.revealsSide >= 0) {
         int s = f.revealsSide;
         bool known = std::find(g.sidesRevealed.begin(), g.sidesRevealed.end(), s) != g.sidesRevealed.end();
@@ -574,6 +662,8 @@ bool RunSession::startDownload(int i, std::string& err) {
     actFile = i;
     actTotal = secondsToDownload(g, f.size);
     actDone = 0;
+    dlSpeed_ = downloadSpeed(g);
+    dlCarry_ = 0;
     return true;
 }
 
@@ -631,6 +721,13 @@ CaptureQuote RunSession::quote() const {
     probe.tier = hw.tier;
     probe.noise = q.noise;
     probe.trait = traitFor(t.kind);
+    if (t.kind == Kind::Site) {   // chairman iron arrives pristine and quiet, whatever happened in here
+        probe.grade = Grade::Accord;
+        q.accord = true;
+        q.ironName = ironName(t.tower);
+        q.condition = 100;
+        q.noise = 1;
+    }
     q.trait = probe.trait;
     q.possible = true;
     q.def = hw.def;
@@ -654,7 +751,7 @@ bool RunSession::startHold(Job j, std::string& err) {
     if (over() || !doorOpen || busy()) { err = "Not now."; return false; }
     CaptureQuote q = quote();
     if (!q.possible) { err = q.reason; return false; }
-    if (j != q.def && j != q.alt) { err = "That hardware can't become that."; return false; }
+    if (!q.accord && j != q.def && j != q.alt) { err = "That hardware can't become that."; return false; }
     act = Act::Hold;
     actJob = j;
     actTotal = q.holdSecs;
@@ -681,6 +778,20 @@ void RunSession::finishCapture() {
     std::string base = t.host.substr(0, t.host.find_first_of(".-"));
     m.name = base.substr(0, 10) + "-" + std::to_string(m.id);
     m.origin = "Captured from " + t.name + " (board " + std::to_string(g.mapIndex + 1) + ").";
+    if (t.kind == Kind::Site) {   // CHAIRMAN IRON: imaged to the job you chose, for good
+        m.grade = Grade::Accord;
+        m.tier = kMaxTier;
+        m.condition = 100;
+        m.noise = 1;
+        m.trait = Trait::None;
+        m.name = ironName(t.tower);
+        m.origin = std::string("Chair iron of ") + towerCorp(t.tower) + ", taken from HELIOS SERVICE SITE " + siteName(t.tower) + " and imaged as a " +
+                   jobName(actJob) + ".";
+        if (g.siteState.size() < static_cast<size_t>(kTowerCount)) g.siteState.resize(kTowerCount, 0);
+        g.siteState[static_cast<size_t>(t.tower)] = 2;
+        g.knownPhrases.erase(t.id);
+        g.journal.push_back(std::string("CHAIRMAN IRON: ") + m.name + " (ACCORD " + jobName(actJob) + ") is yours. Service site " + siteName(t.tower) + " is empty.");
+    }
     m.active = g.net.activeCount() < g.net.slots;
     g.net.machines.push_back(m);
     say("CAPTURED. " + t.name + " reboots under your control and goes dark.", Tone::Good);
@@ -688,8 +799,10 @@ void RunSession::finishCapture() {
             (m.active ? "in the rack, running." : "in cold storage (rack full)."),
         Tone::Good);
     if (m.trait != Trait::None) say(std::string("It carries a trait for life: ") + traitName(m.trait) + ". " + traitText(m.trait), Tone::Info);
+    if (m.accord()) say("ACCORD grade. " + accordEffect(m.job), Tone::Info);
     stolen = m.name;
     end = End::Steal;
+    endShed();
     emit(Ev::Captured, m.name);
 }
 
@@ -697,8 +810,14 @@ void RunSession::step() {
     if (over()) { act = Act::None; return; }
     if (act == Act::Download) {
         bool burst = burstLeft > 0;
+        const bool shed = g.net.shed;   // LOADSHED: the second runs at the speed the grid left you
+        const double frac = shed && dlSpeed_ > 0 ? std::min(1.0, downloadSpeed(g) / dlSpeed_) : 1.0;
         if (advance(1, bal::DOWNLOAD_TRACE_MULT * (burst ? bal::BURST_TRACE_MULT : 1.0))) return;
-        actDone += burst ? 2 : 1;
+        if (frac >= 1.0) actDone += burst ? 2 : 1;
+        else {
+            dlCarry_ += frac * (burst ? 2 : 1);
+            while (dlCarry_ >= 1.0) { dlCarry_ -= 1.0; actDone += 1; }
+        }
         if (burst) --burstLeft;
         if (actDone >= actTotal) finishDownload();
     } else if (act == Act::Hold) {
@@ -719,10 +838,12 @@ void RunSession::abortAction() {
         anchoring = false;
         say("You pull out. The hardware stays exactly where it was.", Tone::Dim);
         end = End::Disconnect;
+        endShed();
     }
 }
 
 void RunSession::disconnect() {
+    endShed();
     if (over()) return;
     if (act == Act::Hold) { abortAction(); return; }
     act = Act::None;
@@ -737,9 +858,11 @@ Reckoning RunSession::settle() {
     Reckoning rk;
     if (settled_) return rk;
     settled_ = true;
+    endShed();
     rk.end = end;
     rk.sacrificed = sacrificed;
     rk.captured = stolen;
+    rk.accordCaptured = end == End::Steal && t.kind == Kind::Site;
     const bool traceOut = end == End::TraceOut;
     const bool sacrifice = end == End::Sacrifice;
     const bool jobCounts = jobDone && !traceOut;   // a trace-out loses the night
@@ -980,6 +1103,21 @@ Reckoning RunSession::settle() {
                     line(std::string("HOUSE POWER: ") + towerCorp(t.tower) +
                              "'s building can feed one subnet at half its bill. Build a gateway and choose it at the rack.",
                          Tone::Good);
+                // CHAIRMAN IRON (0.9): the building's own maintenance log names the service site that keeps its chair's iron.
+                if (g.siteState.size() < static_cast<size_t>(kTowerCount)) g.siteState.resize(kTowerCount, 0);
+                int& site = g.siteState[static_cast<size_t>(t.tower)];
+                if (site == 0) {
+                    site = 1;
+                    g.journal.push_back(std::string("CHAIRMAN IRON: ") + towerCorp(t.tower) + "'s maintenance log names HELIOS SERVICE SITE " +
+                                        siteName(t.tower) + ". It's on your board.");
+                }
+                if (site == 1) {
+                    rk.sitePinned = t.tower;
+                    line(std::string("CHAIRMAN IRON: ") + towerCorp(t.tower) + "'s maintenance log names HELIOS SERVICE SITE " + siteName(t.tower) +
+                             ", where its chair's iron waits unimaged. It's pinned to your board until you take it." +
+                             (g.knownPhrases.count(siteId(t.tower)) ? " You hold its maintenance phrase." : " Its phrase was in that log - you didn't read it."),
+                         Tone::Story);
+                }
                 bool all = true;
                 for (int k = 0; k < kTowerCount; ++k) if (g.floorsCleared(k) < kFloors) all = false;
                 if (all) {
@@ -993,10 +1131,19 @@ Reckoning RunSession::settle() {
                 line("Floor " + std::to_string(t.floor + 2) + " is on your board. The way up stays open - unless they trace you.", Tone::Info);
             }
         }
-        if (rk.floorCleared >= 0) g.fortress.erase(t.id);   // a taken floor needs no record
+        if (rk.floorCleared >= 0) { g.fortress.erase(t.id); g.vaultHeld.erase(t.id); }   // a taken floor needs no record
+        if (traceOut && accordVault && rk.floorCleared < 0) {   // ACCORD vault: one objective you took stays taken, offline
+            for (auto& f : t.files)
+                if (f.kind == FileKind::Objective && f.taken && f.name != heldObjective) {
+                    g.vaultHeld[t.id] = f.name;
+                    line("...and your ACCORD vault kept " + f.name + " offline. It stays taken for your next try at this floor.", Tone::Good);
+                    break;
+                }
+        }
         if (traceOut) {   // a trace re-keys the whole tower: every phrase you hold for it goes stale
             if (g.towerKey.size() < static_cast<size_t>(kTowerCount)) g.towerKey.resize(kTowerCount, 0);
             g.towerKey[static_cast<size_t>(t.tower)] += 1;
+            g.knownPhrases.erase(siteId(t.tower));   // its service site's door shares the key
             for (int f = 0; f < kFloors; ++f) {
                 g.knownPhrases.erase(floorId(t.tower, f));
                 g.fortress.erase(floorId(t.tower, f));   // FORTRESS: every logged attempt and survey goes stale too
@@ -1028,6 +1175,15 @@ Reckoning RunSession::settle() {
         if (rec != g.fortress.end() && rec->second.blank()) g.fortress.erase(rec);
     }
 
+    if (t.kind == Kind::Site && traceOut) {   // a service site re-keys its door; nothing else is lost
+        if (g.towerKey.size() < static_cast<size_t>(kTowerCount)) g.towerKey.resize(kTowerCount, 0);
+        g.towerKey[static_cast<size_t>(t.tower)] += 1;
+        g.knownPhrases.erase(t.id);
+        rk.siteRekeyed = true;
+        line(std::string("HELIOS re-keys SERVICE SITE ") + siteName(t.tower) + "'s maintenance door. Your phrase for it is stale. The site - and " +
+                 ironName(t.tower) + " - stay where they are.",
+             Tone::Bad);
+    }
     if (jobCounts && t.kind == Kind::Story && !t.deep) {
         int idx = t.storyIndex;
         g.story = idx + 1;

@@ -17,6 +17,7 @@ const char* kindName(Kind k) {
         case Kind::Side: return "SIDE ROUTE";
         case Kind::Prototype: return "PROTOTYPE";
         case Kind::Tower: return "CORP TOWER";
+        case Kind::Site: return "SERVICE SITE";
     }
     return "?";
 }
@@ -34,6 +35,7 @@ const char* doctrineName(Doctrine d) {
     switch (d) {
         case Doctrine::Fortress: return "FORTRESS";
         case Doctrine::Biosentinel: return "BIOSENTINEL";
+        case Doctrine::Loadshed: return "LOADSHED";
         default: return "NONE";
     }
 }
@@ -47,6 +49,10 @@ const char* doctrineText(Doctrine d) {
             return "BIOSENTINEL. A watchdog on every floor that hunts twice as hungrily, and a sentinel sweep every 12s "
                    "that pings the trace (a frozen trace lets it pass). Big files: this one is a clock. Beat it with JAMMERS "
                    "(they hold the hunt back and soften the sweeps), a STEALTH subnet (BLACKOUT), proxies, FREEZE and BURST.";
+        case Doctrine::Loadshed:
+            return "LOADSHED. Every 15s the grid sheds load for 3s, and every subnet you run goes dark for it: no pooled relay or "
+                   "proxy bonus, no role, no cluster, no strike. The main rack and your deck never notice, and a subnet on HOUSE "
+                   "POWER from a tower you own stays lit. Beat it with a strong main rack, BREAKER and UPLINK, and strike between sheds.";
         default: return "";
     }
 }
@@ -73,6 +79,7 @@ HardwareSpec hardwareFor(Kind k) {
         case Kind::Guarded: return {Job::Proxy, Job::Compute, 2, 60, 3};
         case Kind::Corporate: return {Job::Compute, Job::Relay, 3, 45, 4};
         case Kind::Prototype: return {Job::Gateway, Job::Relay, 4, 70, 4};
+        case Kind::Site: return {Job::Relay, Job::Proxy, kMaxTier, 100, 1};   // chairman iron: any job, chosen at the hold
         default: return {Job::Relay, Job::Proxy, 1, 50, 2};
     }
 }
@@ -419,6 +426,20 @@ const std::vector<TowerDef>& towers() {
            "is signed by the same names as Kessler-Maru's. It was always one table."}},
          "From: chair@tidewater-biosys\nCoverage follows rent. Rent follows the accord.\nThe accord has six signatures. "
          "Keep the other four out of the minutes."},
+        {"Halden Grid", "HALDEN GRID TOWER", "tower.halden-grid.corp", Doctrine::Loadshed,
+         {{"Halden Grid: Dispatch Floor", "/dispatch", "Where the city's power is scheduled - and rationed. The lights flicker on purpose.",
+           {"load_schedule.db", "brownout_roster.csv", "meter_override.enc"}, LockType::Keypad, false, true,
+           "Dispatch blinks out for three seconds and comes back. You know now which streets they dim first, and why."},
+          {"Halden Grid: Substation Control", "/substation", "Breaker halls, a rotor on every door, and a grid that sheds the moment anything strains it.",
+           {"shed_priority.db", "tariff_curve.xls", "feeder_map.enc"}, LockType::Rotor, true, true,
+           "The substation hums behind you. The feeder map puts every clinic on Kettle Street on the circuit that sheds first - "
+           "and every data hall on the one that never does."},
+          {"Halden Grid: The Boardroom", "/board", "The room that decides who gets power when there isn't enough. The answer never changes.",
+           {"board_minutes.enc", "priority_accord.pdf", "landlord_accord.pdf"}, LockType::Cipher, true, true,
+           "HALDEN GRID, OWNED. The priority accord ranks the city by rent paid. The landlord accord is in here too - the third "
+           "copy you've read, the same six signatures. The lights at the top table have never once gone out."}},
+         "From: chair@halden-grid\nWhen the grid strains, shed the tenants. Never the towers.\nThe accord keeps the top table lit. "
+         "So does HELIOS - ask facilities what they keep in the service sites."},
     };
     return v;
 }
@@ -435,7 +456,61 @@ std::string floorHost(int tower, int floor) {
     static const char* sub[kFloors] = {"f1", "f2", "board"};
     return std::string(sub[floor]) + "." + towers()[static_cast<size_t>(tower)].host;
 }
+
+// CHAIRMAN IRON (0.9): each tower's custom hardware is serviced off the books at a HELIOS site.
+// Black-site names, one word each: the site, and the iron it keeps.
+struct SiteDef { const char* site; const char* iron; };
+const SiteDef kSites[kTowerCount] = {{"CITADEL", "MONOLITH"}, {"OSSUARY", "LEVIATHAN"}, {"FURNACE", "COLOSSUS"}};
 }  // namespace
+
+const char* siteName(int tower) { return tower >= 0 && tower < kTowerCount ? kSites[tower].site : "?"; }
+const char* ironName(int tower) { return tower >= 0 && tower < kTowerCount ? kSites[tower].iron : "?"; }
+int siteId(int tower) { return kSiteIdBase + tower; }
+int towerOfSite(int id) { return id >= kSiteIdBase && id < kSiteIdBase + kTowerCount ? id - kSiteIdBase : -1; }
+std::string siteHost(int tower) {
+    std::string n = siteName(tower);
+    for (auto& c : n) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return "svc." + n + ".helios";
+}
+std::string sitePassphrase(const GameState& g, int tower) { return floorPhrase(g.worldSeed, tower, kFloors, g.keyOf(tower)); }
+bool siteListed(const GameState& g, int tower) { return ledgerOpen(g) && towerOwned(g, tower) && g.siteOf(tower) == 1; }
+
+Target makeSite(const GameState& g, int tower) {
+    Rng r(seedOf(g.worldSeed, 0x51E0000 + static_cast<uint64_t>(tower)));
+    Target t;
+    t.id = siteId(tower);
+    t.kind = Kind::Site;
+    t.tower = tower;
+    t.floor = -1;
+    t.doctrine = towerDoctrine(tower);
+    t.name = std::string("Service Site ") + siteName(tower);
+    t.host = siteHost(tower);
+    t.blurb = std::string("Where HELIOS services ") + towerCorp(tower) + "'s chairman iron, off every register. One machine, built for the top table.";
+    t.security = 5;
+    t.traceOverride = bal::SITE_TRACE;
+    t.lock = t.doctrine == Doctrine::Fortress ? LockType::Composite : t.doctrine == Doctrine::Biosentinel ? LockType::Rotor : LockType::Cipher;
+    t.watchdog = t.doctrine == Doctrine::Biosentinel;
+    t.backdoor = true;   // a service site lives on its maintenance door
+    t.passphrase = sitePassphrase(g, tower);
+    t.stealable = true;
+    File man;
+    man.name = "service_manifest.txt";
+    man.dir = "/svc";
+    man.kind = FileKind::Intel;
+    man.size = 1;
+    man.text = std::string("HELIOS FACILITIES - SERVICE SITE ") + siteName(tower) + "\nUnit: " + ironName(tower) + " (chair iron, " + towerCorp(tower) +
+               ")\nGrade: ACCORD. Tier 5. Job: unassigned - images to order on first boot.\nNot on any asset register. Not to be discussed.";
+    t.files.push_back(man);
+    File wo;
+    wo.name = "work_order.log";
+    wo.dir = "/var/log";
+    wo.kind = FileKind::Log;
+    wo.size = 1;
+    wo.text = "[svc] ticket #" + std::to_string(r.range(40000, 49999)) + ": " + ironName(tower) + " burn-in complete.\n[svc] the chair wants it back by quarter end. "
+              "nobody tells the chair about the door.";
+    t.files.push_back(wo);
+    return t;
+}
 
 int storyCount() { return static_cast<int>(stories().size()); }
 // One new contract per board refresh: nobody posts work for you every night.
@@ -451,7 +526,7 @@ bool enterLedger(GameState& g) {
     g.act = 4;
     if (g.towerFloor.size() < static_cast<size_t>(kTowerCount)) g.towerFloor.resize(kTowerCount, 0);
     if (g.towerKey.size() < static_cast<size_t>(kTowerCount)) g.towerKey.resize(kTowerCount, 0);
-    g.journal.push_back("THE LEDGER: Kessler-Maru (FORTRESS) and Tidewater BioSys (BIOSENTINEL) are on your board.");
+    g.journal.push_back("THE LEDGER: Kessler-Maru (FORTRESS), Tidewater BioSys (BIOSENTINEL) and Halden Grid (LOADSHED) are on your board.");
     return true;
 }
 bool towerOwned(const GameState& g, int tower) { return g.floorsCleared(tower) >= kFloors; }
@@ -477,7 +552,7 @@ Target makeTowerFloor(const GameState& g, int tower, int floor) {
     t.host = floorHost(tower, floor);
     t.blurb = f.blurb;
     t.security = 5;
-    const int dz = d.doctrine == Doctrine::Fortress ? 0 : 1;
+    const int dz = std::clamp(static_cast<int>(d.doctrine) - 1, 0, 2);
     t.traceOverride = bal::TOWER_TRACE[dz][floor];
     t.lock = f.lock;
     t.watchdog = f.watchdog;
@@ -521,6 +596,17 @@ Target makeTowerFloor(const GameState& g, int tower, int floor) {
         memo.size = 1;
         memo.text = d.boardroomMemo;
         t.files.push_back(memo);
+        // CHAIRMAN IRON (0.9): the Boardroom's own maintenance log names the HELIOS service site that keeps the chair's iron.
+        File log;
+        log.name = "maintenance_log.txt";
+        log.dir = "/var/log";
+        log.kind = FileKind::Log;
+        log.size = 1;
+        log.revealsSite = tower;
+        log.text = std::string("[helios-svc] chair iron for ") + d.corp + " serviced off-site: HELIOS SERVICE SITE " + siteName(tower) + " (" +
+                   siteHost(tower) + ").\n[helios-svc] its maintenance door answers to '" + sitePassphrase(g, tower) +
+                   "'. rotate on any trace.\n[helios-svc] unit is unimaged. whoever boots it first decides what it is.";
+        t.files.push_back(log);
     }
     addLore(t, r);
     return t;
@@ -667,6 +753,8 @@ std::vector<Target> buildBoard(const GameState& g) {
         std::vector<Target> floors;
         for (int k = 0; k < kTowerCount; ++k)
             if (g.floorsCleared(k) < kFloors) floors.push_back(makeTowerFloor(g, k, g.floorsCleared(k)));
+        for (int k = 0; k < kTowerCount; ++k)   // CHAIRMAN IRON: a pinned service site stays until you take its iron
+            if (siteListed(g, k)) floors.push_back(makeSite(g, k));
         board.insert(board.begin(), floors.begin(), floors.end());
     }
     return board;

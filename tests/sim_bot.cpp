@@ -40,6 +40,8 @@ bool CHAOS = false;
 bool SUBNET = false;   // "subnet" mode: build subnets early, hunt prototypes, never take the deep job
 bool TOWER = false;    // "tower" mode: keep playing after the deep job, into Act IV
 int KIT_TIER = 3;      // the tier of the late-game owner's iron in the kit trials
+bool CHAIRS = false;   // "chairs" mode (0.9): tower mode that also goes after every pinned HELIOS service site
+Job ACCORD_PICK = Job::Proxy;   // the job the bot images chairman iron as
 // 0.8 RUNNING LEAN: the bot takes LEDGER's standby picks, scrubs loud iron it can afford, and lets towers power its subnets.
 // GHOSTNET_SIM_FAT=1 plays the same seed the 0.7 way (no standby, no scrubs) to measure what lean play saves.
 bool LEAN = std::getenv("GHOSTNET_SIM_FAT") == nullptr;
@@ -204,6 +206,7 @@ struct SimStats {
     int gateways = 0, plugged = 0, strikes = 0, clusters = 0, protos = 0, protoSeen = 0, protoTries = 0;
     int towerRuns = 0, floors = 0, rekeys = 0, prepBought = 0, sweeps = 0, misses = 0, programs = 0;
     int standbyNights = 0, standbySaved = 0, houseSaved = 0, scrubs = 0, scrubSpent = 0;
+    int siteTries = 0, siteCaptures = 0, siteRekeys = 0, accordFreezes = 0, sheds = 0, firstSiteRun = -1;
 } st;
 
 // LEDGER's picks, taken (the GUI starts them OFF; this bot always opts in).
@@ -227,13 +230,13 @@ void useStrikes(RunSession& r) {
         std::string err;
         // On a tower the bot saves BLACKOUT for when the trace is actually climbing.
         const Machine* gw = r.g.net.find(id);
-        if (r.t.kind == Kind::Tower && gw && gw->role == BayRole::Stealth && r.trace < 35) continue;
+        if ((r.t.kind == Kind::Tower || r.t.kind == Kind::Site) && gw && gw->role == BayRole::Stealth && r.trace < 35) continue;
         if (r.strikeUsable(id) && r.strike(id, err)) ++st.strikes;
     }
 }
 // Deck programs, on towers: PEEK at the door, FREEZE when the trace climbs, BURST on a big download.
 void usePrograms(RunSession& r) {
-    if (r.t.kind != Kind::Tower) return;
+    if (r.t.kind != Kind::Tower && r.t.kind != Kind::Site) return;
     for (int s = 0; s < kProgramSlots; ++s) {
         Program p = r.g.programs[s];
         bool want = (p == Program::Peek && !r.doorOpen) || (p == Program::Freeze && r.trace >= 45) ||
@@ -259,7 +262,17 @@ void checkInvariants(const GameState& g) {
         const Machine* gw = g.net.find(m.bay);
         if (!gw || gw->job != Job::Gateway || gw->bay >= 0) fail(m.name + " is plugged into something that isn't a gateway");
         if (!m.active || m.home || m.job == Job::Gateway) fail(m.name + " sits in a subnet it can't be in");
-        if (gw && static_cast<int>(g.net.bayMembers(gw->id).size()) > bal::BAY_SLOTS) fail("a subnet holds more than its slots");
+        if (gw && static_cast<int>(g.net.bayMembers(gw->id).size()) > g.net.baySlots(*gw)) fail("a subnet holds more than its slots");
+    }
+    for (auto& m : g.net.machines) {   // 0.9: chairman iron
+        if (m.accord() && (m.tier != kMaxTier || m.noise != 1 || m.trait != Trait::None || m.home)) fail(m.name + " is ACCORD iron out of spec");
+        if (!m.accord() && m.tier > 4) fail(m.name + " is tier 5 without being chairman iron");
+        if (m.accord() && g.net.decoyId == m.id) fail("chairman iron armed as the decoy");
+    }
+    if (g.net.shed) fail("the grid is still shedding between runs");
+    for (int k = 0; k < kTowerCount; ++k) {
+        if (g.siteOf(k) < 0 || g.siteOf(k) > 2) fail("service site state out of range");
+        if (towerOwned(g, k) && g.siteOf(k) == 0) fail("an owned tower's service site was never pinned");
     }
     if (g.net.relayBonus() > bal::RELAY_HARD_CAP || g.net.proxyBonus() > bal::PROXY_HARD_CAP) fail("a bonus passed its hard cap");
     if (g.netUnlocked && !g.net.home()) fail("network unlocked without N0");
@@ -296,6 +309,15 @@ void roundTrip(const GameState& g) {
     }
     if (h.net.relayBonus() != g.net.relayBonus() || h.net.proxyBonus() != g.net.proxyBonus() || h.net.upkeepTotal() != g.net.upkeepTotal())
         fail("save/load changed the network's numbers");
+    for (auto& m : g.net.machines) {
+        const Machine* k = h.net.find(m.id);
+        if (k && k->grade != m.grade) fail("save/load lost a machine's grade (chairman iron)");
+    }
+    for (int k = 0; k < kTowerCount; ++k)   // (a doctored owned tower with no site gets its log on load)
+        if (h.siteOf(k) != g.siteOf(k) && !(g.siteOf(k) == 0 && towerOwned(g, k) && h.siteOf(k) == 1)) fail("save/load lost a service site");
+    if (h.vaultHeld != g.vaultHeld) fail("save/load lost an objective the ACCORD vault holds");
+    if (h.net.computeCapacity() != g.net.computeCapacity() || h.net.jamDelay() != g.net.jamDelay() || h.net.scoutCapacity() != g.net.scoutCapacity())
+        fail("save/load changed chairman iron's numbers");
 }
 
 void solveDoor(RunSession& r) {
@@ -358,7 +380,7 @@ void playInside(RunSession& r, bool wantSteal, bool deep, const ReportView& rep)
         if (q.possible) {
             std::string err;
             ++st.steals;
-            if (r.startHold(q.def, err)) {
+            if (r.startHold(q.accord ? ACCORD_PICK : q.def, err)) {
                 runTimed(r);
                 return;
             }
@@ -387,7 +409,8 @@ void playInside(RunSession& r, bool wantSteal, bool deep, const ReportView& rep)
     order.insert(order.end(), pay.begin(), pay.end());
     if (r.t.kind == Kind::Tower)   // the way up: the facilities memo, right after the objectives
         for (size_t i = 0; i < r.t.files.size(); ++i)
-            if (r.t.files[i].phraseFor >= 0) order.insert(order.begin() + static_cast<long>(r.t.objectiveCount()), -1 - static_cast<int>(i));
+            if (r.t.files[i].phraseFor >= 0 || r.t.files[i].revealsSite >= 0)   // ...and a Boardroom's maintenance log
+                order.insert(order.begin() + static_cast<long>(r.t.objectiveCount()), -1 - static_cast<int>(i));
     for (int i : order) {
         if (r.over()) return;
         if (i < 0) {   // a memo to read
@@ -557,6 +580,7 @@ void towerPrep(GameState& g, const Target& t, bool buyPhrase, bool buySurvey = t
 void loadPrograms(GameState& g, Doctrine d) {
     for (int s = 0; s < kProgramSlots; ++s) unloadProgram(g, s);
     if (d == Doctrine::Fortress) { buyProgram(g, Program::Peek); buyProgram(g, Program::Freeze); }
+    else if (d == Doctrine::Loadshed) { buyProgram(g, Program::Burst); buyProgram(g, Program::Freeze); }
     else { buyProgram(g, Program::Freeze); buyProgram(g, Program::Burst); }
 }
 
@@ -587,11 +611,13 @@ Reckoning playFloor(GameState& g, const Target& t, uint64_t entropy) {
 }
 
 // The natural bot's retool for a doctrine, with real purchases only: a gateway in the role the
-// tower calls for, and its subnet filled with compute boxes (FORTRESS) or jammers (BIOSENTINEL).
-// Returns false if it can't afford the kit yet.
+// tower calls for, and its subnet filled with compute boxes (FORTRESS), jammers (BIOSENTINEL) or relays (LOADSHED:
+// a SPEED subnet that strikes between the sheds). Returns false if it can't afford the kit yet.
+Job kitJob(Doctrine d) { return d == Doctrine::Fortress ? Job::Compute : d == Doctrine::Loadshed ? Job::Relay : Job::Jammer; }
+BayRole kitRole(Doctrine d) { return d == Doctrine::Fortress ? BayRole::Siege : d == Doctrine::Loadshed ? BayRole::Speed : BayRole::Stealth; }
 bool retoolFor(GameState& g, Doctrine d) {
-    const Job want = d == Doctrine::Fortress ? Job::Compute : Job::Jammer;
-    const BayRole role = d == Doctrine::Fortress ? BayRole::Siege : BayRole::Stealth;
+    const Job want = kitJob(d);
+    const BayRole role = kitRole(d);
     Machine* gw = nullptr;
     for (auto& m : g.net.machines) if (m.job == Job::Gateway && m.working()) { gw = &m; break; }
     auto reserve = [&] { return 2 * g.net.upkeepTotal() + 400; };
@@ -677,13 +703,14 @@ void fitKit(GameState& g, Doctrine d) {
             v.end());
     int gw = owned(g, Job::Gateway, KIT_TIER).id;
     if (!activate(g, *g.net.find(gw)).ok) fail("kit: the gateway has no slot");
-    std::vector<Job> bay = d == Doctrine::Fortress ? std::vector<Job>{Job::Compute, Job::Compute, Job::Relay}
+    std::vector<Job> bay = d == Doctrine::Fortress   ? std::vector<Job>{Job::Compute, Job::Compute, Job::Relay}
+                         : d == Doctrine::Loadshed ? std::vector<Job>{Job::Relay, Job::Relay, Job::Proxy}
                                                    : std::vector<Job>{Job::Jammer, Job::Jammer, Job::Proxy};
     for (Job j : bay) {
         int id = owned(g, j, KIT_TIER).id;
         if (!plugIn(g, *g.net.find(id), *g.net.find(gw)).ok) fail("kit: a machine wouldn't plug in");
     }
-    setRole(g, *g.net.find(gw), d == Doctrine::Fortress ? BayRole::Siege : BayRole::Stealth);
+    setRole(g, *g.net.find(gw), kitRole(d));
     loadPrograms(g, d);
 }
 
@@ -731,6 +758,49 @@ int climb(GameState g, int tower, Doctrine kit, uint64_t entropy, int attempts, 
     }
     if (runsUsed) *runsUsed = runs;
     return g.floorsCleared(tower);
+}
+
+// 0.9 - CHAIRMAN IRON: one attempt on a pinned service site, imaging the iron as ACCORD_PICK.
+Reckoning playSite(GameState& g, const Target& t, uint64_t entropy) {
+    ReportView rep = reportView(g, t);
+    (void)panelBriefing(g, t);
+    RunSession r(g, t, entropy);
+    ++st.siteTries;
+    solveDoor(r);
+    playInside(r, true, false, rep);
+    if (!r.over()) r.disconnect();
+    st.sheds += r.sheds;
+    if (std::getenv("GHOSTNET_SIM_VERBOSE"))
+        std::printf("    site %s: end %d door %d phrase %d trace %.0f secs %d sheds %d\n", t.name.c_str(), static_cast<int>(r.end), r.doorOpen,
+                    r.viaPhrase, r.trace, r.secs, r.sheds);
+    Reckoning rk = r.settle();
+    if (rk.accordCaptured) ++st.siteCaptures;
+    if (rk.siteRekeyed) ++st.siteRekeys;
+    return rk;
+}
+// A late-game owner who owns `tower` and has its site pinned, with the doctrine's kit: tries until the iron is taken.
+struct SiteTrial { int tries = 0; bool taken = false; int traced = 0; };
+SiteTrial siteTrial(uint64_t seed, int tower, bool prep, int attempts) {
+    SiteTrial out;
+    GameState o = ledgerOwner(seed);
+    if (o.towerFloor.size() < static_cast<size_t>(kTowerCount)) o.towerFloor.resize(kTowerCount, 0);
+    o.towerFloor[static_cast<size_t>(tower)] = kFloors;
+    o.siteState.assign(kTowerCount, 0);
+    o.siteState[static_cast<size_t>(tower)] = 1;
+    for (int a = 0; a < attempts && o.siteOf(tower) == 1; ++a) {
+        repairAll(o);
+        for (auto& m : o.net.machines) m.condition = 100;
+        fitKit(o, Doctrine::Biosentinel);   // a capture is a hold: STEALTH, jammers and cover, whatever the doctrine
+        Target t = makeSite(o, tower);
+        if (prep) towerPrep(o, t, true);
+        o.credits = std::max(o.credits, 30000);
+        Reckoning rk = playSite(o, t, seed * 7 + static_cast<uint64_t>(a));
+        ++out.tries;
+        if (rk.siteRekeyed) ++out.traced;
+        checkInvariants(o);
+    }
+    out.taken = o.siteOf(tower) == 2;
+    return out;
 }
 
 }  // namespace
@@ -949,6 +1019,319 @@ void leanSelfTest() {
             repairAll(o);
         }
         CHECK(towerOwned(o, 1) && o.net.houseTower(gw) == 1, "the Boardroom's house power goes to your subnet");
+    }
+}
+
+// 0.9 - CHAIRMAN IRON: Halden Grid's LOADSHED, the Boardroom's maintenance log, service sites, ACCORD iron, save v8.
+void chairsSelfTest() {
+    auto iron = [](GameState& h, Job j, bool accord) -> int {
+        Machine m;
+        m.id = h.net.nextId++;
+        m.name = std::string(accord ? "ACC" : "STD") + std::to_string(m.id);
+        m.job = j;
+        m.tier = accord ? kMaxTier : 3;
+        m.grade = accord ? Grade::Accord : Grade::None;
+        m.noise = 1;
+        m.captured = true;
+        m.condition = 100;
+        h.net.machines.push_back(m);
+        return m.id;
+    };
+    auto strip = [](GameState& h) {   // the main rack down to N0
+        auto& v = h.net.machines;
+        v.erase(std::remove_if(v.begin(), v.end(), [](const Machine& m) { return !m.home; }), v.end());
+        h.net.decoyId = -1;
+    };
+    // The third tower, on the board from the start of Act IV.
+    {
+        GameState h = ledgerOwner(21);
+        std::vector<Target> b = buildBoard(h);
+        int towers = 0;
+        bool halden = false;
+        for (auto& t : b)
+            if (t.kind == Kind::Tower) {
+                ++towers;
+                if (t.tower == 2 && t.doctrine == Doctrine::Loadshed && t.backdoor && t.traceOverride == bal::TOWER_TRACE[2][0]) halden = true;
+            }
+        CHECK(towers == kTowerCount && halden, "Halden Grid (LOADSHED) leads the board with the other towers");
+        CHECK(std::string(doctrineText(Doctrine::Loadshed)).find("HOUSE") != std::string::npos, "LOADSHED says plainly what keeps a subnet lit");
+        CHECK(h.journal.back().find("Halden Grid") != std::string::npos, "the Ledger's journal line names all three towers");
+    }
+    // ACCORD numbers, refusals and the bill.
+    {
+        GameState h = ledgerOwner(22);
+        strip(h);
+        int ar = iron(h, Job::Relay, true), r1 = iron(h, Job::Relay, false), r2 = iron(h, Job::Relay, false);
+        for (int id : {ar, r1, r2}) CHECK(activate(h, *h.net.find(id)).ok, "racked");
+        CHECK(h.net.relayBonus() == bal::RELAY_CAP + bal::ACCORD_RELAY_LIFT, "an ACCORD relay lifts the rack's relay cap");
+        CHECK(jobValue(*h.net.find(ar)) == bal::ACCORD_RELAY, "an ACCORD relay is worth 45 on its own");
+        CHECK(upkeepOf(*h.net.find(ar)) == bal::ACCORD_UPKEEP, "chairman iron bills one flat number");
+        Machine& a = *h.net.find(ar);
+        CHECK(!rejob(h, a, Job::Proxy).ok && a.job == Job::Relay, "chairman iron can't be re-imaged");
+        CHECK(!scrap(h, ar).ok && h.net.find(ar), "chairman iron can't be scrapped");
+        strip(h);
+        int ap = iron(h, Job::Proxy, true), p1 = iron(h, Job::Proxy, false);
+        for (int id : {ap, p1}) activate(h, *h.net.find(id));
+        CHECK(h.net.proxyBonus() == bal::ACCORD_PROXY + bal::PROXY_BONUS[3] && h.net.proxyBonus() <= bal::PROXY_CAP + bal::ACCORD_PROXY_LIFT,
+              "an ACCORD proxy adds 30 under a lifted cap");
+        CHECK(!armDecoy(h, *h.net.find(ap), true).ok && h.net.decoyId < 0, "chairman iron can never be the decoy");
+        h.net.decoyId = ap;
+        CHECK(!h.net.decoy(), "...not even by a doctored decoy id");
+        h.net.decoyId = -1;
+        CHECK(armDecoy(h, *h.net.find(p1), true).ok, "an ordinary proxy still can");
+        disarmDecoy(h);
+        strip(h);
+        int ac = iron(h, Job::Compute, true), c1 = iron(h, Job::Compute, false), c2 = iron(h, Job::Compute, false);
+        for (int id : {ac, c1, c2}) activate(h, *h.net.find(id));
+        CHECK(h.net.computeCapacity() == bal::COMPUTE_MAX + 1, "an ACCORD compute answers twice and lifts the cap by one");
+        strip(h);
+        int aj = iron(h, Job::Jammer, true);
+        activate(h, *h.net.find(aj));
+        CHECK(h.net.jamDelay() == bal::ACCORD_JAM_DELAY && h.net.jamSpikeCut() == bal::ACCORD_JAM_SPIKE, "an ACCORD jammer passes the old caps");
+        {   // ...and freezes the trace once, on its own
+            Target t = testTarget(LockType::None);
+            RunSession r(h, t, 300);
+            CHECK(r.accordFreeze, "the ACCORD freeze is armed at connect");
+            r.trace = bal::ACCORD_FREEZE_AT + 0.5;
+            std::string err;
+            r.startDownload(0, err);
+            r.step();
+            CHECK(r.freezeLeft > 0 && !r.accordFreeze, "it freezes at 80%");
+            r.disconnect();
+            r.settle();
+        }
+        strip(h);
+        int ag = iron(h, Job::Gateway, true);
+        activate(h, *h.net.find(ag));
+        std::vector<int> mem;
+        for (Job j : {Job::Relay, Job::Proxy, Job::Jammer, Job::Scout}) {
+            Machine m;
+            m.id = h.net.nextId++;
+            m.name = "M" + std::to_string(m.id);
+            m.job = j;
+            m.tier = 2;
+            m.noise = 1;
+            m.condition = 100;
+            h.net.machines.push_back(m);
+            mem.push_back(m.id);
+        }
+        for (int id : mem) CHECK(plugIn(h, *h.net.find(id), *h.net.find(ag)).ok, "an ACCORD gateway holds four");
+        CHECK(h.net.baySlots(*h.net.find(ag)) == bal::ACCORD_GATE_SLOTS && h.net.bayBudget(*h.net.find(ag)) == bal::ACCORD_GATE_POWER,
+              "an ACCORD gateway's slots and power");
+        CHECK(h.net.effTier(*h.net.find(mem[0])) == 3, "...and its members act a tier higher");
+        roundTrip(h);
+        {   // an unpaid bill switches chairman iron off like anything else
+            strip(h);
+            int ax = iron(h, Job::Relay, true);
+            activate(h, *h.net.find(ax));
+            h.credits = 0;
+            Target t = testTarget(LockType::None);
+            RunSession r(h, t, 301);
+            std::string err;
+            r.trace = 99.99;   // traced with no decoy: a billable night, and nothing to pay it with
+            r.startDownload(0, err);
+            while (r.busy() && !r.over()) r.step();
+            CHECK(r.end == End::TraceOut, "traced, broke");
+            r.settle();
+            CHECK(!h.net.find(ax)->active, "an unpaid bill takes chairman iron dark too");
+        }
+    }
+    // The paper trail: the Boardroom's maintenance log, the pinned site, its phrase.
+    {
+        GameState h = ledgerOwner(23);
+        Target bd = makeTowerFloor(h, 2, kFloors - 1);
+        int logIdx = -1;
+        for (size_t i = 0; i < bd.files.size(); ++i) if (bd.files[i].revealsSite == 2) logIdx = static_cast<int>(i);
+        CHECK(logIdx >= 0 && bd.files[size_t(logIdx)].text.find(sitePassphrase(h, 2)) != std::string::npos, "every Boardroom keeps a maintenance log");
+        bd.lock = LockType::None;
+        bd.doctrine = Doctrine::None;
+        bd.watchdog = false;
+        bd.traceOverride = 0.1;
+        {
+            RunSession r(h, bd, 310);
+            CHECK(r.read(logIdx), "the log reads");
+            r.disconnect();
+            r.settle();
+        }
+        CHECK(h.siteOf(2) == 1 && h.knownPhrases.count(siteId(2)) && !siteListed(h, 2), "reading it pins the site - listed once the tower is yours");
+        h.towerFloor[2] = kFloors;
+        CHECK(siteListed(h, 2), "an owned tower lists its service site");
+        Target site = makeSite(h, 2);
+        CHECK(site.kind == Kind::Site && site.security == 5 && site.traceOverride == bal::SITE_TRACE && site.doctrine == Doctrine::Loadshed &&
+                  site.passphrase == sitePassphrase(h, 2) && site.stealable,
+              "a service site: security 5, the deep job's trace, the tower's doctrine");
+        int pay = 0;
+        for (auto& f : site.files) pay += f.kind == FileKind::Paydata ? 1 : 0;
+        CHECK(pay == 0, "a service site has no paydata");
+        // A trace re-keys its door; nothing else is lost.
+        size_t machines = h.net.machines.size();
+        int key = h.keyOf(2);
+        {
+            RunSession r(h, site, 311);
+            r.trace = 99.9;
+            r.phrase("WRONGWORD");
+            CHECK(r.end == End::TraceOut, "traced at a service site");
+            Reckoning rk = r.settle();
+            CHECK(rk.siteRekeyed, "the reckoning says the site re-keyed");
+        }
+        CHECK(h.keyOf(2) == key + 1 && !h.knownPhrases.count(siteId(2)) && h.siteOf(2) == 1 && h.net.machines.size() == machines &&
+                  siteListed(h, 2),
+              "a trace re-keys the site and takes nothing else");
+        // The capture: any job, chosen at the hold, for good.
+        Target s2 = makeSite(h, 2);
+        s2.lock = LockType::None;
+        s2.doctrine = Doctrine::None;
+        s2.watchdog = false;
+        s2.traceOverride = 0.1;
+        {
+            RunSession r(h, s2, 312);
+            CaptureQuote q = r.quote();
+            CHECK(q.possible && q.accord && q.tier == kMaxTier && q.noise == 1 && q.condition == 100 && q.ironName == ironName(2), "the quote names chairman iron");
+            CHECK(q.holdSecs == s2.security * 6, "the hold is security x 6s");
+            std::string err;
+            CHECK(r.startHold(Job::Vault, err), "any job at a service site");
+            while (r.busy()) r.step();
+            CHECK(r.end == End::Steal, "held to the end");
+            Reckoning rk = r.settle();
+            CHECK(rk.accordCaptured, "the reckoning knows it was chairman iron");
+        }
+        const Machine* got = nullptr;
+        for (auto& m : h.net.machines) if (m.accord()) got = &m;
+        CHECK(got && got->job == Job::Vault && got->tier == kMaxTier && got->name == ironName(2) && got->noise == 1 && got->trait == Trait::None,
+              "ACCORD VAULT T5, named for its tower");
+        CHECK(h.siteOf(2) == 2 && !siteListed(h, 2), "the site empties once its iron is taken");
+        bool listed = false;
+        for (auto& t : buildBoard(h)) listed = listed || t.kind == Kind::Site;
+        CHECK(!listed, "...and leaves the board");
+        checkInvariants(h);
+        roundTrip(h);
+        // The ACCORD vault: one objective you took stays taken through a trace.
+        {
+            Target f = makeTowerFloor(h, 1, 0);
+            f.lock = LockType::None;
+            f.doctrine = Doctrine::None;
+            f.watchdog = false;
+            f.traceOverride = 0.1;
+            RunSession r(h, f, 313);
+            CHECK(r.accordVault, "the ACCORD vault is armed at connect");
+            int obj = -1;
+            for (size_t i = 0; i < r.t.files.size(); ++i) if (r.t.files[i].kind == FileKind::Objective) { obj = static_cast<int>(i); break; }
+            std::string err;
+            r.startDownload(obj, err);
+            while (r.busy()) r.step();
+            std::string name = r.t.files[size_t(obj)].name;
+            r.trace = 99.99;
+            r.startDownload(obj + 1, err);
+            while (r.busy() && !r.over()) r.step();
+            CHECK(r.end == End::TraceOut, "traced on the floor");
+            r.settle();
+            CHECK(h.vaultHeld.count(f.id) && h.vaultHeld[f.id] == name, "the vault kept one objective");
+            roundTrip(h);
+            RunSession r2(h, makeTowerFloor(h, 1, 0), 314);
+            bool held = false;
+            for (auto& x : r2.t.files) held = held || (x.name == name && x.taken);
+            CHECK(held && r2.heldObjective == name, "it counts as taken next time");
+            r2.disconnect();
+            r2.settle();
+        }
+    }
+    // An ACCORD scout pulls one doctrine secret with each new report.
+    {
+        GameState h = ledgerOwner(24);
+        strip(h);
+        int sc = iron(h, Job::Scout, true);
+        activate(h, *h.net.find(sc));
+        h.net.refillScout();
+        CHECK(h.net.scoutCapacity() == bal::ACCORD_SCOUT_CHARGES, "three charges");
+        Target f = makeTowerFloor(h, 1, 0);
+        CHECK(scanTarget(h, f).ok && h.knownPhrases.count(f.id) && h.reports[f.id] == 3, "a scanned floor gives up its phrase");
+        Target k0 = makeTowerFloor(h, 0, 0);
+        CHECK(scanTarget(h, k0).ok && h.fortress.count(k0.id) && h.fortress[k0.id].peeks.size() == 1, "a FORTRESS floor gives up one keypad box");
+        roundTrip(h);
+    }
+    // LOADSHED: every 15s the subnets go dark for 3s - except one on HOUSE POWER.
+    {
+        GameState h = ledgerOwner(25);
+        fitKit(h, Doctrine::Loadshed);
+        int gw = -1;
+        for (auto& m : h.net.machines) if (m.job == Job::Gateway) gw = m.id;
+        Target t = makeTowerFloor(h, 2, 0);
+        t.lock = LockType::None;
+        t.traceOverride = 0.01;
+        t.watchdog = false;
+        RunSession r(h, t, 320);
+        int relayLit = h.net.relayBonus(), proxyLit = h.net.proxyBonus();
+        CHECK(!r.shedding() && r.nextShed() > 0 && std::count(r.strikeBays.begin(), r.strikeBays.end(), gw) == 1, "no shed at connect");
+        while (r.secs < bal::LOADSHED_EVERY && !r.over()) { std::string err; r.startDownload(0, err); r.step(); r.abortAction(); }
+        CHECK(r.shedding() && h.net.shed && !h.net.bayOnline(*h.net.find(gw)) && r.sheds == 1, "the grid sheds at 15s");
+        {
+            std::string err;
+            r.startDownload(0, err);
+            CHECK(h.net.relayBonus() < relayLit && h.net.proxyBonus() < proxyLit && !r.strikeUsable(gw), "no subnet bonus, no strike while it sheds");
+            r.abortAction();
+        }
+        CHECK(h.net.decoyId < 0 || h.net.decoy(), "a shed never quietly disarms a decoy");
+        while (r.secs < bal::LOADSHED_EVERY + bal::LOADSHED_SECS && !r.over()) { std::string err; r.startDownload(0, err); r.step(); r.abortAction(); }
+        CHECK(!r.shedding() && !h.net.shed && h.net.bayOnline(*h.net.find(gw)) && h.net.relayBonus() == relayLit, "the grid comes back after 3s");
+        r.disconnect();
+        r.settle();
+        CHECK(!h.net.shed, "the grid never stays shed after a run");
+        // HOUSE POWER keeps a subnet lit.
+        h.towerFloor[0] = kFloors;
+        h.siteState.assign(kTowerCount, 0);
+        h.siteState[0] = 1;
+        CHECK(setHousePower(h, 0, gw).ok, "house power");
+        RunSession r2(h, t, 321);
+        while (r2.secs < bal::LOADSHED_EVERY && !r2.over()) { std::string err; r2.startDownload(0, err); r2.step(); r2.abortAction(); }
+        CHECK(r2.shedding() && h.net.bayOnline(*h.net.find(gw)) && h.net.relayBonus() == relayLit, "a subnet on HOUSE POWER stays lit through a shed");
+        r2.disconnect();
+        r2.settle();
+        // A trace during a shed still finds the decoy subnet.
+        clearStandby(h);
+        h.net.house.clear();
+        armDecoy(h, *h.net.find(gw), true);
+        CHECK(h.net.decoyId == gw, "a decoy subnet");
+        RunSession r3(h, t, 322);
+        while (r3.secs < bal::LOADSHED_EVERY && !r3.over()) { std::string err; r3.startDownload(0, err); r3.step(); r3.abortAction(); }
+        CHECK(r3.shedding(), "shedding");
+        r3.trace = 99.999;
+        { std::string err; r3.startDownload(0, err); while (r3.shedding() && !r3.over()) r3.step(); }
+        CHECK(r3.end == End::Sacrifice, "a trace during a shed still burns the decoy subnet, not you");
+        r3.settle();
+        checkInvariants(h);
+    }
+    // Save v8: a v7 save loads with Halden Grid unclimbed and an owned tower's site pinned.
+    {
+        GameState h = ledgerOwner(26);
+        h.towerFloor.assign(2, 0);
+        h.towerKey.assign(2, 0);
+        h.towerFloor[0] = kFloors;
+        std::string err;
+        CHECK(saveGame(h, &err), "save");
+        std::ifstream in(savePath());
+        std::stringstream ss;
+        ss << in.rdbuf();
+        in.close();
+        std::string txt = ss.str(), out;
+        std::istringstream lines(txt);
+        std::string line;
+        while (std::getline(lines, line)) {
+            if (line.rfind("GHOSTNET ", 0) == 0) line = "GHOSTNET 7";
+            if (line.rfind("site ", 0) == 0 || line.rfind("tower 2", 0) == 0) continue;
+            if (line.rfind("m ", 0) == 0) line = line.substr(0, line.find_last_of(' '));   // v7 machines have no grade
+            out += line + "\n";
+        }
+        { std::ofstream o(savePath(), std::ios::trunc); o << out; }
+        std::remove(saveTempPath().c_str());
+        GameState l;
+        CHECK(loadGame(l, &err), "a v7 save loads: " + err);
+        CHECK(l.towerFloor.size() == static_cast<size_t>(kTowerCount) && l.floorsCleared(2) == 0 && l.floorsCleared(0) == kFloors, "Halden Grid starts unclimbed");
+        CHECK(l.siteOf(0) == 1 && siteListed(l, 0), "a tower owned before 0.9 pins its service site on load");
+        bool said = false;
+        for (auto& j : l.journal) said = said || j.find("Halden Grid") != std::string::npos;
+        CHECK(said, "the journal says a third tower opened");
+        for (auto& m : l.net.machines) CHECK(!m.accord(), "nothing becomes chairman iron by loading");
+        checkInvariants(l);
     }
 }
 
@@ -1742,12 +2125,16 @@ void selfTest() {
             std::vector<Target> b2 = buildBoard(o);
             int towersListed = 0;
             for (auto& t : b2) if (t.kind == Kind::Tower) ++towersListed;
-            CHECK(towersListed == 1, "an owned tower leaves the board");
+            CHECK(towersListed == kTowerCount - 1, "an owned tower leaves the board");
+            int sites = 0;
+            for (auto& t : b2) if (t.kind == Kind::Site) { ++sites; CHECK(t.tower == 1 && t.id == siteId(1), "the owned tower's service site is listed"); }
+            CHECK(sites == 1 && o.siteOf(1) == 1, "owning a tower pins its service site");
             roundTrip(o);
         }
     }
     leanSelfTest();
-    if (!problems) std::printf("selftest: keypad marks, programs, jammer/vault, traits, memorial, subnets, strikes, prototypes, composite, ledger, capture timing, lock input, save recovery, kessler records, running lean - OK\n");
+    chairsSelfTest();
+    if (!problems) std::printf("selftest: keypad marks, programs, jammer/vault, traits, memorial, subnets, strikes, prototypes, composite, ledger, capture timing, lock input, save recovery, kessler records, running lean, chairman iron - OK\n");
 }
 
 int main(int argc, char** argv) {
@@ -1756,7 +2143,8 @@ int main(int argc, char** argv) {
     std::string mode = argc > 3 ? argv[3] : "careful";
     CHAOS = mode == "chaos";
     SUBNET = mode == "subnet";
-    TOWER = mode == "tower";
+    CHAIRS = mode == "chairs";
+    TOWER = mode == "tower" || CHAIRS;
     std::srand(static_cast<unsigned>(seed));
     auto dir = std::filesystem::temp_directory_path() / ("ghostnet-sim-" + std::to_string(seed) + "-" + mode);
     paths::overrideSaveDir(dir.string());
@@ -1770,9 +2158,31 @@ int main(int argc, char** argv) {
     for (int i = 0; i < runs && (!g.deepDone || TOWER); ++i) {
         if (g.deepDone && TOWER) {   // Act IV: the bot opens the Ledger and climbs with whatever it built
             if (enterLedger(g)) std::printf("--- ACT IV: THE LEDGER ---\n");
+            int sk = -1;   // CHAIRS: a pinned service site comes first
+            for (int c = 0; c < kTowerCount && CHAIRS && sk < 0 && i % 3 == 0; ++c) if (siteListed(g, c)) sk = c;   // every third night
+            if (sk >= 0 && g.credits >= 2500 && g.net.externalCount() < bal::MAX_EXTERNAL) {
+                repairAll(g);
+                if (retoolFor(g, Doctrine::Biosentinel)) {   // a hold wants STEALTH and jammers, whatever the doctrine
+                    static const Job picks[3] = {Job::Proxy, Job::Relay, Job::Jammer};
+                    ACCORD_PICK = picks[st.siteCaptures % 3];
+                    Target t = makeSite(g, sk);
+                    towerPrep(g, t, true);
+                    leanUp(g, t);
+                    Reckoning rk = playSite(g, t, seed * 7919 + static_cast<uint64_t>(i));
+                    leanTally(rk);
+                    if (rk.accordCaptured && st.firstSiteRun < 0) st.firstSiteRun = st.runs + st.towerRuns + st.siteTries;
+                    checkInvariants(g);
+                    roundTrip(g);
+                    std::printf("run %2d  %-34s %-10s credits %6d  site %d  accord %d\n", st.runs + st.towerRuns + st.siteTries, t.name.c_str(),
+                                rk.end == End::TraceOut ? "TRACED" : rk.end == End::Sacrifice ? "SACRIFICE" : rk.accordCaptured ? "ACCORD" : "short",
+                                g.credits, sk, st.siteCaptures);
+                    continue;
+                }
+            }
             int k = -1;
             for (int c = 0; c < kTowerCount && k < 0; ++c) if (g.floorsCleared(c) < kFloors) k = c;
-            if (k < 0) break;
+            if (k < 0 && !CHAIRS) break;
+            if (k < 0) goto farm;   // every tower owned: farm (and come back for any site still pinned)
             repairAll(g);
             for (auto& m : g.net.machines) if (!m.active && !m.dark() && m.bay < 0 && m.job != Job::Compute && m.job != Job::Jammer) activate(g, m);
             bool ready = g.credits >= 2500 && retoolFor(g, towerDoctrine(k));
@@ -1785,16 +2195,16 @@ int main(int argc, char** argv) {
             leanTally(rk);
             checkInvariants(g);
             roundTrip(g);
-            std::printf("run %2d  %-34s %-10s credits %6d  tower %d floors %d/%d  act %d\n", st.runs + st.towerRuns, t.name.c_str(),
+            std::printf("run %2d  %-34s %-10s credits %6d  tower %d floors %d/%d  act %d\n", st.runs + st.towerRuns + st.siteTries, t.name.c_str(),
                         rk.end == End::TraceOut ? "TRACED" : rk.end == End::Sacrifice ? "SACRIFICE" : rk.floorCleared >= 0 ? "FLOOR" : "short",
-                        g.credits, k, g.floorsCleared(0), g.floorsCleared(1), g.act);
+                        g.credits, k, g.floorsCleared(0) + g.floorsCleared(1) + g.floorsCleared(2), kTowerCount * kFloors, g.act);
             continue;
             }
         }
     farm:
         manage(g);
         std::vector<Target> board = buildBoard(g);
-        auto usable = [&](const Target& t) { return !g.burned.count(t.id); };
+        auto usable = [&](const Target& t) { return !g.burned.count(t.id) && t.kind != Kind::Site; };   // sites: CHAIRS mode only, above
         bool deepReady = g.netUnlocked && (g.knownPhrases.count(kDeepId) || CHAOS) &&
                          g.net.relayBonus() + g.net.proxyBonus() >= 45 && g.deck.uplink + g.deck.shroud >= 3;
         bool early = st.deepAttempts == 0 && !SUBNET;
@@ -1879,7 +2289,7 @@ int main(int argc, char** argv) {
     if (TOWER) {
         // Kit trials on a fresh owner: a matched build takes each tower; one build against the wrong doctrine fails.
         int bad = 0;
-        const Doctrine docs[2] = {Doctrine::Fortress, Doctrine::Biosentinel};
+        auto wrongFor = [](Doctrine d) { return d == Doctrine::Fortress ? Doctrine::Biosentinel : Doctrine::Fortress; };
         {   // 0.7 - Kessler-Maru: the wall is the first visit. The matched kit takes every floor on its first visit; the wrong
             // kit can't, but patience, surveys and BREAKER get it there later; BREAKER 0 never opens a door.
             const uint64_t ks = seed * 31;
@@ -1909,7 +2319,7 @@ int main(int argc, char** argv) {
         for (int k = 0; k < kTowerCount; ++k) {
             if (towerDoctrine(k) == Doctrine::Fortress) continue;   // trialled above
             GameState o = ledgerOwner(seed * 31 + static_cast<uint64_t>(k));
-            Doctrine d = towerDoctrine(k), wrong = docs[d == Doctrine::Fortress ? 1 : 0];
+            Doctrine d = towerDoctrine(k), wrong = wrongFor(d);
             int used = 0, used2 = 0;
             int got = climb(o, k, d, seed + 1000 * static_cast<uint64_t>(k), 6, &used);
             int miss = climb(o, k, wrong, seed + 1000 * static_cast<uint64_t>(k) + 500, 6, nullptr);
@@ -1924,6 +2334,28 @@ int main(int argc, char** argv) {
         }
         std::printf("TOWER STATS: tower runs %d floors %d re-keys %d prep %d sweeps %d logged-misses %d programs %d\n", st.towerRuns, st.floors,
                     st.rekeys, st.prepBought, st.sweeps, st.misses, st.programs);
+        if (CHAIRS) {
+            // 0.9 - CHAIRMAN IRON: on a fresh owner with the doctrine's kit, every service site falls to prep and patience,
+            // and a trace there only ever re-keys the door.
+            int baseTries = st.siteTries, baseCaps = st.siteCaptures;
+            for (int k = 0; k < kTowerCount; ++k) {
+                ACCORD_PICK = Job::Proxy;
+                SiteTrial prepped = siteTrial(seed * 41 + static_cast<uint64_t>(k), k, true, 8);
+                SiteTrial fresh = siteTrial(seed * 43 + static_cast<uint64_t>(k), k, false, 8);
+                std::printf("SITE TRIAL %s (%s): with prep %s in %d tries (%d traced); no prep %s in %d tries (%d traced)\n", siteName(k),
+                            doctrineName(towerDoctrine(k)), prepped.taken ? "TAKEN" : "not taken", prepped.tries, prepped.traced,
+                            fresh.taken ? "TAKEN" : "not taken", fresh.tries, fresh.traced);
+                if (!prepped.taken) { std::printf("FAIL: service site %s was not taken with prep in 8 tries\n", siteName(k)); ++bad; }
+            }
+            st.siteTries = baseTries;
+            st.siteCaptures = baseCaps;
+            int accord = 0;
+            for (auto& m : g.net.machines) accord += m.accord() ? 1 : 0;
+            std::printf("CHAIRS STATS: site tries %d captures %d re-keys %d sheds %d first ACCORD at run %d; ACCORD iron owned %d; towers owned %d/%d\n",
+                        st.siteTries, st.siteCaptures, st.siteRekeys, st.sheds, st.firstSiteRun, accord,
+                        static_cast<int>(towerOwned(g, 0)) + static_cast<int>(towerOwned(g, 1)) + static_cast<int>(towerOwned(g, 2)), kTowerCount);
+            if (accord != st.siteCaptures) { std::printf("FAIL: ACCORD iron owned doesn't match the captures\n"); ++bad; }
+        }
         if (!g.deepDone || g.act != 4) { std::printf("FAIL: the bot never reached Act IV\n"); ++bad; }
         if (problems) { std::printf("problems in the kit trials: %d\n", problems); return 1; }
         if (bad) return 1;

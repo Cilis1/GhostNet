@@ -3,7 +3,7 @@ cmake_policy(SET CMP0091 NEW)   # lets us pick the static MSVC runtime
 
 project(GhostNet LANGUAGES C CXX)
 
-set(GHOSTNET_VERSION "0.8.0" CACHE STRING "Version stamped into the binaries")
+set(GHOSTNET_VERSION "0.9.0" CACHE STRING "Version stamped into the binaries")
 set(GHOSTNET_REPO "Cilis1/GhostNet" CACHE STRING "GitHub owner/repo the installer is pinned to")
 set(GHOSTNET_SIGNING_PUBKEY_HEX "" CACHE STRING "Optional ECDSA P-256 public key (X||Y hex) the installer requires")
 
@@ -149,6 +149,11 @@ endforeach()
 # Kessler trials (first visit, patience, slow, wall) prove persistent codes reward patience but not a bare deck.
 foreach(seed 3 7 19)
   add_test(NAME sim_tower_${seed} COMMAND ghostnet_sim ${seed} 110 tower)
+endforeach()
+# 0.9 Chairman Iron: owned towers' maintenance logs pin the service sites; the bot holds them for ACCORD iron,
+# and the site trials prove a prepared hold takes each one.
+foreach(seed 3 9)
+  add_test(NAME sim_chairs_${seed} COMMAND ghostnet_sim ${seed} 140 chairs)
 endforeach()
 
 # The headless build can also play its own UI with scripted clicks and typing.

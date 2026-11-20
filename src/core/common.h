@@ -11,7 +11,12 @@
 // ---------------------------------------------------------------------------
 enum class Job { Relay = 0, Proxy = 1, Scout = 2, Compute = 3, Jammer = 4, Vault = 5, Gateway = 6 };
 constexpr int kJobCount = 7;
-constexpr int kMaxTier = 5;   // T4 is captured from prototype sites; T5 exists only as a cluster of T4s
+constexpr int kMaxTier = 5;   // T4 is captured from prototype sites; T5 is a cluster of T4s - or chairman iron (0.9)
+
+// CHAIRMAN IRON (0.9): a tower's own custom hardware, captured from the HELIOS service site its Boardroom's
+// maintenance log names. ACCORD grade: tier 5 in a job you choose at the capture, for good. Cheap to run,
+// signal 1 - and it can never be the decoy or re-imaged.
+enum class Grade { None = 0, Accord = 1 };
 
 // A GATEWAY opens a subnet bay. The bay's role is set between runs.
 enum class BayRole { Stealth = 0, Speed = 1, Siege = 2 };
@@ -36,7 +41,7 @@ struct Machine {
     int id = 0;
     std::string name;
     Job job = Job::Relay;
-    int tier = 1;               // 1..4 (4 only from prototype sites)
+    int tier = 1;               // 1..5 (4 only from prototype sites, 5 only chairman iron)
     bool captured = false;
     bool home = false;
     bool active = false;        // in the rack (running) vs cold storage
@@ -49,9 +54,12 @@ struct Machine {
     BayRole role = BayRole::Speed;   // gateways only: what the bay does
     bool bayOn = true;          // gateways only: the whole subnet's power switch
     bool usedThisRun = false;   // compute favour already given this run
+    int answeredThisRun = 0;    // emergency attempts it has held open tonight (an ACCORD compute answers twice)
     // STANDBY (0.8): powered down for tonight's connection only - not billed, not worn, no effect.
     // Set at the briefing, cleared at the reckoning (or on leaving the briefing). Never saved.
     bool standby = false;
+    Grade grade = Grade::None;  // 0.9: chairman iron (fixed for life)
+    bool accord() const { return grade == Grade::Accord; }
     bool dark() const { return condition <= 0; }
     bool working() const { return active && !dark(); }
 };
@@ -65,6 +73,8 @@ struct Network {
     int burnedCount = 0;             // machines lost as decoys, forever
     // HOUSE POWER (0.8): per tower you own, the gateway whose subnet runs on that tower's power (-1 = none).
     std::vector<int> house;
+    // LOADSHED (0.9): the grid is shedding right now - every subnet not on HOUSE POWER is dark. Tonight only, never saved.
+    bool shed = false;
 
     Machine* find(int id);
     const Machine* find(int id) const;
@@ -80,6 +90,7 @@ struct Network {
     std::vector<const Machine*> openBays() const;
     int bayPower(int gatewayId) const;            // power drawn by its members
     int bayBudget(const Machine& gw) const;
+    int baySlots(const Machine& gw) const;        // machines its subnet holds (an ACCORD gateway holds one more)
     int bayUpkeep(int gatewayId) const;           // its members' upkeep, before HOUSE POWER
     bool housePowered(int gatewayId) const;       // an owned tower powers this subnet
     int houseTower(int gatewayId) const;          // which tower (-1 = none)
@@ -110,15 +121,16 @@ int rejobFee(const Machine& m);
 int conditionAfterRun(const Machine& m, bool traced);   // wear after a billable run, traits included
 int jobValue(const Machine& m, int tier = 0);   // % for relay/proxy, 1 for others (tier 0 = its own)
 std::string describeEffect(const Machine& m, int tier = 0);
+std::string accordEffect(Job j, bool inSubnet = false);   // 0.9: what ACCORD iron in this job does, one line
 
 // ---------------------------------------------------------------------------
 // World
 // ---------------------------------------------------------------------------
-enum class Kind { Open, Hidden, Guarded, Corporate, Shrine, Story, Side, Prototype, Tower };
+enum class Kind { Open, Hidden, Guarded, Corporate, Shrine, Story, Side, Prototype, Tower, Site };   // Site: a HELIOS service site (0.9)
 // COMPOSITE (0.6): a keypad and then a rotor on one door, one shared guess budget.
 enum class LockType { None, Keypad, Rotor, Cipher, Composite };
 // How a corp tower defends itself (Act IV). Always shown at the briefing, never a surprise.
-enum class Doctrine { None = 0, Fortress = 1, Biosentinel = 2 };
+enum class Doctrine { None = 0, Fortress = 1, Biosentinel = 2, Loadshed = 3 };
 enum class FileKind { Paydata, Intel, Objective, Honeypot, Log };
 
 const char* kindName(Kind k);
@@ -135,6 +147,7 @@ struct File {
     std::string text;           // readable text (intel / log / objective summary)
     int phraseFor = -1;         // target id whose passphrase this memo leaks
     int revealsSide = -1;       // side-route index this log reveals
+    int revealsSite = -1;       // 0.9: the tower whose HELIOS service site this maintenance log names
     bool taken = false;
     bool read = false;
     bool downloadable() const { return kind != FileKind::Intel && kind != FileKind::Log; }
@@ -161,7 +174,7 @@ struct Target {
     bool deep = false;          // THE DEEP JOB
     double traceOverride = 0;   // if > 0, replaces the security-based trace rate
     std::string infoReward;     // contracts that pay in information
-    int tower = -1, floor = -1; // Act IV: which corp tower and which floor (0-based)
+    int tower = -1, floor = -1; // Act IV: which corp tower and which floor (0-based); a service site has its tower, floor -1
     Doctrine doctrine = Doctrine::None;
     bool hasHoneypot() const;
     int objectiveCount() const;
@@ -234,6 +247,11 @@ struct GameState {
     std::vector<int> towerKey;       // how many times each tower re-keyed its doors (after a trace)
     // 0.7 - a FORTRESS floor keeps its code until it re-keys: what you tried there stays logged.
     std::map<int, FortressRecord> fortress;   // floor id -> record (Kessler-Maru floors not yet taken)
+    // 0.9 - CHAIRMAN IRON: per tower, what you know of its HELIOS service site (0 nothing, 1 the maintenance log, 2 taken).
+    std::vector<int> siteState;
+    // 0.9: an ACCORD vault kept one tower objective offline through a trace: floor id -> objective file name.
+    std::map<int, std::string> vaultHeld;
+    int siteOf(int tower) const { return tower >= 0 && tower < static_cast<int>(siteState.size()) ? siteState[static_cast<size_t>(tower)] : 0; }
     int floorsCleared(int tower) const { return tower >= 0 && tower < static_cast<int>(towerFloor.size()) ? towerFloor[static_cast<size_t>(tower)] : 0; }
     int keyOf(int tower) const { return tower >= 0 && tower < static_cast<int>(towerKey.size()) ? towerKey[static_cast<size_t>(tower)] : 0; }
 };
@@ -241,7 +259,8 @@ struct GameState {
 int storyCount();
 constexpr int kDeepId = 8100;
 constexpr int kAnnexSide = 1000;   // the side route that holds the deep job's maintenance phrase
-constexpr int kTowerCount = 2;     // corp towers on the Ledger so far
+constexpr int kTowerCount = 3;     // corp towers on the Ledger so far (0.9: Halden Grid)
 constexpr int kFloors = 3;         // floors per tower; the last one is the Boardroom
 constexpr int kTowerIdBase = 8200; // tower floor ids: 8200 + tower * 10 + floor
+constexpr int kSiteIdBase = 8300;  // 0.9: HELIOS service site ids: 8300 + tower
 constexpr int kMaxAct = 4;

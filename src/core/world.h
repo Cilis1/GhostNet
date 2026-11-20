@@ -38,3 +38,12 @@ Doctrine towerDoctrine(int tower);
 std::string floorOutro(int tower, int floor);
 std::string towerPassphrase(const GameState& g, int tower, int floor);   // at the tower's current key
 Target makeTowerFloor(const GameState& g, int tower, int floor);
+// CHAIRMAN IRON (0.9): every tower's Boardroom keeps a maintenance log naming the HELIOS service site that holds its iron.
+const char* siteName(int tower);              // "CITADEL"
+const char* ironName(int tower);              // "MONOLITH" - what the ACCORD machine is called
+int siteId(int tower);
+int towerOfSite(int id);                      // -1 if the id isn't a service site
+std::string siteHost(int tower);
+std::string sitePassphrase(const GameState& g, int tower);   // at the tower's current key
+bool siteListed(const GameState& g, int tower);              // pinned to the board: tower owned, log read, iron not taken
+Target makeSite(const GameState& g, int tower);

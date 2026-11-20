@@ -86,6 +86,7 @@ Result deactivate(GameState& g, Machine& m) {
 }
 
 Result rejob(GameState& g, Machine& m, Job j) {
+    if (m.accord()) return {false, m.name + " is chairman iron: it was built for one job and its firmware is signed. It can't be re-imaged."};
     if (g.net.decoyId == m.id) return {false, m.name + " is armed as the decoy. Disarm it before you change its job."};
     if (m.job == j) return {false, "It already does that."};
     if (m.job == Job::Gateway && !g.net.bayMembers(m.id).empty()) return {false, "Unplug " + m.name + "'s subnet before you change its job."};
@@ -137,6 +138,7 @@ Result scrap(GameState& g, int id) {
     Machine* m = g.net.find(id);
     if (!m) return {false, "No such machine."};
     if (m->home) return {false, m->name + " can never be scrapped."};
+    if (m->accord()) return {false, m->name + " is chairman iron. Nobody in the city would touch its parts - store it instead."};
     if (m->job == Job::Gateway && !g.net.bayMembers(id).empty()) return {false, "Unplug " + m->name + "'s subnet first."};
     int value = scrapValue(*m);
     std::string name = m->name;
@@ -153,6 +155,7 @@ bool decoyNeedsConfirm(const Machine& m) { return !m.captured || m.job == Job::G
 Result armDecoy(GameState& g, Machine& m, bool confirmed) {
     if (m.home) return {false, "Never " + m.name + ". There has to be one thing you cannot lose."};
     if (g.net.decoyId == m.id) return {false, m.name + " is already the decoy."};
+    if (m.accord()) return {false, m.name + " is chairman iron. HELIOS would know exactly whose it was - it can never be the decoy."};
     if (m.job != Job::Proxy && m.job != Job::Gateway) return {false, "Only a PROXY - or a whole subnet, by its GATEWAY - can be a decoy."};
     if (!m.active) return {false, "It has to be in the rack, running."};
     if (m.dark()) return {false, "It's dark. A dead machine can't fool HELIOS."};
@@ -272,7 +275,7 @@ bool canPlug(const GameState& g, const Machine& m, const Machine& gw, std::strin
     if (m.job == Job::Gateway) return no("A gateway can't sit inside another subnet.");
     if (m.dark()) return no(m.name + " is dark. Repair it first.");
     if (m.bay == gw.id && m.active) return no(m.name + " is already in that subnet.");
-    if (static_cast<int>(g.net.bayMembers(gw.id).size()) >= bal::BAY_SLOTS) return no(gw.name + "'s subnet is full.");
+    if (static_cast<int>(g.net.bayMembers(gw.id).size()) >= g.net.baySlots(gw)) return no(gw.name + "'s subnet is full.");
     int draw = bal::POWER_DRAW[std::clamp(m.tier, 1, kMaxTier)];
     if (g.net.bayPower(gw.id) + draw > g.net.bayBudget(gw))
         return no(m.name + " draws " + std::to_string(draw) + " power; " + gw.name + " has " +

@@ -17,8 +17,9 @@
 namespace fs = std::filesystem;
 
 namespace {
-constexpr int kVersion = 7;   // v1 (0.1.x), v2 (0.2-0.3), v3 (0.4), v4 (0.5), v5 (0.6) and v6 (0.7) saves still load; new fields default
+constexpr int kVersion = 8;   // v1 (0.1.x), v2 (0.2-0.3), v3 (0.4), v4 (0.5), v5 (0.6), v6 (0.7) and v7 (0.8) saves still load; new fields default
 // v7 (0.8): HOUSE POWER - which subnet each owned tower powers. (STANDBY is tonight only and never saved.)
+// v8 (0.9): CHAIRMAN IRON - a machine's grade, each tower's service site, objectives an ACCORD vault holds. A third tower.
 
 // v6: a FORTRESS floor record may only name a Kessler-Maru floor (a FORTRESS tower's floor id).
 bool fortressFloorId(int id) {
@@ -92,7 +93,8 @@ bool saveGame(const GameState& g, std::string* err) {
     for (auto& m : g.net.machines)
         o << "m " << m.id << " " << esc(m.name) << " " << static_cast<int>(m.job) << " " << m.tier << " " << m.captured << " "
           << m.home << " " << m.active << " " << m.condition << " " << m.noise << " " << m.price << " " << esc(m.origin) << " "
-          << static_cast<int>(m.trait) << " " << m.bay << " " << static_cast<int>(m.role) << " " << (m.bayOn ? 1 : 0) << "\n";
+          << static_cast<int>(m.trait) << " " << m.bay << " " << static_cast<int>(m.role) << " " << (m.bayOn ? 1 : 0) << " "
+          << static_cast<int>(m.grade) << "\n";
     o << "programs";
     for (auto p : g.programs) o << " " << static_cast<int>(p);
     o << "\n";
@@ -108,6 +110,9 @@ bool saveGame(const GameState& g, std::string* err) {
         o << "tower " << i << " " << g.floorsCleared(static_cast<int>(i)) << " " << g.keyOf(static_cast<int>(i)) << "\n";
     for (size_t i = 0; i < g.net.house.size(); ++i)   // v7: HOUSE POWER
         if (g.net.house[i] >= 0) o << "house " << i << " " << g.net.house[i] << "\n";
+    for (size_t i = 0; i < g.siteState.size(); ++i)   // v8: CHAIRMAN IRON
+        if (g.siteState[i] > 0) o << "site " << i << " " << g.siteState[i] << "\n";
+    for (auto& [id, name] : g.vaultHeld) o << "vheld " << id << " " << esc(name) << "\n";
     for (auto& [id, r] : g.fortress) {   // v6: FORTRESS floor records - guesses only, never marks
         o << "fortress " << id << " " << r.rekeys << " " << (r.survey ? 1 : 0) << "\n";
         for (auto& row : r.rows) o << "frow " << id << " " << row.stage << " " << row.guess << "\n";
@@ -180,12 +185,13 @@ bool loadFrom(const std::string& file, GameState& g, std::string* err) {
     GameState n;
     std::string line;
     bool header = false, end = false;
+    int version = 0;
     while (std::getline(f, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         std::istringstream is(line);
         std::string k;
         is >> k;
-        if (k == "GHOSTNET") { int v = 0; is >> v; header = v >= 1 && v <= kVersion; }
+        if (k == "GHOSTNET") { int v = 0; is >> v; header = v >= 1 && v <= kVersion; version = v; }
         else if (k == "seed") is >> n.worldSeed;
         else if (k == "credits") { long long v = 0; is >> v; n.credits = clampi(v, 0, 100000000); }
         else if (k == "map") { long long a = 0, b = 3; is >> a >> b; n.mapIndex = clampi(a, 0, 1000000); n.mapRunsLeft = clampi(b, 1, bal::RUNS_PER_MAP); }
@@ -235,10 +241,13 @@ bool loadFrom(const std::string& file, GameState& g, std::string* err) {
             m.bay = static_cast<int>(std::max<long long>(-1, std::min<long long>(1000000000, bay)));
             m.role = static_cast<BayRole>(clampi(role, 0, kRoleCount - 1));
             m.bayOn = bayOn != 0;
+            int grade = 0;
+            if (!(is >> grade)) grade = 0;   // v7 and older: no chairman iron
+            m.grade = grade == 1 ? Grade::Accord : Grade::None;
             m.id = clampi(id, 0, 1000000000);
             m.name = unesc(name).substr(0, 24);
             m.job = static_cast<Job>(clampi(job, 0, kJobCount - 1));
-            m.tier = clampi(tier, 1, 4);
+            m.tier = clampi(tier, 1, m.accord() ? kMaxTier : 4);   // tier 5 iron is chairman iron, nothing else
             m.captured = cap != 0;
             m.home = home != 0;
             m.active = act != 0;
@@ -246,6 +255,7 @@ bool loadFrom(const std::string& file, GameState& g, std::string* err) {
             m.noise = clampi(noise, 1, bal::MAX_NOISE);
             m.price = clampi(price, 0, 100000);
             m.origin = unesc(origin).substr(0, 120);
+            if (m.accord()) { m.noise = 1; m.trait = Trait::None; m.captured = true; m.home = false; }
             if (m.dark()) m.active = false;
             if (m.home) m.active = true;
             n.net.machines.push_back(m);
@@ -264,7 +274,7 @@ bool loadFrom(const std::string& file, GameState& g, std::string* err) {
             if (!(is >> name >> job >> tier >> run >> where >> origin)) continue;
             w.name = unesc(name).substr(0, 24);
             w.job = static_cast<Job>(clampi(job, 0, kJobCount - 1));
-            w.tier = clampi(tier, 1, 4);
+            w.tier = clampi(tier, 1, kMaxTier);
             w.run = clampi(run, 0, 1000000);
             w.where = unesc(where).substr(0, 60);
             w.origin = unesc(origin).substr(0, 120);
@@ -288,6 +298,17 @@ bool loadFrom(const std::string& file, GameState& g, std::string* err) {
             if (!(is >> tw >> gw) || tw < 0 || tw >= kTowerCount || gw < 0 || gw > 1000000000) continue;
             if (n.net.house.size() <= static_cast<size_t>(tw)) n.net.house.resize(static_cast<size_t>(tw) + 1, -1);
             n.net.house[static_cast<size_t>(tw)] = static_cast<int>(gw);
+        }
+        else if (k == "site") {   // v8
+            long long tw = -1, st = 0;
+            if (!(is >> tw >> st) || tw < 0 || tw >= kTowerCount || st < 0 || st > 2) continue;
+            if (n.siteState.size() < static_cast<size_t>(kTowerCount)) n.siteState.resize(kTowerCount, 0);
+            n.siteState[static_cast<size_t>(tw)] = static_cast<int>(st);
+        } else if (k == "vheld") {   // v8
+            long long id = -1;
+            std::string name;
+            if (!(is >> id >> name) || towerOfId(static_cast<int>(id)) < 0) continue;
+            n.vaultHeld[static_cast<int>(id)] = unesc(name).substr(0, 40);
         }
         else if (k == "fortress") {
             long long id = -1, rekeys = 0;
@@ -324,7 +345,7 @@ bool loadFrom(const std::string& file, GameState& g, std::string* err) {
         if (m.bay < 0) continue;
         const Machine* gw = n.net.find(m.bay);
         bool ok = gw && gw->job == Job::Gateway && gw->bay < 0 && !m.home && m.job != Job::Gateway && m.active &&
-                  filled[m.bay] < bal::BAY_SLOTS;
+                  filled[m.bay] < n.net.baySlots(*gw);
         if (ok) ++filled[m.bay];
         else { m.bay = -1; m.active = false; }
     }
@@ -339,7 +360,25 @@ bool loadFrom(const std::string& file, GameState& g, std::string* err) {
     if (n.stats.captures > 0 && n.act < 2) n.act = 2;      // 0.1.x saves: derive the act from history
     if (n.stats.sacrifices > 0 && n.act < 3) n.act = 3;
     if (n.netUnlocked && !n.net.home()) n.netUnlocked = false;
-    if (!n.deepDone) { n.towerFloor.clear(); n.towerKey.clear(); n.fortress.clear(); if (n.act > 3) n.act = 3; }   // the Ledger opens after the deep job
+    if (!n.deepDone) { n.towerFloor.clear(); n.towerKey.clear(); n.fortress.clear(); n.siteState.clear(); n.vaultHeld.clear(); if (n.act > 3) n.act = 3; }   // the Ledger opens after the deep job
+    for (auto it = n.vaultHeld.begin(); it != n.vaultHeld.end();) {   // a held objective belongs to a floor not yet taken
+        int tower = towerOfId(it->first);
+        bool ok = tower >= 0 && it->first - floorId(tower, 0) >= n.floorsCleared(tower);
+        it = ok ? std::next(it) : n.vaultHeld.erase(it);
+    }
+    if (n.act >= 4) {   // v7 and older: the Ledger grew a tower (0.9) - it starts unclimbed
+        if (n.towerFloor.size() < static_cast<size_t>(kTowerCount)) n.towerFloor.resize(kTowerCount, 0);
+        if (n.towerKey.size() < static_cast<size_t>(kTowerCount)) n.towerKey.resize(kTowerCount, 0);
+        if (version > 0 && version < 8)
+            n.journal.push_back("THE LEDGER: a third tower - Halden Grid (LOADSHED) - is on your board. Every Boardroom now keeps a maintenance log.");
+        for (int k = 0; k < kTowerCount; ++k)   // a tower you own has handed over its maintenance log
+            if (n.floorsCleared(k) >= kFloors && n.siteOf(k) == 0) {
+                if (n.siteState.size() < static_cast<size_t>(kTowerCount)) n.siteState.resize(kTowerCount, 0);
+                n.siteState[static_cast<size_t>(k)] = 1;
+                n.journal.push_back(std::string("CHAIRMAN IRON: ") + towerCorp(k) + "'s maintenance log names HELIOS SERVICE SITE " + siteName(k) +
+                                    ". It's on your board.");
+            }
+    }
     for (auto it = n.fortress.begin(); it != n.fortress.end();) {   // a taken floor keeps no record; an empty record is no record
         int tower = towerOfId(it->first);
         bool taken = it->first - floorId(tower, 0) < n.floorsCleared(tower);

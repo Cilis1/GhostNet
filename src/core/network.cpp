@@ -161,10 +161,15 @@ int Network::bayPower(int gatewayId) const {
     for (auto& m : machines) if (m.bay == gatewayId && m.active && !m.standby) p += bal::POWER_DRAW[std::clamp(m.tier, 1, kMaxTier)];
     return p;
 }
-int Network::bayBudget(const Machine& gw) const { return bal::GATEWAY_POWER[std::clamp(gw.tier, 1, kMaxTier)]; }
+int Network::bayBudget(const Machine& gw) const {
+    return gw.accord() ? bal::ACCORD_GATE_POWER : bal::GATEWAY_POWER[std::clamp(gw.tier, 1, kMaxTier)];
+}
+int Network::baySlots(const Machine& gw) const { return gw.accord() ? bal::ACCORD_GATE_SLOTS : bal::BAY_SLOTS; }
 // Online = open, switched on, within its power budget and with at least one machine plugged in.
+// LOADSHED: while the grid sheds, only a subnet on HOUSE POWER stays lit.
 bool Network::bayOnline(const Machine& gw) const {
     if (!bayOpen(gw) || !gw.bayOn || gw.standby || bayPower(gw.id) > bayBudget(gw)) return false;
+    if (shed && !housePowered(gw.id)) return false;
     for (auto& m : machines) if (m.bay == gw.id && m.active && !m.dark() && !m.standby) return true;
     return false;
 }
@@ -202,19 +207,24 @@ int Network::bayBill(int gatewayId) const {
 }
 int Network::clusterBonus(int gatewayId) const {
     auto v = bayMembers(gatewayId);
-    if (static_cast<int>(v.size()) != bal::BAY_SLOTS) return 0;
+    if (static_cast<int>(v.size()) < bal::BAY_SLOTS) return 0;
     for (auto* m : v)
         if (m->job != v[0]->job || m->tier < 3 || m->dark() || m->standby) return 0;
     return 1;
 }
 int Network::effTier(const Machine& m) const {
     int t = m.tier;
-    if (m.bay >= 0 && online(m)) t += clusterBonus(m.bay);
+    if (m.bay >= 0 && online(m)) {   // a cluster and an ACCORD gateway don't stack: either lifts the tier once
+        const Machine* gw = find(m.bay);
+        t += std::max(clusterBonus(m.bay), gw && gw->accord() ? 1 : 0);
+    }
     return std::clamp(t, 1, kMaxTier);
 }
 
 int jobValue(const Machine& m, int tier) {
     int t = std::clamp(tier > 0 ? tier : m.tier, 1, kMaxTier);
+    if (m.accord() && m.job == Job::Relay) return bal::ACCORD_RELAY;
+    if (m.accord() && m.job == Job::Proxy) return bal::ACCORD_PROXY;
     switch (m.job) {
         case Job::Relay: return bal::RELAY_BONUS[t];
         case Job::Proxy: return bal::PROXY_BONUS[t];
@@ -223,38 +233,54 @@ int jobValue(const Machine& m, int tier) {
 }
 // Relay and proxy pool per unit: the main rack has its cap, each online subnet has its own cap
 // (plus its role bonus when the role matches), and the total sits under a hard ceiling.
+// An ACCORD relay or proxy lifts the cap of the pool it runs in (the hard ceiling never moves).
 namespace {
-int pooledBonus(const Network& n, Job job, int rackCap, int bayCap, int hardCap, BayRole role, const int (&roleBonus)[kMaxTier + 1]) {
+int pooledBonus(const Network& n, Job job, int rackCap, int bayCap, int hardCap, int lift, BayRole role, const int (&roleBonus)[kMaxTier + 1]) {
     int rack = 0;
+    bool rackAccord = false;
     for (auto& m : n.machines)
-        if (m.bay < 0 && m.job == job && n.online(m)) rack += jobValue(m, n.effTier(m));
-    int total = std::min(rack, rackCap);
+        if (m.bay < 0 && m.job == job && n.online(m)) {
+            rack += jobValue(m, n.effTier(m));
+            rackAccord = rackAccord || m.accord();
+        }
+    int total = std::min(rack, rackCap + (rackAccord ? lift : 0));
     for (auto* gw : n.openBays()) {
         if (!n.bayOnline(*gw)) continue;
         int bay = gw->role == role ? roleBonus[std::clamp(gw->tier, 1, kMaxTier)] : 0;
+        bool bayAccord = false;
         for (auto* m : n.bayMembers(gw->id))
-            if (m->job == job && n.online(*m)) bay += jobValue(*m, n.effTier(*m));
-        total += std::min(bay, bayCap);
+            if (m->job == job && n.online(*m)) {
+                bay += jobValue(*m, n.effTier(*m));
+                bayAccord = bayAccord || m->accord();
+            }
+        total += std::min(bay, bayCap + (bayAccord ? lift : 0));
     }
     return std::min(total, hardCap);
+}
+bool anyAccord(const Network& n, Job job) {
+    for (auto& m : n.machines) if (m.accord() && m.job == job && n.online(m)) return true;
+    return false;
 }
 }  // namespace
 
 int Network::relayBonus() const {
-    return pooledBonus(*this, Job::Relay, bal::RELAY_CAP, bal::BAY_RELAY_CAP, bal::RELAY_HARD_CAP, BayRole::Speed, bal::SPEED_BONUS);
+    return pooledBonus(*this, Job::Relay, bal::RELAY_CAP, bal::BAY_RELAY_CAP, bal::RELAY_HARD_CAP, bal::ACCORD_RELAY_LIFT, BayRole::Speed,
+                       bal::SPEED_BONUS);
 }
 int Network::proxyBonus() const {
-    return pooledBonus(*this, Job::Proxy, bal::PROXY_CAP, bal::BAY_PROXY_CAP, bal::PROXY_HARD_CAP, BayRole::Stealth, bal::STEALTH_BONUS);
+    return pooledBonus(*this, Job::Proxy, bal::PROXY_CAP, bal::BAY_PROXY_CAP, bal::PROXY_HARD_CAP, bal::ACCORD_PROXY_LIFT, BayRole::Stealth,
+                       bal::STEALTH_BONUS);
 }
 int Network::computeCapacity() const {
     int t = 0, siege = 0;
-    for (auto& m : machines) if (online(m) && m.job == Job::Compute) ++t;
+    for (auto& m : machines) if (online(m) && m.job == Job::Compute) t += m.accord() ? bal::ACCORD_COMPUTE : 1;
     for (auto* gw : openBays()) if (bayOnline(*gw) && gw->role == BayRole::Siege) ++siege;
-    return std::min(t, bal::COMPUTE_MAX) + siege;
+    return std::min(t, bal::COMPUTE_MAX + (anyAccord(*this, Job::Compute) ? 1 : 0)) + siege;
 }
 int Network::scoutCapacity() const {
     int t = 0;
-    for (auto& m : machines) if (online(m) && m.job == Job::Scout) t += bal::SCOUT_CHARGES[effTier(m)];
+    for (auto& m : machines)
+        if (online(m) && m.job == Job::Scout) t += m.accord() ? bal::ACCORD_SCOUT_CHARGES : bal::SCOUT_CHARGES[effTier(m)];
     return std::min(t, bal::SCOUT_MAX_CHARGES);
 }
 int Network::usableScoutCharges() const { return std::min(scoutCharges, scoutCapacity()); }
@@ -271,24 +297,26 @@ int Network::bestScoutTier() const {
 }
 int Network::jamDelay() const {
     int t = 0;
-    for (auto& m : machines) if (online(m) && m.job == Job::Jammer) t += bal::JAM_DELAY[effTier(m)];
-    return std::min(t, bal::JAM_DELAY_CAP);
+    for (auto& m : machines) if (online(m) && m.job == Job::Jammer) t += m.accord() ? bal::ACCORD_JAM_DELAY : bal::JAM_DELAY[effTier(m)];
+    return std::min(t, anyAccord(*this, Job::Jammer) ? bal::ACCORD_JAM_DELAY : bal::JAM_DELAY_CAP);
 }
 int Network::jamSpikeCut() const {
     int t = 0;
-    for (auto& m : machines) if (online(m) && m.job == Job::Jammer) t += bal::JAM_SPIKE[effTier(m)];
+    for (auto& m : machines) if (online(m) && m.job == Job::Jammer) t += m.accord() ? bal::ACCORD_JAM_SPIKE : bal::JAM_SPIKE[effTier(m)];
     for (auto* gw : openBays())
         if (bayOnline(*gw) && gw->role == BayRole::Siege) t += bal::SIEGE_SPIKE[std::clamp(gw->tier, 1, kMaxTier)];
-    return std::min(t, bal::JAM_SPIKE_CAP);
+    return std::min(t, anyAccord(*this, Job::Jammer) ? bal::ACCORD_JAM_SPIKE : bal::JAM_SPIKE_CAP);
 }
 const Machine* Network::bestVault() const {
     const Machine* best = nullptr;
     for (auto& m : machines)
-        if (online(m) && m.job == Job::Vault && (!best || effTier(m) > effTier(*best))) best = &m;
+        if (online(m) && m.job == Job::Vault && (!best || (m.accord() && !best->accord()) || (m.accord() == best->accord() && effTier(m) > effTier(*best))))
+            best = &m;
     return best;
 }
 int upkeepOf(const Machine& m) {
     if (m.home) return 0;
+    if (m.accord()) return bal::ACCORD_UPKEEP;   // chairman iron: signal 1, no trait, one flat number
     int base = bal::TIER_UPKEEP[std::clamp(m.tier, 1, kMaxTier)] + (m.noise - 1) * bal::NOISE_UPKEEP;
     int pct = m.trait == Trait::CorpBuild ? bal::CORP_UPKEEP_PCT : m.trait == Trait::HotIron ? bal::HOTIRON_UPKEEP_PCT
             : m.trait == Trait::Unstable ? bal::UNSTABLE_UPKEEP_PCT : 0;
@@ -335,6 +363,7 @@ int Network::standbyCount() const {
 const Machine* Network::decoy() const {
     const Machine* m = find(decoyId);
     if (!m || m->home || !online(*m)) return nullptr;
+    if (m->accord()) return nullptr;   // chairman iron never takes a ticket: HELIOS would know whose it was
     if (m->job == Job::Gateway) return bayOnline(*m) ? m : nullptr;   // the whole subnet takes the ticket
     if (m->job != Job::Proxy) return nullptr;
     return m;
@@ -344,6 +373,7 @@ void Network::refillScout() { scoutCharges = scoutCapacity(); }
 std::string describeEffect(const Machine& m, int tier) {
     const int t = std::clamp(tier > 0 ? tier : m.tier, 1, kMaxTier);
     const std::string cap = m.bay >= 0 ? "subnet cap " : "rack cap ";
+    if (m.accord()) return accordEffect(m.job, m.bay >= 0);
     std::string s;
     switch (m.job) {
         case Job::Relay:
@@ -379,4 +409,35 @@ std::string describeEffect(const Machine& m, int tier) {
     }
     if (tier > m.tier) s += " Acting T" + std::to_string(t) + " in a cluster.";
     return s;
+}
+
+std::string accordEffect(Job j, bool inSubnet) {
+    const std::string pool = inSubnet ? "its subnet's" : "the rack's";
+    switch (j) {
+        case Job::Relay:
+            return "ACCORD. Speeds downloads by " + std::to_string(bal::ACCORD_RELAY) + "% and lifts " + pool + " relay cap by " +
+                   std::to_string(bal::ACCORD_RELAY_LIFT) + " (rack " + std::to_string(bal::RELAY_CAP + bal::ACCORD_RELAY_LIFT) + "%, hard ceiling " +
+                   std::to_string(bal::RELAY_HARD_CAP) + "%).";
+        case Job::Proxy:
+            return "ACCORD. Slows the trace by " + std::to_string(bal::ACCORD_PROXY) + "% and lifts " + pool + " proxy cap by " +
+                   std::to_string(bal::ACCORD_PROXY_LIFT) + " (rack " + std::to_string(bal::PROXY_CAP + bal::ACCORD_PROXY_LIFT) + "%, hard ceiling " +
+                   std::to_string(bal::PROXY_HARD_CAP) + "%). Never a decoy.";
+        case Job::Scout:
+            return "ACCORD. " + std::to_string(bal::ACCORD_SCOUT_CHARGES) + " scouting charges, full-detail reports - and every new report on a "
+                   "tower floor or service site gives up one doctrine secret: its maintenance phrase, or one FORTRESS keypad box.";
+        case Job::Compute:
+            return "ACCORD. Holds " + std::to_string(bal::ACCORD_COMPUTE) + " emergency attempts per run and lifts the compute cap to " +
+                   std::to_string(bal::COMPUTE_MAX + 1) + ".";
+        case Job::Jammer:
+            return "ACCORD. Holds a watchdog back " + std::to_string(bal::ACCORD_JAM_DELAY) + "s, softens alarm spikes by " +
+                   std::to_string(bal::ACCORD_JAM_SPIKE) + "% (the caps rise to match) - and once a run, when the trace reaches " +
+                   std::to_string(bal::ACCORD_FREEZE_AT) + "%, it FREEZES it for " + std::to_string(bal::FREEZE_SECS) + "s on its own.";
+        case Job::Vault:
+            return "ACCORD. If you're traced out, keeps 100% of your " + std::to_string(bal::ACCORD_VAULT_FILES) +
+                   " most valuable files - and one tower objective you took stays taken, offline, for next time.";
+        case Job::Gateway:
+            return "ACCORD. Opens a SUBNET of " + std::to_string(bal::ACCORD_GATE_SLOTS) + " slots with " + std::to_string(bal::ACCORD_GATE_POWER) +
+                   " power, and every machine in it acts a tier higher (a cluster adds nothing on top).";
+    }
+    return "";
 }

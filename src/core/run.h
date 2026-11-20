@@ -22,7 +22,8 @@ enum class Ev {
     Connected, AccessGranted, PhraseOk, PhraseBad, Guess, Lockout, Extra, MachineDark,
     Read, PhraseLearned, SideFound, DownloadDone, DownloadAborted, Honeypot, Objective,
     ContractDone, Captured, Traced, Sacrifice, Program, Spoofed, Strike,
-    Stage, Sweep, MissLogged   // 0.6: a composite's outer stage opens; doctrine pings
+    Stage, Sweep, MissLogged,  // 0.6: a composite's outer stage opens; doctrine pings
+    Shed, SiteFound, AccordFreeze   // 0.9: LOADSHED drops the subnets; a service site is pinned; ACCORD iron freezes the trace
 };
 struct Event {
     Ev type;
@@ -37,6 +38,9 @@ struct CaptureQuote {
     int leftCr = 0, leftIntel = 0;
     bool trailWarning = false, rackFull = false, honeypot = false, viaPhrase = false;
     Trait trait = Trait::None;   // what it would carry for life
+    // CHAIRMAN IRON (0.9): a service site's ACCORD unit takes any job - chosen at the hold, for good.
+    bool accord = false;
+    std::string ironName;
 };
 
 struct Shortfall {
@@ -60,6 +64,9 @@ struct Reckoning {
     std::string storyTitle, storyOutro, infoReward;
     int tower = -1, floorCleared = -1;   // Act IV: the floor this run took (if any)
     bool towerOwned = false, ledgerDone = false, rekeyed = false;
+    int sitePinned = -1;                 // 0.9: the tower whose HELIOS service site went on the board tonight
+    bool siteRekeyed = false;            // 0.9: traced at a service site - it re-keyed, nothing else lost
+    bool accordCaptured = false;         // 0.9: tonight's capture was chairman iron
     bool alarmRekeyed = false;           // FORTRESS: the alarm log filled and this floor re-keyed
     int alarms = -1;                     // FORTRESS: misses on the floor's alarm log after the run (-1: not a FORTRESS floor)
     bool unlockedNetwork = false;
@@ -157,6 +164,16 @@ public:
     bool busy() const { return act != Act::None; }
     double rateNow(double mult = 1.0) const;
     int nextSweep() const;           // BIOSENTINEL: seconds until the next sentinel sweep (-1 if none)
+    // LOADSHED (0.9): every LOADSHED_EVERY seconds the grid drops every subnet not on HOUSE POWER for LOADSHED_SECS.
+    bool shedding() const;           // the grid is shedding right now
+    int nextShed() const;            // seconds until the next shed (-1 if none; 0 while shedding)
+    int shedLeft() const;            // seconds of the current shed left (0 if not shedding)
+    int sheds = 0;
+    // CHAIRMAN IRON (0.9), fixed when the run begins.
+    bool accordFreeze = false;       // an ACCORD jammer will freeze the trace once, at ACCORD_FREEZE_AT
+    std::string accordFreezeName;
+    bool accordVault = false;        // an ACCORD vault keeps one tower objective through a trace
+    std::string heldObjective;       // the objective an ACCORD vault kept from an earlier trace (already taken)
     int sweeps = 0, misses = 0;      // doctrine pings tonight
     // FORTRESS (0.7): the floor's code persists; attempts are logged to its record as they happen.
     bool fortress = false;
@@ -170,6 +187,9 @@ private:
     bool spike(double amount);
     int spikeSize(double base) const;   // after jammers, for the log
     void traced();
+    void endShed();                  // the run is over: the grid's lights come back on at home
+    bool shedAt(int s) const;
+    double dlSpeed_ = 0, dlCarry_ = 0;   // LOADSHED: a download slows while the grid sheds its relays
     FortressRecord* record();
     void logRow(int stage, const std::string& guess);
     void logPeek(int pos);

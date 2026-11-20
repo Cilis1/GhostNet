@@ -140,9 +140,10 @@ constexpr int    BURST_SECS      = 5;                 // download seconds at dou
 constexpr double BURST_TRACE_MULT = 1.5;              // ...while the trace climbs faster
 
 // ---- Act IV - THE LEDGER: corp towers (0.6) ---------------------------------------
-// Indexed by [doctrine - 1][floor]: FORTRESS is a wall at the door, BIOSENTINEL a clock inside.
-constexpr double TOWER_TRACE[2][3]  = {{3.0, 3.3, 3.6}, {3.6, 3.9, 4.2}};   // %/s; the deep job is 4.4
-constexpr int    TOWER_OBJ_MB[2][3] = {{30, 35, 40}, {60, 70, 80}};         // each of a floor's three objective files
+// Indexed by [doctrine - 1][floor]: FORTRESS is a wall at the door, BIOSENTINEL a clock inside, LOADSHED (0.9)
+// a grid that keeps pulling the plug on your subnets.
+constexpr double TOWER_TRACE[3][3]  = {{3.0, 3.3, 3.6}, {3.6, 3.9, 4.2}, {3.4, 3.7, 4.0}};   // %/s; the deep job is 4.4
+constexpr int    TOWER_OBJ_MB[3][3] = {{30, 35, 40}, {60, 70, 80}, {62, 72, 82}};         // each of a floor's three objective files
 constexpr int    TOWER_REWARD[3]    = {1500, 2500, 9000};  // paid for the floor's objectives; the Boardroom is the jackpot
 constexpr double TOWER_PAY_MULT  = 2.5;               // paydata vs. an ordinary security-5 file
 constexpr int    PREP_PLAN_COST  = 350;               // FLOOR PLAN: a full-quality report, no scout needed
@@ -159,5 +160,29 @@ constexpr int    PREP_SURVEY_COST[3] = {600, 900, 1200};  // TUMBLER SURVEY: nam
 constexpr double BIO_RAMP        = 1.0;               // +100% trace rate per minute (a normal watchdog is +50%)
 constexpr int    BIO_SWEEP_EVERY = 12;                // seconds between sweeps (jammers soften them; they don't delay them)
 constexpr double BIO_SWEEP_SPIKE = 6.0;               // a sweep's ping; it passes over a frozen trace
+// LOADSHED (Halden Grid, 0.9): every LOADSHED_EVERY seconds the grid sheds load for LOADSHED_SECS. Every subnet goes
+// dark for the shed - no pooled bonus, no role, no cluster, no strike - unless an owned tower's HOUSE POWER feeds it.
+// The main rack and your deck never notice.
+constexpr int    LOADSHED_EVERY  = 15;
+constexpr int    LOADSHED_SECS   = 3;
+
+// ---- CHAIRMAN IRON (0.9) ------------------------------------------------------------
+// A HELIOS service site: one per tower, named by the maintenance log in its Boardroom, pinned to the board until
+// you take what it holds. Security 5 at the deep job's trace, under its tower's doctrine; the hold is security x 6s.
+constexpr double SITE_TRACE      = 4.4;
+// ACCORD grade: tier 5 in the job you chose at the capture. Signal 1, flat upkeep, never a decoy.
+constexpr int    ACCORD_UPKEEP      = 60;
+constexpr int    ACCORD_RELAY       = 45;             // alone, past the 42% rack cap...
+constexpr int    ACCORD_RELAY_LIFT  = 18;             // ...because it lifts the cap of the rack (or subnet) it runs in
+constexpr int    ACCORD_PROXY       = 30;
+constexpr int    ACCORD_PROXY_LIFT  = 12;
+constexpr int    ACCORD_SCOUT_CHARGES = 3;            // and a FORTRESS keypad box named with every new report
+constexpr int    ACCORD_COMPUTE     = 2;              // answers twice; the compute cap rises by one while it runs
+constexpr int    ACCORD_JAM_DELAY   = 90;             // both past the jammer caps, which it lifts to match
+constexpr int    ACCORD_JAM_SPIKE   = 70;
+constexpr int    ACCORD_FREEZE_AT   = 80;             // ...and once a night it freezes the trace on its own here
+constexpr int    ACCORD_VAULT_FILES = 3;              // at 100%, and one tower objective survives the trace
+constexpr int    ACCORD_GATE_POWER  = 16;             // an ACCORD gateway: more power, one more machine,
+constexpr int    ACCORD_GATE_SLOTS  = 4;              // and every member runs a tier higher
 
 }  // namespace bal
