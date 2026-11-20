@@ -7,6 +7,7 @@
 //
 // The simulated window is 1600x1000 (not 16:9), so every click also goes
 // through the letterbox mapping from window pixels to the 1280x720 canvas.
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <string>
@@ -45,6 +46,13 @@ struct Driver {
         float s, ox, oy;
         gx::fit(in.screenW, in.screenH, s, ox, oy);
         return Vector2{ox + v.x * s, oy + v.y * s};
+    }
+
+    // The first clickable label that starts with this prefix ("" when none) - for labels that carry a live number.
+    std::string labelStarting(const std::string& prefix) const {
+        for (auto& w : gx::widgets)
+            if (w.label.rfind(prefix, 0) == 0) return w.label;
+        return "";
     }
 
     std::vector<gx::Widget> find(const std::string& label) const {
@@ -268,6 +276,81 @@ int App::autoplay(const std::function<void()>& render) {
     if (!d.click("BACK TO HARDWARE")) return bad();
     if (!d.waitFor([&] { return selMachine == -1; }, "the machine to be deselected")) return bad();
 
+    // ---- 0.8 RUNNING LEAN: scrub a loud machine at the rack, stand it down at a briefing ----
+    d.step = "signal scrub";
+    {   // fast-forward: a captured T3 scout (noise 3) in the rack, as a capture would leave it
+        Machine m;
+        m.id = g.net.nextId++;
+        m.name = "loudscout";
+        m.job = Job::Scout;
+        m.tier = 3;
+        m.noise = 3;
+        m.captured = true;
+        m.condition = 100;
+        m.active = true;
+        g.net.slots = std::max(g.net.slots, g.net.activeCount() + 1);
+        g.net.machines.push_back(m);
+        g.credits += 1500;
+    }
+    const int scoutId = g.net.machines.back().id;
+    if (!d.click("loudscout")) return bad();
+    if (!d.waitFor([&] { return selMachine == scoutId; }, "the loud scout to be selected")) return bad();
+    {
+        const int cost = scrubCost(*g.net.find(scoutId)), credits = g.credits;
+        if (cost != 375) return d.fail("a T3 noise-3 scrub should cost 375cr, not " + std::to_string(cost)), bad();
+        if (!d.click("SCRUB 375cr")) return bad();
+        if (!d.click("SCRUB IT")) return bad();
+        if (!d.waitFor([&] { return g.net.find(scoutId)->noise == 2 && g.credits == credits - cost; }, "the scrub to land")) return bad();
+        if (!d.waitFor([&] { return d.find("SCRUB 375cr").empty() && d.labelStarting("SCRUB").empty(); }, "the scrub button to go (captured floor)"))
+            return bad();
+    }
+    if (!d.click("BACK TO HARDWARE")) return bad();
+
+    d.step = "standby at the briefing";
+    if (!d.click("JOB BOARD")) return bad();
+    if (!d.waitFor([&] { return tab == Tab::Board; }, "the board")) return bad();
+    std::string quiet;
+    for (auto& t : board)
+        if (!t.deep && t.kind != Kind::Tower && t.kind != Kind::Story && !g.burned.count(t.id)) { quiet = t.name; break; }
+    if (quiet.empty()) return d.fail("no ordinary listing on the board"), bad();
+    for (int pass = 0; pass < 2; ++pass) {
+        if (!d.click(quiet)) return bad();
+        if (!d.waitFor([&] { return scr == Scr::Brief; }, "the briefing")) return bad();
+        if (g.net.standbyCount() != 0) return d.fail("a fresh briefing must start with LEDGER's picks OFF"), bad();
+        if (!d.waitFor([&] { return !d.labelStarting("TONIGHT'S RACK").empty(); }, "the TONIGHT'S RACK tab")) return bad();
+        if (!d.click(d.labelStarting("TONIGHT'S RACK"))) return bad();
+        if (!d.waitFor([&] { return briefStandby && gx::onScreen("Tonight only."); }, "TONIGHT'S RACK")) return bad();
+        const int awake = g.net.upkeepAwake();
+        if (!d.waitFor([&] { return !d.labelStarting("STANDBY SUGGESTED").empty(); }, "LEDGER's STANDBY SUGGESTED (a loud scout is running)"))
+            return bad();
+        std::string sug = d.labelStarting("STANDBY SUGGESTED");
+        if (!d.click(sug)) return bad();
+        if (!d.waitFor([&] { return g.net.find(scoutId)->standby && g.net.upkeepTotal() < awake; }, "LEDGER's picks on standby")) return bad();
+        if (!d.waitFor([&] { return gx::onScreen("STANDBY ") && gx::onScreen("! "); }, "the amber risk lines")) return bad();
+        if (pass == 0) {   // walking away wakes everything
+            if (!d.click("BACK")) return bad();
+            if (!d.waitFor([&] { return scr == Scr::Hub && g.net.standbyCount() == 0; }, "BACK to wake the rack")) return bad();
+            continue;
+        }
+        if (!d.click("CONNECT")) return bad();
+        if (!d.waitFor([&] { return scr == Scr::Run && run; }, "the lean connection")) return bad();
+        if (std::find(run->billIds.begin(), run->billIds.end(), scoutId) != run->billIds.end())
+            return d.fail("a machine on standby was put on tonight's bill"), bad();
+        if (!d.click("JACK OUT")) return bad();
+        if (!d.waitFor([&] { return run && run->over(); }, "the disconnect")) return bad();
+        d.in.click = true;
+        d.frame();
+        if (!d.waitFor([&] { return scr == Scr::Reckon; }, "the lean reckoning", 10.0)) return bad();
+        if (g.net.standbyCount() != 0) return d.fail("standby outlived the reckoning"), bad();
+        for (double until = GetTime() + 10.0; GetTime() < until && scr == Scr::Reckon;) {
+            if (!d.find("CONTINUE").empty()) d.click("CONTINUE");
+            else if (!d.find("SKIP").empty()) d.click("SKIP");
+            else d.frame();
+        }
+        if (!d.waitFor([&] { return scr == Scr::Hub; }, "the hub after the lean run")) return bad();
+        if (!d.clearModals()) return bad();
+    }
+
     // ---- the menu: save & quit ---------------------------------------------------
     d.step = "save and quit";
     if (!d.click("MENU")) return bad();
@@ -364,7 +447,7 @@ int App::autoplay(const std::function<void()>& render) {
     d.frame();
     if (!d.waitFor([&] { return scr == Scr::Reckon; }, "the tower reckoning", 10.0)) return bad();
 
-    std::printf("autoplay: played title -> practice -> new game -> contract -> reckoning -> rack -> save & quit -> continue "
+    std::printf("autoplay: played title -> practice -> new game -> contract -> reckoning -> rack -> scrub -> standby -> save & quit -> continue "
                 "-> the ledger -> survey -> composite lock -> reconnect to the same code with %d frames of clicks and typing, all OK\n",
                 d.frames);
     fs::remove_all(saves, ec);

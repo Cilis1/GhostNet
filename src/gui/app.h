@@ -73,6 +73,7 @@ public:
     std::vector<Target> board;
     float boardScroll = 0;
     Target brief;
+    bool briefStandby = false;   // the briefing's right-hand panel shows STANDBY instead of the votes
 
     // run
     std::unique_ptr<RunSession> run;
@@ -138,6 +139,7 @@ private:
     void drawBoard(Rectangle area);
     void drawDeck(Rectangle area);
     void drawPanelTab(Rectangle area);
+    void drawStandby(Rectangle area);   // STANDBY at the briefing (0.8)
     void drawRecords(Rectangle area);
     void drawHelp(Rectangle area);
     void drawBrief();

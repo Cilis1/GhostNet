@@ -125,7 +125,10 @@ RunSession::RunSession(GameState& gs, const Target& tg, uint64_t entropy) : g(gs
     for (auto& m : g.net.machines) {
         m.usedThisRun = false;
         if (g.net.online(m) && !m.home) billIds.push_back(m.id);
+        if (m.job == Job::Gateway && m.bay < 0 && g.net.housePowered(m.id)) houseBays.push_back(m.id);
     }
+    standbyCount = g.net.standbyCount();
+    standbySaved = std::max(0, g.net.upkeepAwake() - g.net.upkeepTotal());
     int nodes = 0;
     if (g.netUnlocked)
         for (auto& m : g.net.machines) if (g.net.online(m)) ++nodes;
@@ -814,7 +817,17 @@ Reckoning RunSession::settle() {
             if (it == bayBills.end()) bayBills.push_back({m->bay, u});
             else it->second += u;
         }
+    int houseSaved = 0;
+    for (auto& [gwId, amount] : bayBills)   // HOUSE POWER: a tower you own feeds this subnet - half the bill
+        if (std::find(houseBays.begin(), houseBays.end(), gwId) != houseBays.end()) {
+            int half = (amount + 1) / 2;
+            houseSaved += amount - half;
+            amount = half;
+        }
+    bill -= houseSaved;
     rk.bill = bill;
+    rk.houseSaved = billable ? houseSaved : 0;
+    rk.standbySaved = billable ? standbySaved : 0;
     bool mainPaid = true;
     if (mainBill > 0) {
         if (g.credits >= mainBill) {
@@ -838,7 +851,10 @@ Reckoning RunSession::settle() {
         if (mainPaid && g.credits >= amount) {
             g.credits -= amount;
             g.stats.billsPaid += amount;
-            line("Subnet " + nm + (gw ? " (" + std::string(roleName(gw->role)) + ")" : "") + ": -" + std::to_string(amount) + "cr", Tone::Warn);
+            bool house = std::find(houseBays.begin(), houseBays.end(), gwId) != houseBays.end();
+            line("Subnet " + nm + (gw ? " (" + std::string(roleName(gw->role)) + ")" : "") + ": -" + std::to_string(amount) + "cr" +
+                     (house ? " (HOUSE POWER: half)" : ""),
+                 Tone::Warn);
         } else if (mainPaid) {
             g.stats.unpaidBills += 1;
             if (gw) gw->bayOn = false;
@@ -868,7 +884,7 @@ Reckoning RunSession::settle() {
         Machine* gw = g.net.find(gwId);
         if (!gw) continue;
         std::vector<Machine*> bay = {gw};
-        for (auto& m : g.net.machines) if (m.bay == gwId && m.active) bay.push_back(&m);
+        for (auto& m : g.net.machines) if (m.bay == gwId && m.active && !m.standby) bay.push_back(&m);
         for (Machine* m : bay) {
             bool wasDark = m->dark();
             m->condition = std::max(0, m->condition - bal::STRIKE_WEAR);
@@ -887,6 +903,10 @@ Reckoning RunSession::settle() {
              traceOut ? Tone::Bad : Tone::Dim);
     for (auto& n : darkNow) line(n + " wore out and went dark. Repair it, then switch it back on.", Tone::Bad);
     if (!billable) line("Nothing happened worth billing. No bill, no wear.", Tone::Dim);
+    if (billable && standbyCount > 0)
+        line("STANDBY: " + std::to_string(standbyCount) + " machine(s) sat tonight out - " + std::to_string(standbySaved) +
+                 "cr not billed, no wear. They're back on now.",
+             Tone::Dim);
 
     g.stats.runs += 1;
     if (t.deep) g.stats.deepAttempts += 1;
@@ -946,6 +966,20 @@ Reckoning RunSession::settle() {
             if (t.floor + 1 == kFloors) {
                 rk.towerOwned = true;
                 g.journal.push_back(std::string("THE LEDGER: ") + towerCorp(t.tower) + " owned.");
+                // HOUSE POWER (0.8): the building's power is yours. It feeds your dearest unpowered subnet; change it at the rack.
+                const Machine* pick = nullptr;
+                for (auto& m : g.net.machines)
+                    if (m.job == Job::Gateway && m.bay < 0 && !m.home && !g.net.housePowered(m.id) &&
+                        (!pick || g.net.bayUpkeep(m.id) > g.net.bayUpkeep(pick->id)))
+                        pick = &m;
+                if (pick && setHousePower(g, t.tower, pick->id).ok)
+                    line(std::string("HOUSE POWER: ") + towerCorp(t.tower) + "'s building now feeds " + pick->name +
+                             "'s subnet - half its bill, every run. Change it on the gateway at the rack.",
+                         Tone::Good);
+                else
+                    line(std::string("HOUSE POWER: ") + towerCorp(t.tower) +
+                             "'s building can feed one subnet at half its bill. Build a gateway and choose it at the rack.",
+                         Tone::Good);
                 bool all = true;
                 for (int k = 0; k < kTowerCount; ++k) if (g.floorsCleared(k) < kFloors) all = false;
                 if (all) {
@@ -1030,6 +1064,7 @@ Reckoning RunSession::settle() {
                                             "Somewhere HELIOS keeps every ticket it ever opened. You know what a network is for."});
     }
 
+    clearStandby(g);   // STANDBY is tonight only: everything is back on for the next briefing
     g.mapRunsLeft -= 1;
     if (g.mapRunsLeft <= 0) {
         g.mapIndex += 1;

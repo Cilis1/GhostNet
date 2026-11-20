@@ -49,6 +49,9 @@ struct Machine {
     BayRole role = BayRole::Speed;   // gateways only: what the bay does
     bool bayOn = true;          // gateways only: the whole subnet's power switch
     bool usedThisRun = false;   // compute favour already given this run
+    // STANDBY (0.8): powered down for tonight's connection only - not billed, not worn, no effect.
+    // Set at the briefing, cleared at the reckoning (or on leaving the briefing). Never saved.
+    bool standby = false;
     bool dark() const { return condition <= 0; }
     bool working() const { return active && !dark(); }
 };
@@ -60,6 +63,8 @@ struct Network {
     int scoutCharges = 0;            // stored charges ("ammunition")
     int nextId = 1;
     int burnedCount = 0;             // machines lost as decoys, forever
+    // HOUSE POWER (0.8): per tower you own, the gateway whose subnet runs on that tower's power (-1 = none).
+    std::vector<int> house;
 
     Machine* find(int id);
     const Machine* find(int id) const;
@@ -75,7 +80,10 @@ struct Network {
     std::vector<const Machine*> openBays() const;
     int bayPower(int gatewayId) const;            // power drawn by its members
     int bayBudget(const Machine& gw) const;
-    int bayUpkeep(int gatewayId) const;           // its own bill
+    int bayUpkeep(int gatewayId) const;           // its members' upkeep, before HOUSE POWER
+    bool housePowered(int gatewayId) const;       // an owned tower powers this subnet
+    int houseTower(int gatewayId) const;          // which tower (-1 = none)
+    int bayBill(int gatewayId) const;             // what the subnet actually bills (half on HOUSE POWER, rounded up)
     int clusterBonus(int gatewayId) const;        // +1 tier for three matching T3+ machines
     int effTier(const Machine& m) const;          // tier it acts at (clusters included)
     int relayBonus() const;          // % (capped)
@@ -87,7 +95,9 @@ struct Network {
     int jamDelay() const;            // seconds a watchdog's acceleration is held back (capped)
     int jamSpikeCut() const;         // % taken off alarm spikes (capped)
     const Machine* bestVault() const;   // the working vault that keeps the most on a trace-out
-    int upkeepTotal() const;
+    int upkeepTotal() const;         // tonight's bill: online machines, standby excluded, HOUSE POWER applied
+    int upkeepAwake() const;         // the same bill with nothing on standby
+    int standbyCount() const;
     const Machine* decoy() const;    // armed AND currently valid
     void refillScout();              // stored = capacity at this moment
 };

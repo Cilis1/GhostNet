@@ -149,6 +149,33 @@ currency, loot-box machine rolls, and machines that work while you're away.
   climbs all three floors within 9 connections, with no alarm re-keys). BREAKER 0 without
   compute never opens a door, because its one guess goes on the keypad every time.
 
+## 0.8.0 — Running lean: paying less for your servers without breaking the bill
+
+* **The problem.** Late in the game the bill ate the night. Tower players paid about 19% of
+  what they earned, and subnet players about 22% (sim bot, 8 seeds). The only way to pay less
+  was to store machines between runs, which takes a trip to the rack every night.
+* **STANDBY (tonight only).** At the briefing, the TONIGHT'S RACK tab lets a machine sit out a
+  single connection: no bill, no wear, no effect. It is cleared at the reckoning, cleared when
+  you leave the briefing, and never saved, so it can't become a standing order or anything
+  that happens while you're away.
+  * LEDGER suggests machines but never switches them: by the panel's preference, its picks
+    start OFF on every briefing.
+  * Amber lines name what you give up.
+  * The armed decoy can't go on standby, and neither can the last member of a decoy subnet.
+  * A gateway takes its whole subnet with it.
+* **SIGNAL SCRUB (paid once, permanent).** It lowers noise by 1 for 25 billed runs' worth of
+  savings, so it is never free and never quick. Captured hardware has a floor of noise 2, so
+  capturing stays the loud way in.
+* **HOUSE POWER (an owner's dividend, not income).** Each owned tower halves one chosen
+  subnet's bill. It never applies to the main rack, so the pillar holds: an unpaid main bill
+  still switches the rack off. It never pays credits either. It needs save v7.
+* **Results (sim bot, 8 seeds; `GHOSTNET_SIM_FAT=1` replays a seed the 0.7 way).**
+  * Act I is unchanged: careful 4.9% either way. LEDGER suggests nothing to a starter rack.
+  * Act IV fell from 19.1% to 10.9% of earnings.
+  * Subnet play fell from 22.2% to 20.4%. This bot rarely leaves its strike subnets home.
+  * Nothing became free. Every run that does something still sends a bill, and the
+    bill-switches-off rule is untouched.
+
 ## Deferred backlog
 
 1. ~~A graphical client~~ built in 0.3.0 (see section 6).

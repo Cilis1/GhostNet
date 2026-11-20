@@ -222,6 +222,22 @@ int App::screenshotTour(const std::string& dir, const std::function<void()>& ren
     selMachine = proto;
     shot("28-prototype-in-subnet");
     selMachine = -1;
+    // 0.8 RUNNING LEAN: TONIGHT'S RACK at a briefing, LEDGER's picks taken (they start OFF), the amber lines showing.
+    if (const Target* lt = findTarget([&](const Target& t) { return !t.deep && t.kind != Kind::Story && !g.burned.count(t.id) && t.security <= 2 && !t.watchdog; })) {
+        brief = *lt;
+        for (auto& m : g.net.machines)   // the scout back in the rack: LEDGER knows a scout does nothing during a run
+            if (m.job == Job::Scout && m.bay < 0 && !m.home && !m.dark()) { m.active = true; m.noise = 3; m.tier = 3; m.captured = true; }
+        go(Scr::Brief);
+        shot("38-brief-votes-lean");
+        briefStandby = true;
+        for (auto& p : standbyPicks(g, brief)) {
+            if (Machine* m = g.net.find(p.id)) setStandby(g, *m, true);
+        }
+        shot("39-brief-standby");
+        tab = Tab::Rack;
+        go(Scr::Hub);   // leaving the briefing wakes everything
+        if (g.net.standbyCount() != 0) { std::fprintf(stderr, "standby outlived the briefing\n"); ++failures; }
+    }
     {
         int keep = g.mapIndex, keepAct = g.act;
         g.act = 2;
@@ -371,6 +387,20 @@ int App::screenshotTour(const std::string& dir, const std::function<void()>& ren
         shot("35-run-biosentinel", 1.0f);
         run->disconnect();
         run.reset();
+    }
+    {   // HOUSE POWER: own Tidewater's Boardroom, and its building feeds SPINE-GW's subnet at half the bill
+        if (g.towerFloor.size() < static_cast<size_t>(kTowerCount)) g.towerFloor.resize(kTowerCount, 0);
+        int keepFloor = g.towerFloor[1];
+        g.towerFloor[1] = kFloors;
+        if (!setHousePower(g, 1, gwA).ok) { std::fprintf(stderr, "house power refused\n"); ++failures; }
+        tab = Tab::Rack;
+        go(Scr::Hub);
+        dismiss();
+        selMachine = gwA;
+        shot("40-gateway-house-power");
+        selMachine = -1;
+        g.towerFloor[1] = keepFloor;
+        tidyHousePower(g);
     }
     drillConnect(true);   // FORTRESS DRILL on the real budget, one reconnect in
     {

@@ -11,12 +11,14 @@
 
 #include "balance.h"
 #include "paths.h"
+#include "rack.h"
 #include "world.h"
 
 namespace fs = std::filesystem;
 
 namespace {
-constexpr int kVersion = 6;   // v1 (0.1.x), v2 (0.2-0.3), v3 (0.4), v4 (0.5) and v5 (0.6) saves still load; new fields default
+constexpr int kVersion = 7;   // v1 (0.1.x), v2 (0.2-0.3), v3 (0.4), v4 (0.5), v5 (0.6) and v6 (0.7) saves still load; new fields default
+// v7 (0.8): HOUSE POWER - which subnet each owned tower powers. (STANDBY is tonight only and never saved.)
 
 // v6: a FORTRESS floor record may only name a Kessler-Maru floor (a FORTRESS tower's floor id).
 bool fortressFloorId(int id) {
@@ -104,6 +106,8 @@ bool saveGame(const GameState& g, std::string* err) {
     for (int sd : g.sidesBurned) o << "sideburned " << sd << "\n";
     for (size_t i = 0; i < g.towerFloor.size() || i < g.towerKey.size(); ++i)   // v5: Act IV towers
         o << "tower " << i << " " << g.floorsCleared(static_cast<int>(i)) << " " << g.keyOf(static_cast<int>(i)) << "\n";
+    for (size_t i = 0; i < g.net.house.size(); ++i)   // v7: HOUSE POWER
+        if (g.net.house[i] >= 0) o << "house " << i << " " << g.net.house[i] << "\n";
     for (auto& [id, r] : g.fortress) {   // v6: FORTRESS floor records - guesses only, never marks
         o << "fortress " << id << " " << r.rekeys << " " << (r.survey ? 1 : 0) << "\n";
         for (auto& row : r.rows) o << "frow " << id << " " << row.stage << " " << row.guess << "\n";
@@ -279,6 +283,12 @@ bool loadFrom(const std::string& file, GameState& g, std::string* err) {
             n.towerFloor[at] = clampi(fl, 0, kFloors);
             n.towerKey[at] = clampi(key, 0, 1000000);
         }
+        else if (k == "house") {   // v7
+            long long tw = -1, gw = -1;
+            if (!(is >> tw >> gw) || tw < 0 || tw >= kTowerCount || gw < 0 || gw > 1000000000) continue;
+            if (n.net.house.size() <= static_cast<size_t>(tw)) n.net.house.resize(static_cast<size_t>(tw) + 1, -1);
+            n.net.house[static_cast<size_t>(tw)] = static_cast<int>(gw);
+        }
         else if (k == "fortress") {
             long long id = -1, rekeys = 0;
             int survey = 0;
@@ -335,6 +345,7 @@ bool loadFrom(const std::string& file, GameState& g, std::string* err) {
         bool taken = it->first - floorId(tower, 0) < n.floorsCleared(tower);
         it = taken || it->second.blank() ? n.fortress.erase(it) : std::next(it);
     }
+    tidyHousePower(n);   // a tower you no longer own (or a gateway that's gone) powers nothing
     g = n;
     return true;
 }

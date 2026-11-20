@@ -52,6 +52,8 @@ struct Reckoning {
     int credits = 0;
     bool billable = false;
     int bill = 0;
+    int standbySaved = 0;          // bill avoided by STANDBY tonight (shown, never refunded)
+    int houseSaved = 0;            // bill avoided by HOUSE POWER tonight
     bool deep = false, deepWon = false;
     Shortfall shortfall;
     std::vector<std::pair<std::string, std::string>> actCards;   // title, text
@@ -100,7 +102,10 @@ public:
     bool jobDone = false;
     bool anchoring = false;
     int emergLeft = 0;
-    std::vector<int> billIds;      // fixed when the run begins
+    std::vector<int> billIds;      // fixed when the run begins (standby machines are left out)
+    std::vector<int> houseBays;    // subnets on HOUSE POWER when the run began: they bill at half
+    int standbyCount = 0;          // machines sitting tonight out
+    int standbySaved = 0;          // what standby took off tonight's bill
     int startRelay = 0, startProxy = 0;
     int jamDelay = 0, jamCut = 0;  // from working jammers, fixed when the run begins
     int vaultPct = 0;              // best working vault, fixed when the run begins

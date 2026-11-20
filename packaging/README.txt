@@ -52,7 +52,13 @@ GHOSTNET (after your first contract)
   in one subnet act a tier higher while together. Rare HELIOS PROTOTYPE labs
   hold the only real tier 4: UNSTABLE, loud and costly.
   Running machines bill you after a run and wear. Can't pay? Nothing is taken:
-  everything except N0 goes dark. Arm a PROXY as the DECOY and if the trace
+  everything except N0 goes dark.
+  RUNNING LEAN (0.8): at the briefing, TONIGHT'S RACK puts machines on
+  STANDBY for that connection only (not billed, not worn, no effect; back on
+  at the reckoning). LEDGER's picks start OFF - STANDBY SUGGESTED takes them.
+  SIGNAL SCRUB at the rack: -1 noise for good, priced at 25 runs of savings
+  (captured machines stop at noise 2). HOUSE POWER: each tower you own halves
+  one subnet's bill (never the main rack, never credits). Arm a PROXY as the DECOY and if the trace
   fills, HELIOS traces it instead of you - it is destroyed, the fine is halved.
 
 THE DEEP JOB

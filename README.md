@@ -108,6 +108,22 @@ all four locks with no trace and no bill.
     is waived.
 * **The bill:** running machines bill you after a run that does something. If you can't
   pay, nothing is taken and everything except N0 goes dark. There is never debt.
+* **Running lean (0.8)** gives you three ways to pay less. None of them involves a timer, and none
+  makes credits for you:
+  * **STANDBY** (at the briefing, on the **TONIGHT'S RACK** tab). Pick machines to sit out this
+    one connection. A machine on standby is not billed, not worn and does nothing. Everything is
+    back on at the reckoning, and leaving the briefing wakes it all. LEDGER suggests machines
+    that do nothing on tonight's job (scouts, relays past their cap) and loud ones the job won't
+    miss. Its picks start **OFF**: **STANDBY SUGGESTED** takes them in one click. Amber lines say
+    what you give up (vault, proxy cover, a subnet, scans). The armed decoy can't go on standby,
+    and a gateway on standby takes its whole subnet with it.
+  * **SIGNAL SCRUB** (on the machine at the rack) lowers a machine's noise by one, for good. It
+    costs what it saves in 25 billed runs, rounded to 25cr. For example, a Hot Iron T2 goes from
+    55 to 39cr for 400cr, and a prototype from 175 to 154cr for 525cr. Captured hardware never
+    gets quieter than noise 2.
+  * **HOUSE POWER.** Each tower you own powers one subnet of your choice, and that subnet bills
+    at half. It never applies to the main rack and never pays credits. Taking a Boardroom feeds
+    your most expensive subnet; switch it with **HOUSE POWER** on any gateway.
 * **Decoy:** arm a Proxy (or a whole subnet, by its Gateway). If the trace fills, HELIOS traces it instead of you. The decoy
   is destroyed, the fine is halved, and you keep the night. Its nameplate goes on the
   **Memorial Wall** in Records.
@@ -154,7 +170,7 @@ all four locks with no trace and no bill.
     and that tower re-keys every door: phrases you held for it go stale. Floor plans and
     taken floors are kept.
   * Floors pay 1500 / 2500 / 9000cr. Records shows your progress on the Ledger. Saves from
-    any earlier version carry over (save format v6).
+    any earlier version carry over (save format v7 since 0.8).
 * **The Panel:** VESPER (risk), LEDGER (money) and MOTH (intel) are advisor AIs. They read
   your meters and vote before each run. They never solve a lock.
 * **Never in this game:** idle income, offline progress, build timers, raids, a second currency, gacha or levelling.

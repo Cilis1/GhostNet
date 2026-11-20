@@ -100,6 +100,10 @@ void App::shutdown() {
 }
 
 void App::go(Scr s) {
+    // STANDBY is for tonight's connection only: a fresh briefing starts with everything awake (LEDGER's picks OFF),
+    // and walking away from the briefing without connecting wakes everything again.
+    if (s == Scr::Brief && scr != Scr::Brief) { clearStandby(g); briefStandby = false; }
+    if (scr == Scr::Brief && s != Scr::Brief && s != Scr::Run) clearStandby(g);
     if (s != scr) sfx::play(sfx::Whoosh, 0.6f);
     scr = s;
     scrBorn = gx::now;

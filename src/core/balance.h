@@ -76,6 +76,16 @@ constexpr int TIER_UPKEEP[6]    = {0, 10, 20, 45, 80, 80};
 constexpr int NOISE_UPKEEP      = 15;
 constexpr int MAX_NOISE         = 4;
 
+// ---- Running lean (0.8) -----------------------------------------------------
+// SIGNAL SCRUB: a paid, permanent step down in noise. It costs what it saves in this many billed runs,
+// and captured hardware never gets quieter than SCRUB_FLOOR_CAPTURED (capturing stays the loud way in).
+constexpr int SCRUB_PAYBACK_RUNS   = 25;
+constexpr int SCRUB_FLOOR_CAPTURED = 2;
+// HOUSE POWER: each tower you own runs one subnet on its own power - that subnet bills at half (rounded up).
+constexpr int HOUSE_POWER_PCT      = 50;
+// STANDBY SUGGESTED: LEDGER only proposes a machine that does nothing tonight, or one this loud on a job that won't miss it.
+constexpr int STANDBY_SUGGEST_MIN  = 35;
+
 // ---- Wear -------------------------------------------------------------------
 constexpr int WEAR_NORMAL_BOUGHT    = 4;
 constexpr int WEAR_NORMAL_CAPTURED  = 5;

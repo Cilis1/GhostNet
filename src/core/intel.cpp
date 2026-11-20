@@ -192,6 +192,12 @@ PanelView panelBriefing(const GameState& g, const Target& t) {
         ll += " You can't cover the bill right now - earn " + txt::cr(bill - g.credits) + " or everything goes dark.";
     }
     if (t.reward) ll += " Contract pays " + txt::cr(t.reward) + " on completion.";
+    if (g.netUnlocked) {   // STANDBY SUGGESTED: named here, applied only if you say so
+        auto picks = standbyPicks(g, t);
+        int save = 0;
+        for (auto& p : picks) save += p.saving;
+        if (!picks.empty()) ll += " I'd stand " + std::to_string(picks.size()) + " machine(s) down tonight: -" + txt::cr(save) + " (TONIGHT'S RACK).";
+    }
     say(Advisor::Ledger, ll);
     if (t.stealable && g.net.bestScoutTier() > 0) {
         HardwareSpec hw = hardwareFor(t);
@@ -274,7 +280,9 @@ PanelView panelReview(const GameState& g) {
     const Machine* loud = nullptr;
     for (auto& m : n.machines) if (n.online(m) && !m.home && (!loud || upkeepOf(m) > upkeepOf(*loud))) loud = &m;
     if (loud && upkeepOf(*loud) >= 35)
-        say(Advisor::Ledger, "'" + loud->name + "' costs " + txt::cr(upkeepOf(*loud)) + "/run on its own. Store it on runs that don't need it.");
+        say(Advisor::Ledger, "'" + loud->name + "' costs " + txt::cr(upkeepOf(*loud)) + "/run on its own. Put it on STANDBY at the briefing on runs that don't need it" +
+                                 (scrubSaving(*loud) > 0 ? ", or SCRUB its signal at the rack: " + txt::cr(scrubCost(*loud)) + " once, " + txt::cr(scrubSaving(*loud)) + " less every bill."
+                                                         : "."));
     int repair = repairAllCost(g);
     if (repair > 0) say(Advisor::Ledger, "Full repair would cost " + txt::cr(repair) + ".");
     if (bill > g.credits) {
@@ -294,7 +302,8 @@ PanelView panelReview(const GameState& g) {
         std::string st = !gw->bayOn ? "switched OFF" : !n.bayOnline(*gw) ? "BROWNED OUT - over its power budget" : std::string(roleName(gw->role));
         say(Advisor::Moth, "Subnet " + gw->name + ": " + std::to_string(used) + "/" + std::to_string(bal::BAY_SLOTS) + " plugged, " +
                                std::to_string(n.bayPower(gw->id)) + "/" + std::to_string(n.bayBudget(*gw)) + " power, " + st + ", " +
-                               txt::cr(n.bayUpkeep(gw->id)) + "/run." + (n.clusterBonus(gw->id) ? " CLUSTER live: acting a tier higher." : ""));
+                               txt::cr(n.bayBill(gw->id)) + "/run" + (n.housePowered(gw->id) ? " on HOUSE POWER (half)." : ".") +
+                               (n.clusterBonus(gw->id) ? " CLUSTER live: acting a tier higher." : ""));
     }
     say(Advisor::Moth, "Scouting: " + std::to_string(n.usableScoutCharges()) + " charge(s), capacity " + std::to_string(n.scoutCapacity()) +
                            ", best report quality " + std::to_string(n.bestScoutTier()) + "/3.");
@@ -366,4 +375,119 @@ Result buyPrep(GameState& g, const Target& t, Prep p) {
     g.knownPhrases.insert(t.id);
     g.journal.push_back("Passphrase for " + t.host + ": " + t.passphrase + " (bought)");
     return {true, "Phrase bought for " + txt::cr(cost) + ". It's in your journal."};
+}
+
+// ---------------------------------------------------------------------------
+// STANDBY SUGGESTED (0.8)
+// ---------------------------------------------------------------------------
+namespace {
+struct Loss {
+    bool relay = false, proxy = false, compute = false, jam = false, vault = false, scout = false, subnet = false, cluster = false;
+    std::vector<std::string> lines;
+    bool any() const { return relay || proxy || compute || jam || vault || scout || subnet || cluster; }
+};
+int decoyCandidates(const Network& n) {
+    int c = 0;
+    for (auto& m : n.machines)
+        if (!m.home && n.online(m) && (m.job == Job::Proxy || (m.job == Job::Gateway && n.bayOnline(m)))) ++c;
+    return c;
+}
+// What tonight loses going from rack n to rack p (p has more on standby).
+Loss lossBetween(const Network& n, const Network& p) {
+    Loss L;
+    auto pct = [](int a, int b) { return std::to_string(a) + "% -> " + std::to_string(b) + "%"; };
+    if (p.relayBonus() < n.relayBonus()) { L.relay = true; L.lines.push_back("Relay bonus " + pct(n.relayBonus(), p.relayBonus()) + ": slower downloads."); }
+    if (p.proxyBonus() < n.proxyBonus()) { L.proxy = true; L.lines.push_back("Proxy bonus " + pct(n.proxyBonus(), p.proxyBonus()) + ": the trace runs faster."); }
+    if (p.computeCapacity() < n.computeCapacity()) {
+        L.compute = true;
+        L.lines.push_back("Emergency attempts " + std::to_string(n.computeCapacity()) + " -> " + std::to_string(p.computeCapacity()) + ".");
+    }
+    if (p.jamDelay() < n.jamDelay() || p.jamSpikeCut() < n.jamSpikeCut()) { L.jam = true; L.lines.push_back("Jammers weaker: watchdogs and alarm spikes hit harder."); }
+    const Machine* va = n.bestVault();
+    const Machine* vb = p.bestVault();
+    int ka = va ? bal::VAULT_KEEP[n.effTier(*va)] : 0, kb = vb ? bal::VAULT_KEEP[p.effTier(*vb)] : 0;
+    if (kb < ka) { L.vault = true; L.lines.push_back(kb == 0 ? "No VAULT tonight: if you're traced, every file is seized." : "Your VAULT keeps less if you're traced."); }
+    if (p.scoutCapacity() < n.scoutCapacity()) { L.scout = true; L.lines.push_back("Scout asleep: scan what you need before you connect."); }
+    for (auto* gw : n.openBays()) {
+        const Machine* pg = p.find(gw->id);   // bayOpen() goes by rack position: ask each rack about its own gateway
+        if (n.bayOnline(*gw) && (!pg || !p.bayOnline(*pg))) {
+            L.subnet = true;
+            L.lines.push_back("Takes " + gw->name + "'s subnet with it: no " + roleName(gw->role) + ", no strike tonight.");
+        } else if (n.clusterBonus(gw->id) && !p.clusterBonus(gw->id)) {
+            L.cluster = true;
+            L.lines.push_back("Breaks " + gw->name + "'s CLUSTER: the other two act a tier lower.");
+        }
+    }
+    if (n.decoyId < 0 && decoyCandidates(n) > 0 && decoyCandidates(p) == 0)
+        L.lines.push_back("Nothing left running that could be armed as a decoy tonight.");
+    return L;
+}
+Loss lossOf(const GameState& g, const Machine& m) {
+    Network p = g.net;
+    if (Machine* pm = p.find(m.id)) pm->standby = true;
+    return lossBetween(g.net, p);
+}
+// What standing m down saves tonight (a gateway takes its subnet's bill with it).
+int savingOf(const GameState& g, const Machine& m) {
+    Network p = g.net;
+    if (Machine* pm = p.find(m.id)) pm->standby = true;
+    return std::max(0, g.net.upkeepTotal() - p.upkeepTotal());
+}
+}  // namespace
+
+std::vector<std::string> standbyRisks(const GameState& g, const Target& t, const Machine& m) {
+    (void)t;
+    return lossOf(g, m).lines;
+}
+
+std::vector<std::string> standbyLosses(const GameState& g) {
+    if (g.net.standbyCount() == 0) return {};
+    Network awake = g.net;
+    for (auto& m : awake.machines) m.standby = false;
+    return lossBetween(awake, g.net).lines;
+}
+
+std::vector<StandbyPick> standbyPicks(const GameState& g, const Target& t) {
+    std::vector<StandbyPick> out;
+    if (!g.netUnlocked) return out;
+    const bool hot = t.security >= 3 || t.watchdog || t.deep || t.kind == Kind::Tower;   // a night the trace will matter
+    const bool hasLock = t.lock != LockType::None || t.kind == Kind::Tower;
+    const bool hasFiles = !t.files.empty();
+    for (auto& m : g.net.machines) {
+        if (m.home || m.standby || !g.net.online(m) || !canStandby(g, m)) continue;
+        int save = savingOf(g, m);
+        if (save <= 0) continue;
+        Loss L = lossOf(g, m);
+        std::string why;
+        if (!L.any()) why = "does nothing tonight (past its cap or out of power)";
+        else {
+            // Only loud machines on a job that won't miss them.
+            if (save < bal::STANDBY_SUGGEST_MIN) continue;
+            bool needed = (L.relay && hasFiles) || ((L.proxy || L.jam || L.vault || L.subnet) && hot) || (L.compute && hasLock) || L.cluster;
+            if (needed) continue;
+            if (L.scout && !L.relay && !L.proxy && !L.compute && !L.jam && !L.vault && !L.subnet) why = "a scout scouts between runs, not during one";
+            else why = "loud, and tonight's job won't miss it";
+        }
+        StandbyPick pk;
+        pk.id = m.id;
+        pk.saving = save;
+        pk.why = why;
+        pk.risks = L.lines;
+        out.push_back(pk);
+    }
+    std::sort(out.begin(), out.end(), [](const StandbyPick& a, const StandbyPick& b) { return a.saving > b.saving; });
+    // Picks are taken together: drop any that a bigger pick already covers (a member of a gateway picked whole).
+    std::vector<StandbyPick> kept;
+    Network p = g.net;
+    for (auto& pk : out) {
+        Machine* pm = p.find(pk.id);
+        if (!pm) continue;
+        int before = p.upkeepTotal();
+        pm->standby = true;
+        int got = before - p.upkeepTotal();
+        if (got <= 0) { pm->standby = false; continue; }
+        pk.saving = got;
+        kept.push_back(pk);
+    }
+    return kept;
 }

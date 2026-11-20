@@ -158,14 +158,14 @@ bool Network::bayOpen(const Machine& gw) const {
 }
 int Network::bayPower(int gatewayId) const {
     int p = 0;
-    for (auto& m : machines) if (m.bay == gatewayId && m.active) p += bal::POWER_DRAW[std::clamp(m.tier, 1, kMaxTier)];
+    for (auto& m : machines) if (m.bay == gatewayId && m.active && !m.standby) p += bal::POWER_DRAW[std::clamp(m.tier, 1, kMaxTier)];
     return p;
 }
 int Network::bayBudget(const Machine& gw) const { return bal::GATEWAY_POWER[std::clamp(gw.tier, 1, kMaxTier)]; }
 // Online = open, switched on, within its power budget and with at least one machine plugged in.
 bool Network::bayOnline(const Machine& gw) const {
-    if (!bayOpen(gw) || !gw.bayOn || bayPower(gw.id) > bayBudget(gw)) return false;
-    for (auto& m : machines) if (m.bay == gw.id && m.active && !m.dark()) return true;
+    if (!bayOpen(gw) || !gw.bayOn || gw.standby || bayPower(gw.id) > bayBudget(gw)) return false;
+    for (auto& m : machines) if (m.bay == gw.id && m.active && !m.dark() && !m.standby) return true;
     return false;
 }
 std::vector<const Machine*> Network::bayMembers(int gatewayId) const {
@@ -179,7 +179,7 @@ std::vector<const Machine*> Network::openBays() const {
     return v;
 }
 bool Network::online(const Machine& m) const {
-    if (!m.working()) return false;
+    if (!m.working() || m.standby) return false;
     if (m.bay < 0) return true;
     const Machine* gw = find(m.bay);
     return gw && bayOnline(*gw);
@@ -189,11 +189,22 @@ int Network::bayUpkeep(int gatewayId) const {
     for (auto* m : bayMembers(gatewayId)) if (online(*m)) t += upkeepOf(*m);
     return t;
 }
+int Network::houseTower(int gatewayId) const {
+    const Machine* gw = find(gatewayId);
+    if (!gw || gw->job != Job::Gateway || gw->home) return -1;
+    for (size_t k = 0; k < house.size(); ++k) if (house[k] == gatewayId) return static_cast<int>(k);
+    return -1;
+}
+bool Network::housePowered(int gatewayId) const { return houseTower(gatewayId) >= 0; }
+int Network::bayBill(int gatewayId) const {
+    int raw = bayUpkeep(gatewayId);
+    return housePowered(gatewayId) ? (raw + 1) / 2 : raw;
+}
 int Network::clusterBonus(int gatewayId) const {
     auto v = bayMembers(gatewayId);
     if (static_cast<int>(v.size()) != bal::BAY_SLOTS) return 0;
     for (auto* m : v)
-        if (m->job != v[0]->job || m->tier < 3 || m->dark()) return 0;
+        if (m->job != v[0]->job || m->tier < 3 || m->dark() || m->standby) return 0;
     return 1;
 }
 int Network::effTier(const Machine& m) const {
@@ -248,6 +259,12 @@ int Network::scoutCapacity() const {
 }
 int Network::usableScoutCharges() const { return std::min(scoutCharges, scoutCapacity()); }
 int Network::bestScoutTier() const {
+    // A report is read, not scouted: a scout on standby still vouches for the reports it wrote.
+    if (standbyCount() > 0) {
+        Network awake = *this;
+        for (auto& m : awake.machines) m.standby = false;
+        return awake.bestScoutTier();
+    }
     int best = 0;
     for (auto& m : machines) if (online(m) && m.job == Job::Scout) best = std::max(best, std::min(3, effTier(m)));
     return best;
@@ -300,8 +317,20 @@ int scrapValue(const Machine& m) {
 }
 int Network::upkeepTotal() const {
     int t = 0;
-    for (auto& m : machines) if (online(m) && !m.home) t += upkeepOf(m);
+    for (auto& m : machines) if (online(m) && !m.home && m.bay < 0) t += upkeepOf(m);   // the main rack
+    for (auto& m : machines)
+        if (m.job == Job::Gateway && m.bay < 0) t += bayBill(m.id);   // each subnet bills on its own
     return t;
+}
+int Network::upkeepAwake() const {
+    Network n = *this;
+    for (auto& m : n.machines) m.standby = false;
+    return n.upkeepTotal();
+}
+int Network::standbyCount() const {
+    int c = 0;
+    for (auto& m : machines) c += m.standby ? 1 : 0;
+    return c;
 }
 const Machine* Network::decoy() const {
     const Machine* m = find(decoyId);

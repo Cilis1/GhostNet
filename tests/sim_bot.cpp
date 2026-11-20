@@ -40,6 +40,9 @@ bool CHAOS = false;
 bool SUBNET = false;   // "subnet" mode: build subnets early, hunt prototypes, never take the deep job
 bool TOWER = false;    // "tower" mode: keep playing after the deep job, into Act IV
 int KIT_TIER = 3;      // the tier of the late-game owner's iron in the kit trials
+// 0.8 RUNNING LEAN: the bot takes LEDGER's standby picks, scrubs loud iron it can afford, and lets towers power its subnets.
+// GHOSTNET_SIM_FAT=1 plays the same seed the 0.7 way (no standby, no scrubs) to measure what lean play saves.
+bool LEAN = std::getenv("GHOSTNET_SIM_FAT") == nullptr;
 int problems = 0;
 void fail(const std::string& s) {
     std::cerr << "PROBLEM: " << s << "\n";
@@ -200,7 +203,23 @@ struct SimStats {
     int bought = 0, decoys = 0, deepAttempts = 0, shortfalls = 0, deepWon = 0, annex = 0, contracts = 0, unpaid = 0;
     int gateways = 0, plugged = 0, strikes = 0, clusters = 0, protos = 0, protoSeen = 0, protoTries = 0;
     int towerRuns = 0, floors = 0, rekeys = 0, prepBought = 0, sweeps = 0, misses = 0, programs = 0;
+    int standbyNights = 0, standbySaved = 0, houseSaved = 0, scrubs = 0, scrubSpent = 0;
 } st;
+
+// LEDGER's picks, taken (the GUI starts them OFF; this bot always opts in).
+void leanUp(GameState& g, const Target& t) {
+    if (!LEAN) { g.net.house.clear(); return; }   // the 0.7 way: every subnet pays in full
+    if (!g.netUnlocked) return;
+    int n = 0;
+    for (auto& p : standbyPicks(g, t))
+        if (Machine* m = g.net.find(p.id)) n += setStandby(g, *m, true).ok ? 1 : 0;
+    if (n > 0) ++st.standbyNights;
+    if (g.net.decoyId >= 0 && !g.net.decoy()) fail("standby disarmed the decoy");
+}
+void leanTally(const Reckoning& rk) {
+    st.standbySaved += rk.standbySaved;
+    st.houseSaved += rk.houseSaved;
+}
 
 // Fire any subnet strike that is usable right now (the bot is greedy with them).
 void useStrikes(RunSession& r) {
@@ -247,6 +266,9 @@ void checkInvariants(const GameState& g) {
     if (g.act < 1 || g.act > kMaxAct) fail("act out of range");
     if (g.act == 4 && !g.deepDone) fail("Act IV without the deep job");
     for (int k = 0; k < kTowerCount; ++k) if (g.floorsCleared(k) < 0 || g.floorsCleared(k) > kFloors) fail("tower progress out of range");
+    if (g.net.standbyCount() > 0) fail("a machine is still on standby between runs");
+    for (size_t k = 0; k < g.net.house.size(); ++k)
+        if (g.net.house[k] >= 0 && !towerOwned(g, static_cast<int>(k))) fail("house power from a tower you don't own");
 }
 
 void roundTrip(const GameState& g) {
@@ -266,6 +288,11 @@ void roundTrip(const GameState& g) {
         const Machine* k = h.net.find(m.id);
         if (!k || k->bay != m.bay || k->role != m.role || k->bayOn != m.bayOn || k->tier != m.tier || k->active != m.active)
             fail("save/load lost a machine's subnet, role or tier");
+    }
+    for (auto& m : g.net.machines) {
+        const Machine* k = h.net.find(m.id);
+        if (k && k->noise != m.noise) fail("save/load lost a machine's noise (scrub)");
+        if (m.job == Job::Gateway && h.net.houseTower(m.id) != g.net.houseTower(m.id)) fail("save/load lost house power");
     }
     if (h.net.relayBonus() != g.net.relayBonus() || h.net.proxyBonus() != g.net.proxyBonus() || h.net.upkeepTotal() != g.net.upkeepTotal())
         fail("save/load changed the network's numbers");
@@ -501,6 +528,16 @@ void manage(GameState& g) {
         }
     }
     armAnyDecoy(g, CHAOS);
+    if (LEAN) {   // SIGNAL SCRUB: the loudest running iron first, only with a healthy cushion left
+        for (int k = 0; k < 4; ++k) {
+            Machine* best = nullptr;
+            for (auto& m : g.net.machines)
+                if (g.net.online(m) && !m.home && scrubSaving(m) > 0 && (!best || scrubSaving(m) > scrubSaving(*best))) best = &m;
+            if (!best || scrubSaving(*best) < 15 || g.credits < scrubCost(*best) + 2 * g.net.upkeepTotal() + 400) break;
+            int cost = scrubCost(*best);
+            if (scrubSignal(g, *best).ok) { ++st.scrubs; st.scrubSpent += cost; }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -723,6 +760,196 @@ Target testTarget(LockType lock) {
     bait.kind = FileKind::Honeypot;
     t.files = {pay, small, bait};
     return t;
+}
+
+// 0.8 - RUNNING LEAN: STANDBY (tonight only), SIGNAL SCRUB (paid, permanent), HOUSE POWER (a tower halves one subnet's bill).
+void leanSelfTest() {
+    auto mk = [](GameState& h, Job j, int tier, int noise, Trait tr, bool captured) -> int {
+        Machine m;
+        m.id = h.net.nextId++;
+        m.name = std::string(jobName(j)).substr(0, 3) + std::to_string(m.id);
+        m.job = j;
+        m.tier = tier;
+        m.noise = noise;
+        m.trait = tr;
+        m.captured = captured;
+        m.condition = 100;
+        h.net.machines.push_back(m);
+        return m.id;
+    };
+    auto payRun = [](GameState& h, uint64_t e) {   // one billable night: download a paydata file and leave
+        Target t = testTarget(LockType::None);
+        t.traceOverride = 0.05;
+        RunSession r(h, t, e);
+        std::string err;
+        r.startDownload(1, err);
+        while (r.busy()) r.step();
+        if (!r.over()) r.disconnect();
+        return r.settle();
+    };
+    {   // --- SIGNAL SCRUB: the doc's three worked examples, the floors, the price
+        GameState h;
+        h.credits = 5000;
+        unlockNetwork(h);
+        const int hotId = mk(h, Job::Relay, 2, 3, Trait::HotIron, true);   // ids, never pointers: the rack vector grows
+        const int corpId = mk(h, Job::Proxy, 3, 4, Trait::CorpBuild, true);
+        const int protoId = mk(h, Job::Compute, 4, 4, Trait::Unstable, true);
+        CHECK(upkeepOf(*h.net.find(hotId)) == 55 && scrubSaving(*h.net.find(hotId)) == 16 && scrubCost(*h.net.find(hotId)) == 400, "scrub: Hot Iron T2 55 -> 39 for 400cr");
+        CHECK(upkeepOf(*h.net.find(corpId)) == 108 && scrubCost(*h.net.find(corpId)) == 450, "scrub: Corp T3 108 -> 90 for 450cr");
+        CHECK(upkeepOf(*h.net.find(protoId)) == 175 && scrubCost(*h.net.find(protoId)) == 525, "scrub: prototype T4 175 -> 154 for 525cr");
+        for (int id : {hotId, corpId, protoId}) {
+            const Machine& m = *h.net.find(id);
+            CHECK(scrubCost(m) % 25 == 0 && scrubCost(m) == bal::SCRUB_PAYBACK_RUNS * scrubSaving(m), "scrub pays back in 25 billed runs");
+        }
+        int c0 = h.credits;
+        CHECK(scrubSignal(h, *h.net.find(corpId)).ok && h.net.find(corpId)->noise == 3 && upkeepOf(*h.net.find(corpId)) == 90 && h.credits == c0 - 450,
+              "scrub: one step, paid once");
+        CHECK(scrubSignal(h, *h.net.find(corpId)).ok && h.net.find(corpId)->noise == 2 && upkeepOf(*h.net.find(corpId)) == 72, "scrub: a second step");
+        std::string why;
+        CHECK(!canScrub(h, *h.net.find(corpId), &why) && scrubSaving(*h.net.find(corpId)) == 0 && why.find("2") != std::string::npos,
+              "captured hardware stops at noise 2");
+        CHECK(buyMachine(h, Job::Relay).ok, "buy a relay");
+        CHECK(!canScrub(h, h.net.machines.back()) && scrubCost(h.net.machines.back()) == 0, "bought hardware is already quiet");
+        CHECK(!canScrub(h, *h.net.home()), "N0 can't be scrubbed");
+        h.credits = 100;
+        CHECK(!scrubSignal(h, *h.net.find(protoId)).ok && h.net.find(protoId)->noise == 4 && h.credits == 100, "no credits, no scrub");
+        roundTrip(h);
+        GameState back;
+        std::string err;
+        CHECK(saveGame(h, &err) && loadGame(back, &err) && back.net.find(corpId) && back.net.find(corpId)->noise == 2, "a scrub is saved");
+    }
+    {   // --- STANDBY: not billed, not worn, no effect, back at the reckoning
+        GameState h;
+        h.credits = 5000;
+        unlockNetwork(h);
+        h.net.slots = bal::MAX_SLOTS;
+        int r1 = mk(h, Job::Relay, 3, 3, Trait::None, true);
+        int sc = mk(h, Job::Scout, 3, 3, Trait::None, true);
+        int px = mk(h, Job::Proxy, 2, 1, Trait::None, false);
+        for (int id : {r1, sc, px}) activate(h, *h.net.find(id));
+        int awake = h.net.upkeepTotal(), relay = h.net.relayBonus();
+        std::string why;
+        CHECK(!canStandby(h, *h.net.home(), &why), "N0 never goes on standby");
+        CHECK(setStandby(h, *h.net.find(r1), true).ok && !h.net.online(*h.net.find(r1)), "a relay on standby is offline tonight");
+        CHECK(h.net.upkeepTotal() == awake - upkeepOf(*h.net.find(r1)) && h.net.upkeepAwake() == awake, "standby comes off tonight's bill");
+        CHECK(h.net.relayBonus() < relay, "standby: no effect");
+        CHECK(h.net.activeCount() == 4, "standby keeps its rack slot");
+        Target t = testTarget(LockType::Keypad);
+        auto picks = standbyPicks(h, t);
+        CHECK(h.net.standbyCount() == 1, "asking LEDGER changes nothing: picks start OFF");
+        bool scoutPicked = false;
+        for (auto& p : picks) scoutPicked = scoutPicked || p.id == sc;
+        CHECK(scoutPicked, "LEDGER suggests the scout - it scouts between runs, not during one");
+        CHECK(!standbyLosses(h).empty(), "amber lines say what standby costs tonight");
+        int scoutTier = h.net.bestScoutTier();
+        CHECK(setStandby(h, *h.net.find(sc), true).ok && h.net.bestScoutTier() == scoutTier, "a sleeping scout still vouches for its reports");
+        Reckoning rk = payRun(h, 41);
+        CHECK(rk.bill == upkeepOf(*h.net.find(px)), "the bill counted only what was awake");
+        CHECK(rk.standbySaved == upkeepOf(*h.net.find(r1)) + upkeepOf(*h.net.find(sc)), "the reckoning says what standby saved");
+        CHECK(h.net.find(r1)->condition == 100 && h.net.find(sc)->condition == 100 && h.net.find(px)->condition < 100, "standby: no wear");
+        CHECK(h.net.standbyCount() == 0 && h.net.online(*h.net.find(r1)), "everything is back on after the reckoning");
+        bool said = false;
+        for (auto& l : rk.lines) said = said || l.text.find("STANDBY") != std::string::npos;
+        CHECK(said, "the reckoning mentions standby");
+        // The armed decoy can't sleep.
+        CHECK(armDecoy(h, *h.net.find(px), true).ok, "arm the proxy");
+        CHECK(!setStandby(h, *h.net.find(px), true).ok && !canStandby(h, *h.net.find(px)), "the armed decoy can't go on standby");
+        for (auto& p : standbyPicks(h, t)) CHECK(p.id != px, "LEDGER never suggests the decoy");
+        // Standby isn't saved: a reloaded game is wide awake.
+        CHECK(setStandby(h, *h.net.find(r1), true).ok, "standby again");
+        std::string err;
+        GameState back;
+        CHECK(saveGame(h, &err) && loadGame(back, &err) && back.net.standbyCount() == 0, "standby is never saved");
+        clearStandby(h);
+    }
+    {   // --- a gateway on standby takes its subnet with it; a decoy subnet can't be emptied by standby
+        GameState h;
+        h.credits = 20000;
+        unlockNetwork(h);
+        h.net.slots = bal::MAX_SLOTS;
+        CHECK(buyMachine(h, Job::Gateway).ok, "buy a gateway");
+        int gw = h.net.machines.back().id;
+        h.net.find(gw)->tier = 3;
+        int a = mk(h, Job::Relay, 3, 2, Trait::None, true), b = mk(h, Job::Relay, 3, 2, Trait::None, true);
+        CHECK(plugIn(h, *h.net.find(a), *h.net.find(gw)).ok && plugIn(h, *h.net.find(b), *h.net.find(gw)).ok, "fill the subnet");
+        int awake = h.net.upkeepTotal(), bay = h.net.bayUpkeep(gw);
+        CHECK(bay > 0 && setStandby(h, *h.net.find(gw), true).ok && !h.net.bayOnline(*h.net.find(gw)) && h.net.bayUpkeep(gw) == 0,
+              "a gateway on standby takes its subnet with it");
+        CHECK(h.net.upkeepTotal() == awake - bay - upkeepOf(*h.net.find(gw)), "...and its whole bill");
+        clearStandby(h);
+        CHECK(setStandby(h, *h.net.find(a), true).ok && h.net.bayOnline(*h.net.find(gw)) && h.net.bayUpkeep(gw) == upkeepOf(*h.net.find(b)),
+              "one member on standby: the subnet runs on the other");
+        clearStandby(h);
+        CHECK(armDecoy(h, *h.net.find(gw), true).ok, "arm the subnet");
+        CHECK(!canStandby(h, *h.net.find(gw)), "an armed decoy subnet's gateway can't sleep");
+        CHECK(setStandby(h, *h.net.find(a), true).ok, "one member of a decoy subnet may sleep");
+        CHECK(!setStandby(h, *h.net.find(b), true).ok && h.net.decoy(), "but not the last one - that would disarm the decoy");
+        clearStandby(h);
+    }
+    {   // --- HOUSE POWER: each owned tower halves one chosen subnet's bill; never the main rack, never credits
+        GameState h = ledgerOwner(77);
+        CHECK(buyMachine(h, Job::Gateway).ok && buyMachine(h, Job::Gateway).ok, "two gateways");
+        int g1 = h.net.machines[h.net.machines.size() - 2].id, g2 = h.net.machines.back().id;
+        deactivate(h, h.net.machines[1]);   // make room in the main rack for both gateways
+        activate(h, *h.net.find(g1));
+        activate(h, *h.net.find(g2));
+        h.net.find(g1)->tier = h.net.find(g2)->tier = 4;   // a T4 gateway powers two prototypes
+        CHECK(h.net.bayOpen(*h.net.find(g1)) && h.net.bayOpen(*h.net.find(g2)), "both subnets open");
+        int p1 = mk(h, Job::Compute, 4, 4, Trait::Unstable, true), p2 = mk(h, Job::Compute, 4, 4, Trait::Unstable, true);
+        int p3 = mk(h, Job::Compute, 4, 4, Trait::Unstable, true);
+        for (int id : {p1, p2}) CHECK(plugIn(h, *h.net.find(id), *h.net.find(g1)).ok, "prototype into subnet 1");
+        CHECK(plugIn(h, *h.net.find(p3), *h.net.find(g2)).ok, "prototype into subnet 2");
+        int raw = h.net.bayUpkeep(g1), total = h.net.upkeepTotal();
+        CHECK(raw == 350, "two prototypes bill 350");
+        CHECK(!setHousePower(h, 0, g1).ok && !h.net.housePowered(g1), "no tower owned, no house power");
+        if (h.towerFloor.size() < static_cast<size_t>(kTowerCount)) h.towerFloor.resize(kTowerCount, 0);
+        h.towerFloor[0] = kFloors;
+        int mainBox = h.net.machines[2].id;
+        CHECK(!setHousePower(h, 0, mainBox).ok, "house power never feeds the main rack");
+        CHECK(!setHousePower(h, 1, g1).ok, "a tower you don't own powers nothing");
+        CHECK(setHousePower(h, 0, g1).ok && h.net.housePowered(g1) && h.net.bayBill(g1) == 175, "house power halves the subnet's bill");
+        CHECK(h.net.upkeepTotal() == total - 175, "...and tonight's total");
+        int c0 = h.credits;
+        CHECK(setHousePower(h, 0, g2).ok && !h.net.housePowered(g1) && h.net.housePowered(g2) && h.credits == c0, "one subnet per tower; it moves, it never pays");
+        h.towerFloor[1] = kFloors;
+        CHECK(setHousePower(h, 1, g1).ok && h.net.housePowered(g1) && h.net.housePowered(g2), "two towers, two subnets");
+        CHECK(setHousePower(h, 1, g2).ok && h.net.houseTower(g2) == 1 && !h.net.housePowered(g1), "a subnet takes one tower's power at most");
+        CHECK(setHousePower(h, 0, g1).ok, "back to both");
+        roundTrip(h);
+        GameState back;
+        std::string err;
+        CHECK(saveGame(h, &err) && loadGame(back, &err) && back.net.houseTower(g1) == 0 && back.net.houseTower(g2) == 1, "house power is saved (v7)");
+        Reckoning rk = payRun(h, 43);
+        bool said = false;
+        for (auto& l : rk.lines) said = said || l.text.find("HOUSE POWER") != std::string::npos;
+        CHECK(said && rk.houseSaved > 0, "the reckoning bills the subnet at half and says so");
+        h.towerFloor[1] = 0;   // a tower you no longer own (only a doctored save does this) powers nothing after a load
+        CHECK(saveGame(h, &err) && loadGame(back, &err) && back.net.housePowered(g1) && !back.net.housePowered(g2), "a load drops an unowned tower's house power");
+    }
+    {   // --- owning a Boardroom feeds your dearest subnet
+        GameState o = ledgerOwner(12);
+        CHECK(buyMachine(o, Job::Gateway).ok, "a gateway");
+        int gw = o.net.machines.back().id;
+        activate(o, *o.net.find(gw));
+        o.net.find(gw)->tier = 3;
+        int pm = mk(o, Job::Relay, 3, 3, Trait::None, true);
+        CHECK(plugIn(o, *o.net.find(pm), *o.net.find(gw)).ok, "a member");
+        for (int f = 0; f < kFloors; ++f) {
+            Target t = makeTowerFloor(o, 1, f);
+            t.lock = LockType::None;
+            t.watchdog = false;
+            t.doctrine = Doctrine::None;
+            t.traceOverride = 0.1;
+            RunSession r(o, t, 190 + static_cast<uint64_t>(f));
+            std::string err;
+            for (size_t i = 0; i < r.t.files.size(); ++i)
+                if (r.t.files[i].kind == FileKind::Objective) { r.startDownload(static_cast<int>(i), err); while (r.busy()) r.step(); }
+            r.disconnect();
+            r.settle();
+            repairAll(o);
+        }
+        CHECK(towerOwned(o, 1) && o.net.houseTower(gw) == 1, "the Boardroom's house power goes to your subnet");
+    }
 }
 
 void selfTest() {
@@ -1519,7 +1746,8 @@ void selfTest() {
             roundTrip(o);
         }
     }
-    if (!problems) std::printf("selftest: keypad marks, programs, jammer/vault, traits, memorial, subnets, strikes, prototypes, composite, ledger, capture timing, lock input, save recovery, kessler records - OK\n");
+    leanSelfTest();
+    if (!problems) std::printf("selftest: keypad marks, programs, jammer/vault, traits, memorial, subnets, strikes, prototypes, composite, ledger, capture timing, lock input, save recovery, kessler records, running lean - OK\n");
 }
 
 int main(int argc, char** argv) {
@@ -1552,7 +1780,9 @@ int main(int argc, char** argv) {
             {
             Target t = makeTowerFloor(g, k, g.floorsCleared(k));
             towerPrep(g, t, true);
+            leanUp(g, t);
             Reckoning rk = playFloor(g, t, seed * 7919 + static_cast<uint64_t>(i));
+            leanTally(rk);
             checkInvariants(g);
             roundTrip(g);
             std::printf("run %2d  %-34s %-10s credits %6d  tower %d floors %d/%d  act %d\n", st.runs + st.towerRuns, t.name.c_str(),
@@ -1595,6 +1825,7 @@ int main(int argc, char** argv) {
         bool wantSteal = t.stealable && g.net.bestScoutTier() > 0 && (i % 3 == 1 || t.kind == Kind::Prototype) && !t.deep &&
                          g.net.externalCount() < (t.kind == Kind::Prototype ? bal::MAX_EXTERNAL : bal::MAX_EXTERNAL - 4);
 
+        leanUp(g, t);
         RunSession r(g, t, seed * 7919 + static_cast<uint64_t>(i));
         ++st.runs;
         if (t.deep) ++st.deepAttempts;
@@ -1603,6 +1834,7 @@ int main(int argc, char** argv) {
         playInside(r, wantSteal, t.deep, rep);
         if (!r.over()) r.disconnect();
         Reckoning rk = r.settle();
+        leanTally(rk);
         if (rk.end == End::TraceOut) ++st.traceouts;
         if (rk.end == End::Sacrifice) ++st.sacrifices;
         if (rk.end == End::Steal) ++st.captures;
@@ -1629,6 +1861,16 @@ int main(int argc, char** argv) {
                 static_cast<unsigned long long>(seed), mode.c_str(), st.runs, st.contracts, st.captures, st.steals, st.traceouts,
                 st.sacrifices, st.phrases, st.extra, st.honeypots, st.bought, st.decoys, st.unpaid, st.annex, st.deepWon, st.deepAttempts,
                 st.shortfalls, st.gateways, st.plugged, st.strikes, st.clusters, st.protos, st.protoTries, st.protoSeen);
+    {
+        const Stats& s = g.stats;
+        double share = s.earned > 0 ? 100.0 * (s.billsPaid + st.scrubSpent) / s.earned : 0.0;
+        // The same nights, billed the 0.7 way: what was paid, plus what standby and house power took off.
+        double same = s.earned > 0 ? 100.0 * (s.billsPaid + st.standbySaved + st.houseSaved) / s.earned : 0.0;
+        std::printf("LEAN STATS (%s): bills+scrubs %lld of %lld earned = %.1f%% (same nights unlean %.1f%%)  standby nights %d saved %d  "
+                    "house power saved %d  scrubs %d for %dcr\n",
+                    LEAN ? "lean" : "fat", s.billsPaid + st.scrubSpent, s.earned, share, same, st.standbyNights, st.standbySaved, st.houseSaved,
+                    st.scrubs, st.scrubSpent);
+    }
     std::error_code ec;
     std::filesystem::remove_all(dir, ec);
     if (problems) { std::printf("problems: %d\n", problems); return 1; }

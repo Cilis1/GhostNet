@@ -88,7 +88,8 @@ const HelpSection kHelp[] = {
                  "trace (and can be the decoy), SCOUT writes reports, COMPUTE holds an emergency guess, JAMMER holds watchdogs back and "
                  "softens alarms, VAULT keeps your best file if you're traced. Captured machines carry a trait for life."},
     {"THE BILL", "Every running machine except N0 bills you after any run that does something, then wears. Can't pay? Nothing is "
-                 "taken: everything but N0 goes dark and the decoy is disarmed. No debt. Earn credits, switch them back on."},
+                 "taken: everything but N0 goes dark and the decoy is disarmed. No debt. RUNNING LEAN: put machines on STANDBY at the "
+                 "briefing (tonight only), SCRUB a loud machine's signal at the rack, and each tower you own halves one subnet's bill."},
     {"THE DECOY", "Arm a running PROXY as the decoy. If the trace fills, HELIOS traces it instead of you: it is destroyed, the fine is "
                   "halved, and you keep the night. Its nameplate goes on the MEMORIAL WALL in Records."},
     {"CAPTURE", "With a scout running, listings marked HW carry detachable hardware. Take files first and it arrives more damaged. "
@@ -377,7 +378,8 @@ void App::drawRack(Rectangle area) {
         int pw = n.bayPower(gw.id), bud = n.bayBudget(gw);
         pips(box.x + 60, box.y + 125, pw, bud, pw > bud ? C_RED : rc, 7, 2);
         text(F::Mono, std::to_string(pw) + "/" + std::to_string(bud), box.x + box.width - 10, box.y + 124, 11, pw > bud ? C_RED : C_TEXT, Right);
-        text(F::Mono, "BILL " + std::to_string(n.bayUpkeep(gw.id)) + "cr/run", box.x + 10, box.y + 144, 11, C_AMBER);
+        text(F::Mono, "BILL " + std::to_string(n.bayBill(gw.id)) + "cr/run" + (n.housePowered(gw.id) ? " HOUSE" : ""), box.x + 10, box.y + 144, 11,
+             n.housePowered(gw.id) ? C_GREEN : C_AMBER);
         text(F::Mono, std::string(strikeName(gw.role)) + " x1", box.x + box.width - 10, box.y + 144, 11, online ? rc : C_DIM, Right);
         // The whole box selects the gateway, so clicks on it never fall through and deselect.
         if (hovered(box) && selMachine != gw.id) DrawRectangleLinesEx(box, 1, fade(edge, 0.5f));
@@ -482,20 +484,57 @@ void App::drawMachinePanel(Rectangle a, Machine& m) {
         para(F::Mono, traitText(m.trait), a.x + tw + 12, y, a.width - tw - 16, 11, fade(tc, 0.9f), 1.25f, 2);
         y += 30;
     }
-    y += para(F::Mono, m.origin, a.x + 4, y, a.width - 8, 12, C_DIM, 1.3f, m.trait != Trait::None || m.job == Job::Gateway ? 1 : 2) + 6;
+    // A gateway with HOUSE POWER to choose has a fourth row of buttons: its origin line makes room (it's on the hover of the machine anyway).
+    bool houseRow = false;
+    if (m.job == Job::Gateway && !m.home)
+        for (int k = 0; k < kTowerCount; ++k) houseRow = houseRow || towerOwned(g, k);
+    if (!houseRow) y += para(F::Mono, m.origin, a.x + 4, y, a.width - 8, 12, C_DIM, 1.3f, m.trait != Trait::None || m.job == Job::Gateway ? 1 : 2) + 6;
     if (!m.home) {
         text(F::Mono, "CONDITION " + std::to_string(m.condition), a.x + 4, y, 12, C_TEXT);
         progress(Rectangle{a.x + 120, y + 2, a.width - 124, 10}, m.condition / 100.0f, mix(C_RED, C_GREEN, m.condition / 100.0f), false);
         y += 20;
         text(F::Mono, "NOISE", a.x + 4, y, 12, C_TEXT);
         pips(a.x + 120, y + 1, m.noise, bal::MAX_NOISE, C_AMBER, 9, 3);
-        text(F::Mono, "UPKEEP " + std::to_string(upkeepOf(m)) + "cr/run", a.x + a.width - 4, y, 12, C_AMBER, Right);
+        std::string up = "UPKEEP " + std::to_string(upkeepOf(m)) + "cr/run";
+        text(F::Mono, up, a.x + a.width - 4, y, 12, C_AMBER, Right);
+        // SIGNAL SCRUB (0.8): one paid step quieter, for good. It costs what it saves in SCRUB_PAYBACK_RUNS billed runs.
+        if (scrubSaving(m) > 0) {
+            float sx = a.x + 120 + bal::MAX_NOISE * 12 + 6, sw = a.x + a.width - 4 - textWidth(F::Mono, up, 12) - 8 - sx;
+            if (sw > 50) {
+                Rectangle sr{sx, y - 4, std::min(sw, 110.0f), 20};
+                std::string why;
+                bool can = canScrub(g, m, &why);
+                std::string sl = textWidth(F::MonoBold, "SCRUB " + std::to_string(scrubCost(m)) + "cr", 11) < sr.width - 10 ? "SCRUB " + std::to_string(scrubCost(m)) + "cr"
+                                                                                                                             : std::string("SCRUB");
+                if (button(sr, sl, C_AMBER, can, false, 11)) {
+                    int id = m.id;
+                    Machine q = m;
+                    q.noise -= 1;
+                    confirm("SCRUB " + m.name + "'S SIGNAL?",
+                            "Noise " + std::to_string(m.noise) + " -> " + std::to_string(q.noise) + ". Upkeep " + std::to_string(upkeepOf(m)) + " -> " +
+                                std::to_string(upkeepOf(q)) + "cr per billed run, for good. It costs " + std::to_string(scrubCost(m)) +
+                                "cr once - what it saves in " + std::to_string(bal::SCRUB_PAYBACK_RUNS) + " billed runs." +
+                                (m.captured ? " Captured hardware stops at noise " + std::to_string(bal::SCRUB_FLOOR_CAPTURED) + "." : ""),
+                            "SCRUB IT", C_AMBER, [this, id] {
+                                if (Machine* mm = g.net.find(id)) {
+                                    Result r = scrubSignal(g, *mm);
+                                    result(r);
+                                    if (r.ok) sfx::play(sfx::Coin);
+                                }
+                            });
+                }
+                if (gx::hovered(sr))
+                    hoverHint = can ? "SIGNAL SCRUB: -1 noise for good. " + std::to_string(scrubSaving(m)) + "cr less on every bill, for " +
+                                          std::to_string(scrubCost(m)) + "cr once."
+                                    : why;
+            }
+        }
         y += 22;
     }
     y += para(F::Mono, describeEffect(m, et), a.x + 4, y, a.width - 8, 12, fade(col, 0.95f), 1.3f, m.job == Job::Gateway ? 2 : 3) + 10;
 
     const bool compact = m.job == Job::Gateway || m.bay >= 0 || !g.net.openBays().empty();   // six buttons + a row
-    float bw = (a.width - 10) / 2, bh = compact ? 28.0f : 32.0f, gap = compact ? 6.0f : 8.0f;
+    float bw = (a.width - 10) / 2, bh = houseRow ? 26.0f : compact ? 28.0f : 32.0f, gap = houseRow ? 5.0f : compact ? 6.0f : 8.0f;
     auto at = [&](int i) { return Rectangle{a.x + (i % 2) * (bw + 10), y + (i / 2) * (bh + gap), bw, bh}; };
     int i = 0;
     // The first open subnet that would take this machine right now.
@@ -525,6 +564,29 @@ void App::drawMachinePanel(Rectangle a, Machine& m) {
         }
         if (m.job == Job::Gateway) {
             if (button(at(i++), m.bayOn ? "SUBNET: ON" : "SUBNET: OFF", m.bayOn ? C_GREEN : C_DIM)) result(toggleBay(g, m));
+            // HOUSE POWER (0.8): only once you own a tower. ON -> off; OFF -> a free owned tower (or the first, moved here).
+            int owned = 0, freeTower = -1, firstTower = -1;
+            for (int k = 0; k < kTowerCount; ++k)
+                if (towerOwned(g, k)) {
+                    ++owned;
+                    if (firstTower < 0) firstTower = k;
+                    int at_ = k < static_cast<int>(g.net.house.size()) ? g.net.house[static_cast<size_t>(k)] : -1;
+                    const Machine* other = at_ >= 0 ? g.net.find(at_) : nullptr;
+                    if (freeTower < 0 && (!other || other->job != Job::Gateway)) freeTower = k;
+                }
+            if (owned > 0) {
+                int ht = g.net.houseTower(m.id);
+                Rectangle hr = at(i++);
+                if (button(hr, ht >= 0 ? "HOUSE POWER: ON" : "HOUSE POWER: OFF", ht >= 0 ? C_GREEN : C_DIM)) {
+                    if (ht >= 0) result(setHousePower(g, ht, -1));
+                    else result(setHousePower(g, freeTower >= 0 ? freeTower : firstTower, m.id));
+                    autosave();
+                }
+                if (gx::hovered(hr))
+                    hoverHint = ht >= 0 ? std::string("Runs on ") + towerCorp(ht) + "'s house power: this subnet bills at half. Never the main rack, never credits."
+                              : freeTower >= 0 ? std::string("Feed this subnet from ") + towerCorp(freeTower) + "'s house power: half its bill, every run."
+                                               : std::string("Move ") + towerCorp(firstTower) + "'s house power here (one subnet per tower you own).";
+            }
         }
         int cost = repairCost(m);
         if (button(at(i++), m.condition >= 100 ? "PRISTINE" : "REPAIR " + std::to_string(cost) + "cr", C_CYAN, m.condition < 100))
@@ -585,13 +647,13 @@ void App::drawMachinePanel(Rectangle a, Machine& m) {
         int pw = g.net.bayPower(m.id), bud = g.net.bayBudget(m);
         text(F::Display, "SUBNET ROLE", a.x + 4, y, 12, C_DIM);
         text(F::Mono, std::to_string(g.net.bayMembers(m.id).size()) + "/" + std::to_string(bal::BAY_SLOTS) + "  POWER " + std::to_string(pw) + "/" +
-                          std::to_string(bud) + "  BILL " + std::to_string(g.net.bayUpkeep(m.id)) + "cr",
+                          std::to_string(bud) + "  BILL " + std::to_string(g.net.bayBill(m.id)) + "cr" + (g.net.housePowered(m.id) ? " (HOUSE)" : ""),
              a.x + a.width - 4, y + 1, 11, pw > bud ? C_RED : fade(C_DIM, 0.9f), Right);
         y += 20;
         float rw = (a.width - 2 * 6) / kRoleCount;
         for (int k = 0; k < kRoleCount; ++k) {
             BayRole role = static_cast<BayRole>(k);
-            Rectangle rr{a.x + k * (rw + 6), y, rw, 30};
+            Rectangle rr{a.x + k * (rw + 6), y, rw, houseRow ? 26.0f : 30.0f};
             bool cur = m.role == role;
             if (button(rr, cur ? std::string("> ") + roleName(role) : std::string(roleName(role)), roleColor(role), !cur, false, 11))
                 result(setRole(g, m, role));
@@ -935,6 +997,7 @@ void App::drawHelp(Rectangle a) {
 // The briefing: report, advisor votes, connect
 // ---------------------------------------------------------------------------
 void App::drawBrief() {
+    hoverHint.clear();
     drawTopBar();
     const Target& t = brief;
     Color kc = t.deep ? C_RED : kindColor(t.kind);
@@ -1014,8 +1077,12 @@ void App::drawBrief() {
         }
         if (!why.empty()) para(F::Mono, why, l.x + 24, py + 42, l.width - 48, 12, C_DIM, 1.3f, 2);
     }
-    if (g.netUnlocked && g.net.upkeepTotal() > 0)
-        text(F::Mono, "The bill is fixed as you connect: " + std::to_string(g.net.upkeepTotal()) + "cr if anything happens.", l.x + 24, by - 26, 12, C_AMBER);
+    if (g.netUnlocked && g.net.upkeepAwake() > 0) {
+        int sb = g.net.standbyCount(), saved = g.net.upkeepAwake() - g.net.upkeepTotal();
+        std::string bl = "The bill is fixed as you connect: " + std::to_string(g.net.upkeepTotal()) + "cr if anything happens.";
+        if (sb > 0) bl += "  STANDBY " + std::to_string(sb) + ": -" + std::to_string(saved) + "cr";
+        text(F::Mono, bl, l.x + 24, by - 26, 12, C_AMBER);
+    }
     if (const Machine* d = g.net.decoy()) text(F::Mono, "Armed to die tonight: " + d->name, l.x + 24, by - 44, 12, C_RED);
     if (button(Rectangle{l.x + 24, by, 300, 50}, "CONNECT", t.deep ? C_RED : C_MAGENTA, !burned, true, 20) ||
         (modals.empty() && !burned && gx::keyPressed(KEY_ENTER))) {
@@ -1074,25 +1141,135 @@ void App::drawBrief() {
         }
     }
 
-    // Panel briefing.
+    // Panel briefing - or, on its second tab, tonight's rack (STANDBY).
     Rectangle pp{600, 392, 656, 296};
-    panel(pp, C_MAGENTA, "THE PANEL VOTES");
-    PanelView pv = panelBriefing(g, t);
-    float yy = pp.y + 22;
-    for (int a = 0; a < 3; ++a) {
-        Advisor who = static_cast<Advisor>(a);
-        Color c = advisorColor(who);
-        advisorPortrait(Vector2{pp.x + 44, yy + 30}, 22, who);
-        text(F::Display, advisorName(who), pp.x + 80, yy + 6, 14, c);
-        Vote v = pv.votes[a];
-        tag(pp.x + 170, yy + 3, voteName(v), voteColor(v), 12);
-        std::string said;
-        for (auto& s : pv.lines)
-            if (s.who == who) { said = s.text; break; }
-        para(F::Mono, said, pp.x + 80, yy + 28, pp.width - 104, 12, C_TEXT, 1.3f, 3);
-        yy += 76;
+    if (g.netUnlocked && briefStandby) {
+        drawStandby(pp);
+    } else {
+        panel(pp, C_MAGENTA, "THE PANEL VOTES");
+        PanelView pv = panelBriefing(g, t);
+        float yy = pp.y + 22;
+        for (int a = 0; a < 3; ++a) {
+            Advisor who = static_cast<Advisor>(a);
+            Color c = advisorColor(who);
+            advisorPortrait(Vector2{pp.x + 44, yy + 30}, 22, who);
+            text(F::Display, advisorName(who), pp.x + 80, yy + 6, 14, c);
+            Vote v = pv.votes[a];
+            tag(pp.x + 170, yy + 3, voteName(v), voteColor(v), 12);
+            std::string said;
+            for (auto& s : pv.lines)
+                if (s.who == who) { said = s.text; break; }
+            para(F::Mono, said, pp.x + 80, yy + 28, pp.width - 104, 12, C_TEXT, 1.3f, 3);
+            yy += 76;
+        }
+        para(F::MonoBold, pv.verdict, pp.x + 24, pp.y + pp.height - 42, pp.width - 48, 13, WHITE, 1.3f, 2);
     }
-    para(F::MonoBold, pv.verdict, pp.x + 24, pp.y + pp.height - 42, pp.width - 48, 13, WHITE, 1.3f, 2);
+    if (g.netUnlocked) {   // two tabs on the panel's top edge
+        Rectangle tv{pp.x + pp.width - 300, pp.y - 11, 130, 22}, ts{pp.x + pp.width - 162, pp.y - 11, 146, 22};
+        size_t npicks = briefStandby ? 0 : standbyPicks(g, t).size();
+        int sb = g.net.standbyCount();
+        std::string sl = sb > 0 ? "STANDBY " + std::to_string(sb) + " ON" : npicks > 0 ? "TONIGHT'S RACK *" : "TONIGHT'S RACK";
+        // The open tab is drawn lit (primary); both stay clickable.
+        if (button(tv, "THE VOTES", C_MAGENTA, true, !briefStandby, 11)) briefStandby = false;
+        if (button(ts, sl, C_AMBER, true, briefStandby, 11)) briefStandby = true;
+        if (gx::hovered(ts) && !briefStandby)
+            hoverHint = npicks == 0 ? std::string("Put machines on STANDBY for tonight: not billed, not worn, no effect. Back on at the reckoning.")
+                                    : "LEDGER has " + std::to_string(npicks) + " STANDBY pick(s) for this job. They start OFF - you choose.";
+    }
+    drawHoverHint();
+}
+
+// ---------------------------------------------------------------------------
+// STANDBY (0.8): tonight's rack, at the briefing. Nothing here outlives the connection.
+// ---------------------------------------------------------------------------
+void App::drawStandby(Rectangle pp) {
+    panel(pp, C_AMBER, "TONIGHT'S RACK");
+    const Target& t = brief;
+    Network& n = g.net;
+    std::vector<StandbyPick> picks = standbyPicks(g, t);
+    auto picked = [&](int id) {
+        for (auto& p : picks) if (p.id == id) return true;
+        return false;
+    };
+    int awake = n.upkeepAwake(), now = n.upkeepTotal();
+    int pickSave = 0;
+    {
+        Network probe = n;
+        for (auto& p : picks) if (Machine* pm = probe.find(p.id)) pm->standby = true;
+        pickSave = std::max(0, n.upkeepTotal() - probe.upkeepTotal());
+    }
+    float y = pp.y + 22;
+    Rectangle sbtn{pp.x + 16, y, 300, 30};
+    if (!picks.empty()) {
+        if (button(sbtn, "STANDBY SUGGESTED (" + std::to_string(picks.size()) + ")  -" + std::to_string(pickSave) + "cr", C_AMBER, true, false, 12)) {
+            int done = 0;
+            for (auto& p : picks)
+                if (Machine* m = n.find(p.id)) done += setStandby(g, *m, true).ok ? 1 : 0;
+            toast("LEDGER's picks are on STANDBY for tonight: " + std::to_string(done) + " machine(s).", C_AMBER);
+            sfx::play(sfx::Tick);
+        }
+        if (gx::hovered(sbtn)) {
+            std::string h = "LEDGER's picks for this job:";
+            for (auto& p : picks)
+                if (const Machine* m = n.find(p.id)) h += "\n" + m->name + " -" + std::to_string(p.saving) + "cr: " + p.why;
+            hoverHint = h;
+        }
+    } else {
+        button(sbtn, n.standbyCount() > 0 ? "LEDGER'S PICKS ARE IN" : "NO SUGGESTIONS TONIGHT", C_DIM, false, false, 12);
+    }
+    if (button(Rectangle{pp.x + 326, y, 140, 30}, "WAKE ALL", C_GREEN, n.standbyCount() > 0, false, 12)) {
+        clearStandby(g);
+        toast("Everything is awake for tonight.", C_GREEN);
+    }
+    text(F::MonoBold, std::to_string(now) + "cr", pp.x + pp.width - 18, y + 2, 16, now < awake ? C_GREEN : C_AMBER, Right);
+    text(F::Mono, now < awake ? "was " + std::to_string(awake) + "cr" : "tonight's bill", pp.x + pp.width - 18, y + 20, 11, C_DIM, Right);
+    y += 40;
+
+    // Rows: the main rack, each subnet as one row (its gateway), plus any subnet member LEDGER picked.
+    struct Row { Machine* m; int delta; };
+    std::vector<Row> rows;
+    for (auto& m : n.machines) {
+        if (m.home || !(m.standby || n.online(m))) continue;
+        if (m.bay >= 0 && !m.standby && !picked(m.id)) continue;
+        Network probe = n;
+        Machine* pm = probe.find(m.id);
+        pm->standby = !m.standby;
+        rows.push_back({&m, std::abs(n.upkeepTotal() - probe.upkeepTotal())});
+    }
+    std::stable_sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) { return a.delta > b.delta; });
+    const int maxRows = 6;
+    for (int i = 0; i < static_cast<int>(rows.size()) && i < maxRows; ++i) {
+        Machine& m = *rows[static_cast<size_t>(i)].m;
+        std::string why;
+        bool can = m.standby || canStandby(g, m, &why);
+        Rectangle b{pp.x + 16, y, 96, 22};
+        if (button(b, m.standby ? "STANDBY" : "ON", m.standby ? C_AMBER : C_GREEN, can, false, 11)) result(setStandby(g, m, !m.standby));
+        if (gx::hovered(b))
+            hoverHint = !can ? why : m.standby ? "Wake " + m.name + " for tonight." : m.name + " sits tonight out: not billed, not worn, no effect.";
+        Color jc = m.standby ? C_DIM : jobColor(m.job);
+        std::string label = m.name + "  " + jobName(m.job) + " T" + std::to_string(m.tier) +
+                            (m.job == Job::Gateway ? " + SUBNET" : m.bay >= 0 ? " (subnet)" : "");
+        text(F::Mono, label, pp.x + 124, y + 4, 12, jc);
+        if (picked(m.id) && !m.standby) tag(pp.x + 430, y + 3, "LEDGER", C_AMBER, 10);
+        if (g.net.decoyId == m.id) tag(pp.x + 430, y + 3, "DECOY", C_RED, 10);
+        text(F::MonoBold, (m.standby ? "-" : "") + std::to_string(rows[static_cast<size_t>(i)].delta) + "cr", pp.x + pp.width - 18, y + 4, 12,
+             m.standby ? C_GREEN : C_TEXT, Right);
+        y += 26;
+    }
+    if (static_cast<int>(rows.size()) > maxRows)
+        text(F::Mono, "+" + std::to_string(rows.size() - maxRows) + " cheaper machine(s) not shown", pp.x + 16, y, 11, C_DIM), y += 16;
+    if (rows.empty()) {
+        para(F::Mono, "Nothing running bills you tonight.", pp.x + 16, y, pp.width - 32, 12, C_DIM);
+        y += 18;
+    }
+    // Amber: what tonight loses to what's asleep.
+    std::vector<std::string> risks = standbyLosses(g);
+    float bottom = pp.y + pp.height - 22;
+    for (auto& r : risks) {
+        if (y > bottom - 16) break;
+        y += para(F::Mono, "! " + r, pp.x + 16, y, pp.width - 32, 11, C_AMBER, 1.25f, 1);
+    }
+    text(F::Mono, "Tonight only. Everything is back on at the reckoning; leaving the briefing wakes it all.", pp.x + 16, bottom, 11, fade(C_DIM, 0.9f));
 }
 
 // ---------------------------------------------------------------------------
