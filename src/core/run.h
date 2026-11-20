@@ -23,7 +23,8 @@ enum class Ev {
     Read, PhraseLearned, SideFound, DownloadDone, DownloadAborted, Honeypot, Objective,
     ContractDone, Captured, Traced, Sacrifice, Program, Spoofed, Strike,
     Stage, Sweep, MissLogged,  // 0.6: a composite's outer stage opens; doctrine pings
-    Shed, SiteFound, AccordFreeze   // 0.9: LOADSHED drops the subnets; a service site is pinned; ACCORD iron freezes the trace
+    Shed, SiteFound, AccordFreeze,  // 0.9: LOADSHED drops the subnets; a service site is pinned; ACCORD iron freezes the trace
+    Audit, Countertrace, SpikeWarn, Absolved, CageKey   // 0.10: the inner chairs and their signature iron
 };
 struct Event {
     Ev type;
@@ -40,6 +41,7 @@ struct CaptureQuote {
     Trait trait = Trait::None;   // what it would carry for life
     // CHAIRMAN IRON (0.9): a service site's ACCORD unit takes any job - chosen at the hold, for good.
     bool accord = false;
+    bool signature = false;      // 0.10: a cage's SIGNATURE iron - its job is fixed (def)
     std::string ironName;
 };
 
@@ -67,6 +69,11 @@ struct Reckoning {
     int sitePinned = -1;                 // 0.9: the tower whose HELIOS service site went on the board tonight
     bool siteRekeyed = false;            // 0.9: traced at a service site - it re-keyed, nothing else lost
     bool accordCaptured = false;         // 0.9: tonight's capture was chairman iron
+    bool signatureCaptured = false;      // 0.10: tonight's capture was SIGNATURE iron from a cage
+    bool cageKeyed = false;              // 0.10: the cage run took the schematic and the SERVICE KEY: the inner door is on your board
+    bool cageKeyBurned = false;          // 0.10: traced at a cage's inner door - the key burned, back to the cage run
+    bool absolved = false;               // 0.10: ABSOLUTION turned tonight's trace into a clean exit
+    bool innerOpened = false;            // 0.10: tonight's Boardroom was the second outer tower - the inner chairs list
     bool alarmRekeyed = false;           // FORTRESS: the alarm log filled and this floor re-keyed
     int alarms = -1;                     // FORTRESS: misses on the floor's alarm log after the run (-1: not a FORTRESS floor)
     bool unlockedNetwork = false;
@@ -175,6 +182,17 @@ public:
     bool accordVault = false;        // an ACCORD vault keeps one tower objective through a trace
     std::string heldObjective;       // the objective an ACCORD vault kept from an earlier trace (already taken)
     int sweeps = 0, misses = 0;      // doctrine pings tonight
+    // THE INNER CHAIRS (0.10), fixed when the run begins.
+    int escrowLeft = 0;              // LEDGERLOCK: audits your vaults still escrow tonight
+    int audits = 0, escrowed = 0;    // LEDGERLOCK: audits that landed / that a vault spared
+    int deadEnds = 0;                // COUNTERTRACE: countertraces your proxies still dead-end tonight
+    int counters = 0;                // COUNTERTRACE: countertraces that landed (each one 1% bigger)
+    bool eclipse = false;            // ECLIPSE online: sweeps halved and flagged 3s early
+    int absolutionId = -1;           // ABSOLUTION online (not at a site): a trace becomes a clean exit, once
+    bool absolved = false;
+    unsigned pantheonUsed = 0;       // PANTHEON: which of the three strikes it has fired (bit per role)
+    std::vector<int> pantheonStruck;
+    int nextCounter() const;         // COUNTERTRACE: seconds until the next countertrace (-1 if none)
     // FORTRESS (0.7): the floor's code persists; attempts are logged to its record as they happen.
     bool fortress = false;
     bool alarmSealed = false;        // the alarm log overflowed tonight: the door is sealed and the floor re-keyed
@@ -187,6 +205,9 @@ private:
     bool spike(double amount);
     int spikeSize(double base) const;   // after jammers, for the log
     void traced();
+    bool audit(const File& f);       // LEDGERLOCK: true if the audit traced you
+    bool roleUsable(BayRole role, std::string* why = nullptr) const;
+    void fireRole(BayRole role, const std::string& who);
     void endShed();                  // the run is over: the grid's lights come back on at home
     bool shedAt(int s) const;
     double dlSpeed_ = 0, dlCarry_ = 0;   // LOADSHED: a download slows while the grid sheds its relays

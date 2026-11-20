@@ -86,7 +86,7 @@ Result deactivate(GameState& g, Machine& m) {
 }
 
 Result rejob(GameState& g, Machine& m, Job j) {
-    if (m.accord()) return {false, m.name + " is chairman iron: it was built for one job and its firmware is signed. It can't be re-imaged."};
+    if (m.chairIron()) return {false, m.name + " is chairman iron: it was built for one job and its firmware is signed. It can't be re-imaged."};
     if (g.net.decoyId == m.id) return {false, m.name + " is armed as the decoy. Disarm it before you change its job."};
     if (m.job == j) return {false, "It already does that."};
     if (m.job == Job::Gateway && !g.net.bayMembers(m.id).empty()) return {false, "Unplug " + m.name + "'s subnet before you change its job."};
@@ -138,7 +138,7 @@ Result scrap(GameState& g, int id) {
     Machine* m = g.net.find(id);
     if (!m) return {false, "No such machine."};
     if (m->home) return {false, m->name + " can never be scrapped."};
-    if (m->accord()) return {false, m->name + " is chairman iron. Nobody in the city would touch its parts - store it instead."};
+    if (m->chairIron()) return {false, m->name + " is chairman iron. Nobody in the city would touch its parts - store it instead."};
     if (m->job == Job::Gateway && !g.net.bayMembers(id).empty()) return {false, "Unplug " + m->name + "'s subnet first."};
     int value = scrapValue(*m);
     std::string name = m->name;
@@ -155,7 +155,7 @@ bool decoyNeedsConfirm(const Machine& m) { return !m.captured || m.job == Job::G
 Result armDecoy(GameState& g, Machine& m, bool confirmed) {
     if (m.home) return {false, "Never " + m.name + ". There has to be one thing you cannot lose."};
     if (g.net.decoyId == m.id) return {false, m.name + " is already the decoy."};
-    if (m.accord()) return {false, m.name + " is chairman iron. HELIOS would know exactly whose it was - it can never be the decoy."};
+    if (m.chairIron()) return {false, m.name + " is chairman iron. HELIOS would know exactly whose it was - it can never be the decoy."};
     if (m.job != Job::Proxy && m.job != Job::Gateway) return {false, "Only a PROXY - or a whole subnet, by its GATEWAY - can be a decoy."};
     if (!m.active) return {false, "It has to be in the rack, running."};
     if (m.dark()) return {false, "It's dark. A dead machine can't fool HELIOS."};

@@ -182,7 +182,30 @@ void App::handleEvents() {
             case Ev::SiteFound:
                 sfx::play(sfx::Coin);
                 flash = 0.4f, flashColor = kindColor(Kind::Site);
-                toast("HELIOS service site " + e.text + " - pinned in your journal, with its phrase.", kindColor(Kind::Site));
+                toast("HELIOS site " + e.text + " - pinned in your journal, with its phrase.", kindColor(Kind::Site));
+                break;
+            case Ev::Audit:   // LEDGERLOCK
+                sfx::play(sfx::Deny, 0.7f);
+                flash = 0.3f, flashColor = C_RED, shake = 0.2f;
+                floats.push_back({"AUDITED", C_RED, Vector2{636, 420}, gx::now});
+                break;
+            case Ev::Countertrace:   // COUNTERTRACE
+                sfx::play(sfx::Deny, 0.8f);
+                flash = 0.35f, flashColor = C_MAGENTA, shake = 0.3f;
+                floats.push_back({"COUNTERTRACE", C_MAGENTA, Vector2{636, 420}, gx::now});
+                break;
+            case Ev::SpikeWarn:   // ECLIPSE sees it coming
+                floats.push_back({e.text + " IN 3s", kSignatureColor, Vector2{636, 380}, gx::now});
+                break;
+            case Ev::Absolved:   // ABSOLUTION
+                sfx::play(sfx::Boot);
+                flash = 0.6f, flashColor = kSignatureColor, glitch = 0.6f;
+                floats.push_back({"ABSOLVED", kSignatureColor, Vector2{636, 380}, gx::now});
+                break;
+            case Ev::CageKey:
+                sfx::play(sfx::Coin);
+                flash = 0.35f, flashColor = kSignatureColor;
+                toast("Service key for Cage " + e.text + " - its inner door's phrase is in your journal.", kSignatureColor);
                 break;
             case Ev::AccordFreeze:
                 sfx::play(sfx::Boot);
@@ -237,6 +260,26 @@ void App::startCapture() {
     if (q.rackFull) body += "\nYour rack is full: it would go to cold storage.";
     if (q.honeypot) body += "\nThe bait already went off: it arrives worse.";
     if (q.viaPhrase) body += "\nYou came in by passphrase: the hold is shorter.";
+    if (q.signature) {
+        // SIGNATURE IRON: no picker - it came out of the cage already imaged.
+        Modal m;
+        m.title = "SIGNATURE // " + q.ironName;
+        m.body = "A chair's own iron. SIGNATURE grade, tier 5, a " + std::string(jobName(q.def)) + " for good. " + std::to_string(q.upkeep) +
+                 "cr a run flat, +" + std::to_string(static_cast<int>(bal::SIGNATURE_CONNECT_TRACE)) + "% at every handshake.\n" +
+                 "Hold the line for " + std::to_string(q.holdSecs) + "s while the trace runs x1.5 (about " + std::to_string(q.secondsLeft) +
+                 "s left at the normal rate). A trace now BURNS the service key.\nIt can't be re-imaged, scrapped or armed as the decoy.";
+        m.buttons = {std::string("HOLD FOR ") + q.ironName, "CANCEL"};
+        m.accent = kSignatureColor;
+        Job a = q.def;
+        m.onPick = [this, a](int c, const std::string&) {
+            if (c != 0 || !run) return;
+            std::string err;
+            if (!run->startHold(a, err)) toast(err, C_AMBER);
+            else sfx::play(sfx::Alarm, 0.6f);
+        };
+        pushModal(m);
+        return;
+    }
     if (q.accord) {
         // CHAIRMAN IRON: any job, chosen now and for good - no re-image, no scrap, never a decoy.
         Modal m;
@@ -322,10 +365,13 @@ void App::drawRun() {
     text(F::Mono, "t+" + std::to_string(r.secs) + "s", W - 200, 36, 12, C_DIM);
     if (r.t.kind == Kind::Tower || r.t.kind == Kind::Site) {   // the doctrine is never a surprise: it stays on screen
         std::string d = std::string(doctrineName(r.t.doctrine)) +
-                        (r.t.kind == Kind::Site ? std::string("  SERVICE SITE ") + siteName(r.t.tower)
+                        (isCage(r.t) ? std::string("  CAGE ") + siteName(r.t.tower) + (isCageCapture(r.t) ? " INNER DOOR" : "")
+                         : r.t.kind == Kind::Site ? std::string("  SERVICE SITE ") + siteName(r.t.tower)
                                                 : "  FLOOR " + std::to_string(r.t.floor + 1) + "/" + std::to_string(kFloors));
         if (r.nextSweep() >= 0) d += "   SWEEP IN " + std::to_string(r.nextSweep()) + "s";
-        Color dc = r.nextSweep() >= 0 && r.nextSweep() <= 3 ? pulse(C_RED, 6) : kindColor(r.t.kind);
+        if (r.nextCounter() >= 0) d += "   COUNTERTRACE IN " + std::to_string(r.nextCounter()) + "s";
+        Color dc = (r.nextSweep() >= 0 && r.nextSweep() <= 3) || (r.nextCounter() >= 0 && r.nextCounter() <= 3) ? pulse(C_RED, 6) : kindColor(r.t.kind);
+        if (r.t.doctrine == Doctrine::Ledgerlock) d += r.escrowLeft > 0 ? "   ESCROW " + std::to_string(r.escrowLeft) : std::string("   EVERY FILE AUDITED");
         if (r.shedding()) {
             d += "   SHEDDING - SUBNETS DARK " + std::to_string(r.shedLeft()) + "s";
             dc = pulse(kShedColor, 6);

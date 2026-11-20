@@ -61,6 +61,9 @@ Color doctrineColor(Doctrine d) {
         case Doctrine::Fortress: return C_AMBER;
         case Doctrine::Biosentinel: return C_GREEN;
         case Doctrine::Loadshed: return Color{255, 150, 40, 255};   // grid orange
+        case Doctrine::Ledgerlock: return Color{120, 200, 255, 255};   // audit blue
+        case Doctrine::Countertrace: return C_MAGENTA;
+        case Doctrine::Proving: return kSignatureColor;
         case Doctrine::None: break;
     }
     return C_TEXT;

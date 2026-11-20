@@ -175,6 +175,33 @@ all four locks with no trace and no bill.
       -70% and FREEZES the trace on its own once at 80%, VAULT keeps 100% of 3 files and one
       taken tower objective, GATEWAY a 4-slot subnet with 16 power where every member acts a
       tier up. The hard caps (90% / 50%) never move.
+  * **The inner chairs (0.10).** Own **two** of the three outer towers and three more chairs
+    list. Their trace runs 4.4–5.0%/s and their Boardrooms pay 3000 / 5000 / 15000cr.
+    * **Aurex, LEDGERLOCK.** Every file is **AUDITED** as it lands: +9% for an objective, +4% for
+      anything else, and no jammer softens it. A working VAULT **escrows** first: each file it
+      would keep on a trace spares one audit. Kit: a SPEED subnet of vaults.
+    * **Sable Wren, COUNTERTRACE.** Every 10s a **countertrace** reads your route back: +6%, and
+      2% more each time one lands. FREEZE and jammers don't stop it. Each working PROXY dead-ends
+      one a night. Kit: proxies, and be quick.
+    * **HELIOS Proving Ground.** FORTRESS on floor 1, BIOSENTINEL on floor 2, LOADSHED in the
+      Boardroom. Change your kit between floors.
+  * **Signature iron (0.10).** An inner Boardroom's log names a **HELIOS CAGE** (**OUBLIETTE**,
+    **SEPULCHRE**, **CRUCIBLE**). A cage takes two runs. On the **cage run**, download
+    `cage_schematic.enc` and get out clean, and the **inner door** goes on your board. Read
+    `service_key.txt` too and you hold the door's phrase (x0.6 on the hold). The **capture
+    run** is a 40s hold at the inner door. A trace there **burns the key**, and you're back to
+    the cage run. The prize is a **SIGNATURE** tier 5 in a fixed job:
+    * **ABSOLUTION** (vault): once a run, a full trace closes on nothing and you walk out
+      clean. The decoy is untouched and nothing re-keys, but it costs 40 condition. It never
+      works at a site or cage. Otherwise it is a vault that keeps 100% of your 3 best files.
+    * **ECLIPSE** (proxy): -30% trace, plus 25% more past the rack cap. It halves every
+      sentinel sweep and countertrace, and flags each one 3s before it lands.
+    * **PANTHEON** (gateway): a 4-slot subnet with 20 power where every member acts **two**
+      tiers up. Its strike fires BLACKOUT, MIRROR and CRACK, each once a run, whichever the
+      moment allows.
+    * Each costs 220cr a run flat and 4cr a point to repair, and adds **+4%** to the trace at
+      every handshake. It is never the decoy and can't be scrapped. It can go on STANDBY, and
+      it goes dark unpaid like everything else.
   * **Composite lock:** one door, two stages, one guess budget. First a keypad (4 different
     digits, judged as usual). Once it opens, a rotor wakes, and every wheel sits within 2
     notches of the keypad digit in the same box. The screen shows the carried code and
@@ -189,7 +216,7 @@ all four locks with no trace and no bill.
     and that tower re-keys every door: phrases you held for it go stale. Floor plans and
     taken floors are kept.
   * Floors pay 1500 / 2500 / 9000cr. Records shows your progress on the Ledger. Saves from
-    any earlier version carry over (save format v8 since 0.9; a 0.8 save that already owns a
+    any earlier version carry over (save format v9 since 0.10; a 0.8 save that already owns a
     tower gets its service site pinned on load).
 * **The Panel:** VESPER (risk), LEDGER (money) and MOTH (intel) are advisor AIs. They read
   your meters and vote before each run. They never solve a lock.
@@ -227,7 +254,7 @@ all, for CI. That build only takes `--shots DIR`.
 
 * `ctest --test-dir build` runs:
   * the installer's JSON / manifest / file-name validation tests;
-  * `ghostnet_sim`, an automated player (`tests/sim_bot.cpp`) that plays the real rules end to end. It solves locks only from their feedback and learns passphrases only by reading files. There are six modes: `careful`, `chaos` (lockouts, trace-outs, decoy sacrifices, unpaid bills), `deep`, `subnet` (gateways, strikes and prototype captures over 70 runs), `tower` (Act IV) and `chairs` (0.9). Tower mode plays on past the deep job into the Ledger. Then it runs *kit trials*: an owner with the kit matched to a tower's doctrine must take all 3 floors of every tower, and a build sent against the wrong doctrine must fall short. Chairs mode also reads the Boardroom logs, raids the pinned service sites for ACCORD iron, and runs *site trials*: a prepared owner must take every site. Deep fails unless the bot builds a network and beats the deep job, after one doomed early attempt that checks the shortfall readout.
+  * `ghostnet_sim`, an automated player (`tests/sim_bot.cpp`) that plays the real rules end to end. It solves locks only from their feedback and learns passphrases only by reading files. There are six modes: `careful`, `chaos` (lockouts, trace-outs, decoy sacrifices, unpaid bills), `deep`, `subnet` (gateways, strikes and prototype captures over 70 runs), `tower` (Act IV) and `chairs` (0.9, inner chairs since 0.10). Tower mode plays on past the deep job into the Ledger. Then it runs *kit trials*: an owner with the kit matched to a tower's doctrine must take all 3 floors of every tower, and a build sent against the wrong doctrine must fall short. Chairs mode also reads the Boardroom logs, raids the pinned service sites for ACCORD iron, and runs *site trials*: a prepared owner must take every site and every cage (both runs). Deep fails unless the bot builds a network and beats the deep job, after one doomed early attempt that checks the shortfall readout.
 * `gui_autoplay` (headless builds): the game plays its own UI through a simulated 1600×1000 window using only mouse clicks and typing: practice range, new game, every hub tab, the first contract (lock typed and clicked), the reckoning, naming N0, buying, storing and switching on a machine, save & quit, continue, then the Act IV card, buying a floor plan and solving a composite lock (keypad clicked, rotor typed). A dead button or mouse mapping that misses fails the build.
 * `build/GhostNet --shots shots` drives every screen of the actual front end and saves 46 screenshots. CI does this on every push and uploads them as the **screenshots** artifact.
 * `GhostNet-Setup.exe --selftest`: the downloader's offline security self-test.

@@ -16,7 +16,9 @@ constexpr int kMaxTier = 5;   // T4 is captured from prototype sites; T5 is a cl
 // CHAIRMAN IRON (0.9): a tower's own custom hardware, captured from the HELIOS service site its Boardroom's
 // maintenance log names. ACCORD grade: tier 5 in a job you choose at the capture, for good. Cheap to run,
 // signal 1 - and it can never be the decoy or re-imaged.
-enum class Grade { None = 0, Accord = 1 };
+// SIGNATURE grade (0.10): the inner chairs' own black-site iron, caged at a HELIOS cage. One fixed job each, busted
+// on purpose and priced like it: a heavy flat bill, a louder connection, dear repairs. Never the decoy either.
+enum class Grade { None = 0, Accord = 1, Signature = 2 };
 
 // A GATEWAY opens a subnet bay. The bay's role is set between runs.
 enum class BayRole { Stealth = 0, Speed = 1, Siege = 2 };
@@ -60,6 +62,8 @@ struct Machine {
     bool standby = false;
     Grade grade = Grade::None;  // 0.9: chairman iron (fixed for life)
     bool accord() const { return grade == Grade::Accord; }
+    bool signature() const { return grade == Grade::Signature; }
+    bool chairIron() const { return grade != Grade::None; }   // ACCORD or SIGNATURE: tier 5, job fixed for life, never a decoy
     bool dark() const { return condition <= 0; }
     bool working() const { return active && !dark(); }
 };
@@ -122,6 +126,9 @@ int conditionAfterRun(const Machine& m, bool traced);   // wear after a billable
 int jobValue(const Machine& m, int tier = 0);   // % for relay/proxy, 1 for others (tier 0 = its own)
 std::string describeEffect(const Machine& m, int tier = 0);
 std::string accordEffect(Job j, bool inSubnet = false);   // 0.9: what ACCORD iron in this job does, one line
+std::string signatureEffect(Job j);                       // 0.10: what a SIGNATURE machine does, one line
+int signaturesOnline(const Network& n);                    // 0.10: each one adds SIGNATURE_CONNECT_TRACE at the handshake
+bool signatureOnline(const Network& n, Job j);
 
 // ---------------------------------------------------------------------------
 // World
@@ -130,7 +137,9 @@ enum class Kind { Open, Hidden, Guarded, Corporate, Shrine, Story, Side, Prototy
 // COMPOSITE (0.6): a keypad and then a rotor on one door, one shared guess budget.
 enum class LockType { None, Keypad, Rotor, Cipher, Composite };
 // How a corp tower defends itself (Act IV). Always shown at the briefing, never a surprise.
-enum class Doctrine { None = 0, Fortress = 1, Biosentinel = 2, Loadshed = 3 };
+// 0.10 - the inner chairs: LEDGERLOCK audits every download, COUNTERTRACE reads your route back on a rising beat,
+// PROVING GROUND runs a different outer doctrine on each floor at HELIOS's own trace.
+enum class Doctrine { None = 0, Fortress = 1, Biosentinel = 2, Loadshed = 3, Ledgerlock = 4, Countertrace = 5, Proving = 6 };
 enum class FileKind { Paydata, Intel, Objective, Honeypot, Log };
 
 const char* kindName(Kind k);
@@ -148,6 +157,7 @@ struct File {
     int phraseFor = -1;         // target id whose passphrase this memo leaks
     int revealsSide = -1;       // side-route index this log reveals
     int revealsSite = -1;       // 0.9: the tower whose HELIOS service site this maintenance log names
+    bool serviceKey = false;    // 0.10: a cage's SERVICE KEY - read it (with the schematic down) and the capture run opens
     bool taken = false;
     bool read = false;
     bool downloadable() const { return kind != FileKind::Intel && kind != FileKind::Log; }
@@ -248,6 +258,7 @@ struct GameState {
     // 0.7 - a FORTRESS floor keeps its code until it re-keys: what you tried there stays logged.
     std::map<int, FortressRecord> fortress;   // floor id -> record (Kessler-Maru floors not yet taken)
     // 0.9 - CHAIRMAN IRON: per tower, what you know of its HELIOS service site (0 nothing, 1 the maintenance log, 2 taken).
+    // 0.10 - an inner chair's site is a CAGE taken in two runs: 1 = the cage run, 3 = SERVICE KEY held (the capture run).
     std::vector<int> siteState;
     // 0.9: an ACCORD vault kept one tower objective offline through a trace: floor id -> objective file name.
     std::map<int, std::string> vaultHeld;
@@ -259,8 +270,11 @@ struct GameState {
 int storyCount();
 constexpr int kDeepId = 8100;
 constexpr int kAnnexSide = 1000;   // the side route that holds the deep job's maintenance phrase
-constexpr int kTowerCount = 3;     // corp towers on the Ledger so far (0.9: Halden Grid)
+constexpr int kTowerCount = 6;     // corp towers on the Ledger: 3 outer (0.6-0.9), then the 3 inner chairs (0.10)
+constexpr int kOuterTowers = 3;    // towers 0..2 are the outer ring; 3..5 the inner chairs
+constexpr int kInnerUnlock = 2;    // outer towers you must own before the inner chairs list
 constexpr int kFloors = 3;         // floors per tower; the last one is the Boardroom
 constexpr int kTowerIdBase = 8200; // tower floor ids: 8200 + tower * 10 + floor
 constexpr int kSiteIdBase = 8300;  // 0.9: HELIOS service site ids: 8300 + tower
+constexpr int kCageDoorBase = 8320; // 0.10: an inner chair's cage, its capture run (a different door): 8320 + tower
 constexpr int kMaxAct = 4;

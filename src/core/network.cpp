@@ -162,9 +162,11 @@ int Network::bayPower(int gatewayId) const {
     return p;
 }
 int Network::bayBudget(const Machine& gw) const {
-    return gw.accord() ? bal::ACCORD_GATE_POWER : bal::GATEWAY_POWER[std::clamp(gw.tier, 1, kMaxTier)];
+    return gw.signature() ? bal::PANTHEON_POWER : gw.accord() ? bal::ACCORD_GATE_POWER : bal::GATEWAY_POWER[std::clamp(gw.tier, 1, kMaxTier)];
 }
-int Network::baySlots(const Machine& gw) const { return gw.accord() ? bal::ACCORD_GATE_SLOTS : bal::BAY_SLOTS; }
+int Network::baySlots(const Machine& gw) const {
+    return gw.signature() ? bal::PANTHEON_SLOTS : gw.accord() ? bal::ACCORD_GATE_SLOTS : bal::BAY_SLOTS;
+}
 // Online = open, switched on, within its power budget and with at least one machine plugged in.
 // LOADSHED: while the grid sheds, only a subnet on HOUSE POWER stays lit.
 bool Network::bayOnline(const Machine& gw) const {
@@ -216,7 +218,7 @@ int Network::effTier(const Machine& m) const {
     int t = m.tier;
     if (m.bay >= 0 && online(m)) {   // a cluster and an ACCORD gateway don't stack: either lifts the tier once
         const Machine* gw = find(m.bay);
-        t += std::max(clusterBonus(m.bay), gw && gw->accord() ? 1 : 0);
+        t += std::max(clusterBonus(m.bay), gw && gw->signature() ? 2 : gw && gw->accord() ? 1 : 0);   // PANTHEON: two tiers up
     }
     return std::clamp(t, 1, kMaxTier);
 }
@@ -225,6 +227,7 @@ int jobValue(const Machine& m, int tier) {
     int t = std::clamp(tier > 0 ? tier : m.tier, 1, kMaxTier);
     if (m.accord() && m.job == Job::Relay) return bal::ACCORD_RELAY;
     if (m.accord() && m.job == Job::Proxy) return bal::ACCORD_PROXY;
+    if (m.signature() && m.job == Job::Proxy) return bal::ECLIPSE_PROXY;
     switch (m.job) {
         case Job::Relay: return bal::RELAY_BONUS[t];
         case Job::Proxy: return bal::PROXY_BONUS[t];
@@ -310,19 +313,22 @@ int Network::jamSpikeCut() const {
 const Machine* Network::bestVault() const {
     const Machine* best = nullptr;
     for (auto& m : machines)
-        if (online(m) && m.job == Job::Vault && (!best || (m.accord() && !best->accord()) || (m.accord() == best->accord() && effTier(m) > effTier(*best))))
+        if (online(m) && m.job == Job::Vault &&
+            (!best || static_cast<int>(m.grade) > static_cast<int>(best->grade) || (m.grade == best->grade && effTier(m) > effTier(*best))))
             best = &m;
     return best;
 }
 int upkeepOf(const Machine& m) {
     if (m.home) return 0;
     if (m.accord()) return bal::ACCORD_UPKEEP;   // chairman iron: signal 1, no trait, one flat number
+    if (m.signature()) return bal::SIGNATURE_UPKEEP;   // signature iron: busted, and billed like it
     int base = bal::TIER_UPKEEP[std::clamp(m.tier, 1, kMaxTier)] + (m.noise - 1) * bal::NOISE_UPKEEP;
     int pct = m.trait == Trait::CorpBuild ? bal::CORP_UPKEEP_PCT : m.trait == Trait::HotIron ? bal::HOTIRON_UPKEEP_PCT
             : m.trait == Trait::Unstable ? bal::UNSTABLE_UPKEEP_PCT : 0;
     return base + (base * pct + 99) / 100;
 }
 int repairPerPoint(const Machine& m) {
+    if (m.signature()) return bal::SIGNATURE_REPAIR;
     return m.trait == Trait::Salvaged ? bal::SALVAGED_REPAIR : m.trait == Trait::Unstable ? bal::UNSTABLE_REPAIR : bal::REPAIR_PER_POINT;
 }
 int repairCost(const Machine& m) { return m.home ? 0 : (100 - m.condition) * repairPerPoint(m); }
@@ -363,7 +369,7 @@ int Network::standbyCount() const {
 const Machine* Network::decoy() const {
     const Machine* m = find(decoyId);
     if (!m || m->home || !online(*m)) return nullptr;
-    if (m->accord()) return nullptr;   // chairman iron never takes a ticket: HELIOS would know whose it was
+    if (m->chairIron()) return nullptr;   // chairman iron never takes a ticket: HELIOS would know whose it was
     if (m->job == Job::Gateway) return bayOnline(*m) ? m : nullptr;   // the whole subnet takes the ticket
     if (m->job != Job::Proxy) return nullptr;
     return m;
@@ -374,6 +380,7 @@ std::string describeEffect(const Machine& m, int tier) {
     const int t = std::clamp(tier > 0 ? tier : m.tier, 1, kMaxTier);
     const std::string cap = m.bay >= 0 ? "subnet cap " : "rack cap ";
     if (m.accord()) return accordEffect(m.job, m.bay >= 0);
+    if (m.signature()) return signatureEffect(m.job);
     std::string s;
     switch (m.job) {
         case Job::Relay:
@@ -409,6 +416,35 @@ std::string describeEffect(const Machine& m, int tier) {
     }
     if (tier > m.tier) s += " Acting T" + std::to_string(t) + " in a cluster.";
     return s;
+}
+
+int signaturesOnline(const Network& n) {
+    int c = 0;
+    for (auto& m : n.machines) c += m.signature() && n.online(m) ? 1 : 0;
+    return c;
+}
+bool signatureOnline(const Network& n, Job j) {
+    for (auto& m : n.machines) if (m.signature() && m.job == j && n.online(m)) return true;
+    return false;
+}
+std::string signatureEffect(Job j) {
+    const std::string tail = " SIGNATURE: " + std::to_string(bal::SIGNATURE_UPKEEP) + "cr a run, +" +
+                             std::to_string(static_cast<int>(bal::SIGNATURE_CONNECT_TRACE)) + "% trace at every handshake, repairs " +
+                             std::to_string(bal::SIGNATURE_REPAIR) + "cr a point.";
+    switch (j) {
+        case Job::Vault:
+            return "ABSOLUTION. Once a run, when the trace would close, the ticket closes on nothing: you walk out clean with the "
+                   "night, the decoy untouched and the doors un-keyed. It pays " + std::to_string(bal::ABSOLUTION_WEAR) +
+                   " condition each time. Never at a service site or cage. Otherwise a vault: 100% of your 3 best files." + tail;
+        case Job::Proxy:
+            return "ECLIPSE. Slows the trace " + std::to_string(bal::ECLIPSE_PROXY) + "% like a proxy - then takes another " +
+                   std::to_string(bal::ECLIPSE_CUT) + "% off past every cap - and halves every sentinel sweep and countertrace, "
+                   "flagging each one 3s before it lands." + tail;
+        case Job::Gateway:
+            return "PANTHEON. Opens a subnet of " + std::to_string(bal::PANTHEON_SLOTS) + " slots with " + std::to_string(bal::PANTHEON_POWER) +
+                   " power; every machine in it acts two tiers higher, and its strike fires BLACKOUT, MIRROR and CRACK at once." + tail;
+        default: return "SIGNATURE iron." + tail;
+    }
 }
 
 std::string accordEffect(Job j, bool inSubnet) {

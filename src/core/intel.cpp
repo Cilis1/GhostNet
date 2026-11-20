@@ -94,7 +94,16 @@ ReportView reportView(const GameState& g, const Target& t) {
                            : t.doctrine == Doctrine::Fortress ? "No ports, so no memo leaks a way up - only the locks."
                                                               : "Its facilities memo names the next floor's maintenance phrase."));
     }
-    if (t.kind == Kind::Site) {
+    if (t.kind == Kind::Tower && towerDoctrine(t.tower) == Doctrine::Proving)
+        r.facts.push_back("PROVING GROUND: HELIOS examines you in its own doctrines, one a floor - FORTRESS, then BIOSENTINEL, then LOADSHED.");
+    if (isCage(t)) {
+        r.facts.push_back(std::string("DOCTRINE: ") + doctrineText(t.doctrine));
+        r.facts.push_back(isCageCapture(t)
+                              ? std::string("SIGNATURE IRON: ") + ironName(t.tower) + ", already imaged as a " + jobName(signatureJob(t.tower)) + ". A " +
+                                    std::to_string(bal::CAGE_HOLD) + "s hold (x0.6 with the service key). A trace burns the key: back to the cage run."
+                              : std::string("A HELIOS CAGE, the outer door. Take cage_schematic.enc (the inner door's address) and read service_key.txt "
+                                            "(its phrase). Nothing here is detachable. A trace re-keys the door."));
+    } else if (t.kind == Kind::Site) {
         r.facts.push_back(std::string("DOCTRINE: ") + doctrineText(t.doctrine));
         r.facts.push_back(std::string("CHAIRMAN IRON: one unimaged ACCORD unit, ") + ironName(t.tower) +
                           ". Hold the line and choose its job - for good. No paydata. A trace re-keys the door; nothing else is lost.");
@@ -164,11 +173,35 @@ PanelView panelBriefing(const GameState& g, const Target& t) {
     for (auto& f : t.files) if (f.kind == FileKind::Objective) objSecs += secondsToDownload(g, f.size);
     objSecs = static_cast<int>(std::ceil(objSecs * bal::DOWNLOAD_TRACE_MULT));
     int need = lockCost + objSecs + 4;
-    if (t.kind == Kind::Site)   // the hold: security x 6s at x1.5 (x0.6 by phrase)
-        need += static_cast<int>(std::ceil((phrase ? std::ceil(t.security * 6 * 0.6) : t.security * 6) * bal::ANCHOR_TRACE_MULT));
+    if (t.stealable && t.kind == Kind::Site)   // the hold: security x 6s (a cage's inner door: 40s) at x1.5, x0.6 by phrase
+        need += static_cast<int>(std::ceil(anchorSeconds(t, phrase) * bal::ANCHOR_TRACE_MULT));
+    // THE INNER CHAIRS (0.10): flat pings no jammer softens.
+    int escrow = 0, deadEnds = 0;
+    bool eclipse = false;
+    if (g.netUnlocked)
+        for (auto& m : g.net.machines) {
+            if (!g.net.online(m) || m.home) continue;
+            if (m.job == Job::Vault) escrow += m.chairIron() ? bal::ACCORD_VAULT_FILES : bal::VAULT_FILES[g.net.effTier(m)];
+            if (m.job == Job::Proxy) ++deadEnds;
+            if (m.signature() && m.job == Job::Proxy) eclipse = true;
+        }
+    const double half = eclipse ? (100 - bal::ECLIPSE_SWEEP_CUT) / 100.0 : 1.0;
+    if (t.doctrine == Doctrine::Ledgerlock) {
+        int objs = 0;
+        for (auto& f : t.files) if (f.kind == FileKind::Objective) ++objs;
+        int audited = std::max(0, objs - escrow);
+        need += static_cast<int>(audited * bal::LEDGER_AUDIT_OBJ / eff);
+    }
+    if (t.doctrine == Doctrine::Countertrace) {
+        int n = std::max(0, need / bal::COUNTER_EVERY - deadEnds);
+        double sum = 0;
+        for (int i = 0; i < n; ++i) sum += (bal::COUNTER_SPIKE + bal::COUNTER_GROWTH * i) * half;
+        need += static_cast<int>(sum / eff);
+    }
+    need += static_cast<int>(signaturesOnline(g.net) * bal::SIGNATURE_CONNECT_TRACE / eff);
     if (t.doctrine == Doctrine::Biosentinel) {
         int sweeps = need / bal::BIO_SWEEP_EVERY;
-        need += static_cast<int>(sweeps * bal::BIO_SWEEP_SPIKE * (100 - cut) / 100.0 / eff);
+        need += static_cast<int>(sweeps * bal::BIO_SWEEP_SPIKE * (100 - cut) / 100.0 * half / eff);
     }
 
     Vote vv = Vote::Go;
@@ -207,10 +240,26 @@ PanelView panelBriefing(const GameState& g, const Target& t) {
                                  (exposed ? ", and no strikes. " + std::to_string(exposed) + " subnet(s) exposed" : std::string(". Nothing of yours exposed")) +
                                  (lit ? ", " + std::to_string(lit) + " on HOUSE POWER (stays lit)." : ".") + " Strike between sheds.");
     }
-    if (t.kind == Kind::Site)
-        say(Advisor::Vesper, "A service site: the hold is " + std::to_string(t.security * 6) + "s at x1.5 trace (" +
-                                 std::to_string(static_cast<int>(std::ceil(t.security * 6 * 0.6))) +
-                                 "s if you came in by phrase). If they trace you, the door re-keys. That's all - try again.");
+    if (t.doctrine == Doctrine::Ledgerlock)
+        say(Advisor::Vesper, "LEDGERLOCK doctrine. Every download is AUDITED as it lands: +" + std::to_string(static_cast<int>(bal::LEDGER_AUDIT_OBJ)) +
+                                 "% an objective, +" + std::to_string(static_cast<int>(bal::LEDGER_AUDIT_FILE)) +
+                                 "% anything else, and no jammer softens it. Your vaults escrow the first " + std::to_string(escrow) +
+                                 ". Take only what you came for. Bring VAULTS.");
+    if (t.doctrine == Doctrine::Countertrace)
+        say(Advisor::Vesper, "COUNTERTRACE doctrine. Every " + std::to_string(bal::COUNTER_EVERY) + "s Sable Wren reads your route back: +" +
+                                 std::to_string(static_cast<int>(bal::COUNTER_SPIKE)) + "%, then " + std::to_string(static_cast<int>(bal::COUNTER_GROWTH)) + "% more each time. FREEZE and jammers don't touch it. " +
+                                 "Your proxies dead-end the first " + std::to_string(deadEnds) + (eclipse ? "; ECLIPSE halves the rest." : ".") +
+                                 " Bring PROXIES, and be quick.");
+    if (t.stealable && t.kind == Kind::Site)
+        say(Advisor::Vesper, std::string(isCage(t) ? "A cage's inner door" : "A service site") + ": the hold is " + std::to_string(anchorSeconds(t, false)) +
+                                 "s at x1.5 trace (" + std::to_string(anchorSeconds(t, true)) + "s if you came in by phrase). " +
+                                 (isCage(t) ? "If they trace you, the service key burns and it's back to the cage run."
+                                            : "If they trace you, the door re-keys. That's all - try again."));
+    else if (isCage(t))
+        say(Advisor::Vesper, "The cage run. Get the schematic down and read the service key. Nothing to hold here - get out clean and the inner door lists.");
+    if (signaturesOnline(g.net) > 0)
+        say(Advisor::Vesper, "Your SIGNATURE iron is loud at the handshake: the trace starts at " +
+                                 std::to_string(static_cast<int>(signaturesOnline(g.net) * bal::SIGNATURE_CONNECT_TRACE)) + "%.");
     if (t.doctrine == Doctrine::Biosentinel)
         say(Advisor::Vesper, "BIOSENTINEL doctrine. A sentinel sweep every " + std::to_string(bal::BIO_SWEEP_EVERY) + "s, +" +
                                  std::to_string(static_cast<int>(std::lround(bal::BIO_SWEEP_SPIKE * (100 - cut) / 100.0))) +
@@ -221,7 +270,7 @@ PanelView panelBriefing(const GameState& g, const Target& t) {
     } else if (g.netUnlocked && t.security >= 3) {
         bool hasProxy = false;
         for (auto& m : g.net.machines)
-            if (g.net.online(m) && (m.job == Job::Proxy || m.job == Job::Gateway) && !m.home && !m.accord()) hasProxy = true;
+            if (g.net.online(m) && (m.job == Job::Proxy || m.job == Job::Gateway) && !m.home && !m.chairIron()) hasProxy = true;
         say(Advisor::Vesper, hasProxy ? "No decoy armed. You have a running proxy that could take the fall."
                                       : "No decoy, no proxy to sacrifice. A trace-out here seizes the night's haul.");
         if (vv == Vote::Go) vv = Vote::Caution;
@@ -243,7 +292,13 @@ PanelView panelBriefing(const GameState& g, const Target& t) {
         if (!picks.empty()) ll += " I'd stand " + std::to_string(picks.size()) + " machine(s) down tonight: -" + txt::cr(save) + " (TONIGHT'S RACK).";
     }
     say(Advisor::Ledger, ll);
-    if (t.kind == Kind::Site) {
+    if (isCageCapture(t)) {
+        say(Advisor::Ledger, std::string("Signature iron: ") + ironName(t.tower) + ", SIGNATURE tier 5, a " + jobName(signatureJob(t.tower)) + " for good. " +
+                                 std::to_string(bal::SIGNATURE_UPKEEP) + "cr/run flat, +" + std::to_string(static_cast<int>(bal::SIGNATURE_CONNECT_TRACE)) +
+                                 "% at every handshake, " + std::to_string(bal::SIGNATURE_REPAIR) + "cr a point to fix. Broken, and worth it.");
+    } else if (isCage(t)) {
+        say(Advisor::Ledger, "Nothing to take home tonight but a schematic and a key. The iron is behind the next door.");
+    } else if (t.kind == Kind::Site) {
         say(Advisor::Ledger, std::string("Chairman iron: ") + ironName(t.tower) + ", ACCORD tier 5, any job you name. " + std::to_string(bal::ACCORD_UPKEEP) +
                                  "cr/run flat, signal 1, never a decoy. The cheapest tier 5 you'll ever run.");
     } else if (t.stealable && g.net.bestScoutTier() > 0) {
@@ -287,6 +342,7 @@ PanelView panelBriefing(const GameState& g, const Target& t) {
     if (phrase && t.lock == LockType::Composite)
         say(Advisor::Moth, "You hold the phrase. It opens the outer keypad only - the rotor still has to be turned by hand.");
     else if (phrase) say(Advisor::Moth, "You've read the maintenance phrase for this door. Use it and skip the lock.");
+    else if (isCageCapture(t)) say(Advisor::Moth, "The service key had this door's phrase. You didn't read it - or a fixer will sell it.");
     else if (t.kind == Kind::Site) say(Advisor::Moth, "The Boardroom's maintenance log had this door's phrase. Or buy it - same fixers.");
     else if (t.kind == Kind::Tower && !t.backdoor)
         say(Advisor::Moth, "FORTRESS: no maintenance ports, so no phrase will help. It's you, your kit and the lock.");
@@ -437,7 +493,7 @@ struct Loss {
 int decoyCandidates(const Network& n) {
     int c = 0;
     for (auto& m : n.machines)
-        if (!m.home && !m.accord() && n.online(m) && (m.job == Job::Proxy || (m.job == Job::Gateway && n.bayOnline(m)))) ++c;
+        if (!m.home && !m.chairIron() && n.online(m) && (m.job == Job::Proxy || (m.job == Job::Gateway && n.bayOnline(m)))) ++c;
     return c;
 }
 // What tonight loses going from rack n to rack p (p has more on standby).

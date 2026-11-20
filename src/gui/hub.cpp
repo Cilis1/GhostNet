@@ -105,6 +105,10 @@ const HelpSection kHelp[] = {
     {"CHAIRMAN IRON", "An owned tower's Boardroom keeps a maintenance_log.txt. Read it and a HELIOS SERVICE SITE is pinned to your board. "
                       "Get in and hold a capture: its ACCORD machine is tier 5, any job you pick - for good. Never a decoy, no scrap; a "
                       "trace there only re-keys the door."},
+    {"INNER CHAIRS", "Own two outer towers and three more list. AUREX (LEDGERLOCK): every download is AUDITED, +9% an objective; vaults "
+                     "escrow. SABLE WREN (COUNTERTRACE): +6% every 10s, growing; proxies dead-end it. HELIOS PROVING GROUND: a different "
+                     "doctrine each floor. Their logs name HELIOS CAGES: take the schematic and key, then hold at the inner door for "
+                     "SIGNATURE iron - ABSOLUTION, ECLIPSE, PANTHEON. 220cr flat, +4% at every handshake. Broken on purpose."},
     {"KESSLER CODES", "A FORTRESS floor keeps its code between connections. Your rows come back LOGGED and cost nothing; a found keypad "
                       "shows KEYPAD KNOWN (typing it costs 1, never a miss). Rotor arrows say which way each wheel lies. CODES LEFT counts "
                       "what still fits. A TUMBLER SURVEY names the keypad's digits. 6 misses fill the ALARM LOG; the 7th seals the door "
@@ -298,6 +302,10 @@ void App::drawRack(Rectangle area) {
             DrawRing(p, r + 16, r + 18, a + 180, a + 240, 16, fade(C_AMBER, 0.8f));
         }
         if (m.accord()) DrawPolyLinesEx(p, 6, r + 6, 30, 2, m.dark() ? fade(kindColor(Kind::Site), 0.3f) : pulse(kindColor(Kind::Site), 1.5f, 0.6f));   // chairman iron
+        if (m.signature()) {   // signature iron: a double cage, turning
+            DrawPolyLinesEx(p, 6, r + 6, 30 + gx::now * 12, 2, m.dark() ? fade(kSignatureColor, 0.3f) : pulse(kSignatureColor, 2.0f, 0.6f));
+            DrawPolyLinesEx(p, 6, r + 11, -gx::now * 8, 1, fade(kSignatureColor, m.dark() ? 0.2f : 0.55f));
+        }
         hexNode(p, r, col, m.dark() ? 0.05f : 0.16f);
         glowText(F::Display, m.dark() ? "X" : jobLetter(m.job), p.x, p.y - 12, 22, m.dark() ? C_DIM : WHITE, Center, 0.8f);
         text(F::MonoBold, "T" + std::to_string(m.tier), p.x, p.y + 10, 12, fade(col, 0.95f), Center);
@@ -350,6 +358,7 @@ void App::drawRack(Rectangle area) {
         const float step = slots > 3 ? 50.0f : 72.0f, x0 = slots > 3 ? 37.0f : 40.0f;
         const size_t nameLen = slots > 3 ? 7 : 10;
         if (gw.accord()) text(F::MonoBold, "ACCORD", box.x + 10, box.y + 26, 10, C_AMBER);
+        if (gw.signature()) text(F::MonoBold, "SIGNATURE - ALL THREE STRIKES", box.x + 10, box.y + 26, 10, kSignatureColor);
         for (int k = 0; k < slots; ++k) {
             Vector2 p{box.x + x0 + k * step, box.y + 60};
             if (k < static_cast<int>(members.size())) {
@@ -464,7 +473,7 @@ void App::drawRack(Rectangle area) {
     text(F::Mono, fx, right.x + 20, right.y + 126, 12, fade(C_CYAN, 0.9f));
     const Machine* vault = n.bestVault();
     std::string fx2 = "JAM " + std::to_string(n.jamDelay()) + "s / -" + std::to_string(n.jamSpikeCut()) + "% SPIKES   VAULT " +
-                      (vault ? (vault->accord() ? std::string("100") : std::to_string(bal::VAULT_KEEP[n.effTier(*vault)])) + "%" : std::string("none"));
+                      (vault ? (vault->chairIron() ? std::string("100") : std::to_string(bal::VAULT_KEEP[n.effTier(*vault)])) + "%" : std::string("none"));
     text(F::Mono, fx2, right.x + 20, right.y + 144, 12, fade(C_PURPLE, 0.95f));
     DrawRectangle(static_cast<int>(right.x + 16), static_cast<int>(right.y + 164), static_cast<int>(right.width - 32), 1, fade(C_MAGENTA, 0.4f));
     Rectangle body{right.x + 16, right.y + 172, right.width - 32, right.height - 182};
@@ -491,6 +500,13 @@ void App::drawMachinePanel(Rectangle a, Machine& m) {
         float tw = tag(a.x + 4, y, "ACCORD", gc, 11);
         para(F::Mono, "Chairman iron. Its job is fixed for good: no re-job, no scrap, never the decoy. Unpaid, it goes dark like anything else.",
              a.x + tw + 12, y, a.width - tw - 16, 11, fade(gc, 0.9f), 1.25f, 2);
+        y += 30;
+    }
+    if (m.signature()) {   // the violet plate: a chair's own iron, busted on purpose
+        float tw = tag(a.x + 4, y, "SIGNATURE", kSignatureColor, 11);
+        para(F::Mono, "A chair's own iron, busted on purpose. Fixed job, never the decoy, never scrap; " + std::to_string(bal::SIGNATURE_UPKEEP) +
+                          "cr flat and +" + std::to_string(static_cast<int>(bal::SIGNATURE_CONNECT_TRACE)) + "% at every handshake.",
+             a.x + tw + 12, y, a.width - tw - 16, 11, fade(kSignatureColor, 0.9f), 1.25f, 2);
         y += 30;
     }
     if (m.trait != Trait::None) {
@@ -609,8 +625,8 @@ void App::drawMachinePanel(Rectangle a, Machine& m) {
             result(repairOne(g, m));
         if (g.net.decoyId == m.id) {
             if (button(at(i++), "DISARM DECOY", C_RED)) result(disarmDecoy(g));
-        } else if (button(at(i++), m.accord() ? "NEVER A DECOY" : m.job == Job::Gateway ? "ARM SUBNET AS DECOY" : "ARM AS DECOY", C_RED,
-                          !m.accord() && ((m.job == Job::Proxy && g.net.online(m)) || (m.job == Job::Gateway && g.net.bayOnline(m))))) {
+        } else if (button(at(i++), m.chairIron() ? "NEVER A DECOY" : m.job == Job::Gateway ? "ARM SUBNET AS DECOY" : "ARM AS DECOY", C_RED,
+                          !m.chairIron() && ((m.job == Job::Proxy && g.net.online(m)) || (m.job == Job::Gateway && g.net.bayOnline(m))))) {
             Result r = armDecoy(g, m, false);
             if (r.msg == "confirm") {
                 int id = m.id;
@@ -629,7 +645,7 @@ void App::drawMachinePanel(Rectangle a, Machine& m) {
         }
         int value = scrapValue(m);
         bool hasBay = m.job == Job::Gateway && !g.net.bayMembers(m.id).empty();
-        if (button(at(i++), m.accord() ? std::string("NO SCRAP") : "SCRAP +" + std::to_string(value) + "cr", C_AMBER, g.net.decoyId != m.id && !hasBay && !m.accord())) {
+        if (button(at(i++), m.chairIron() ? std::string("NO SCRAP") : "SCRAP +" + std::to_string(value) + "cr", C_AMBER, g.net.decoyId != m.id && !hasBay && !m.chairIron())) {
             int id = m.id;
             confirm("SCRAP " + m.name + "?",
                     "Strip it for parts: +" + std::to_string(value) + "cr, exactly. It is gone for good - this is the only way you lose a "
@@ -675,8 +691,9 @@ void App::drawMachinePanel(Rectangle a, Machine& m) {
                 result(setRole(g, m, role));
             if (gx::hovered(rr)) hoverHint = std::string(roleText(role)) + "\nStrike: " + strikeName(role) + ". " + strikeText(role);
         }
-    } else if (m.accord()) {
-        text(F::Display, std::string("ACCORD  //  ") + jobName(m.job) + " FOR GOOD", a.x + 4, y, 12, kindColor(Kind::Site));
+    } else if (m.chairIron()) {
+        text(F::Display, std::string(m.signature() ? "SIGNATURE  //  " : "ACCORD  //  ") + jobName(m.job) + " FOR GOOD", a.x + 4, y, 12,
+             m.signature() ? kSignatureColor : kindColor(Kind::Site));
     } else {
         text(F::Display, "RE-JOB  " + std::to_string(rejobFee(m)) + "cr", a.x + 4, y, 12, C_DIM);
         text(F::Mono, "keeps tier, condition, noise, name, trait", a.x + a.width - 4, y + 1, 11, fade(C_DIM, 0.8f), Right);
@@ -742,9 +759,10 @@ void App::drawBoard(Rectangle area) {
     std::string head = "LISTING " + std::to_string(g.mapIndex + 1) + "   //   " + std::to_string(g.mapRunsLeft) +
                        " run(s) until the board refreshes (and old listings are forgotten)";
     if (ledgerOpen(g)) {
-        int owned = 0;
-        for (int k = 0; k < kTowerCount; ++k) owned += towerOwned(g, k) ? 1 : 0;
-        head = "THE LEDGER " + std::to_string(owned) + "/" + std::to_string(kTowerCount) + " towers owned   //   " + head;
+        int owned = 0, inner = 0;
+        for (int k = 0; k < kTowerCount; ++k) (innerTower(k) ? inner : owned) += towerOwned(g, k) ? 1 : 0;
+        head = "THE LEDGER " + std::to_string(owned) + "/" + std::to_string(kOuterTowers) + " towers owned" +
+               (innerOpen(g) ? "   INNER CHAIRS " + std::to_string(inner) + "/" + std::to_string(kTowerCount - kOuterTowers) : std::string()) + "   //   " + head;
     }
     text(F::Mono, head, area.x, area.y - 2, 13, C_DIM);
     std::string sc = g.netUnlocked ? "SCOUTING CHARGES " + std::to_string(g.net.usableScoutCharges()) : "NO NETWORK YET";
@@ -773,7 +791,7 @@ void App::drawBoard(Rectangle area) {
         if (t.kind == Kind::Tower) brackets(r, pulse(kc, 2, 0.8f), 14, 2);
         text(F::Display, t.name, x + 18, y + 12, 15, burned ? C_DIM : WHITE);
         text(F::Mono, t.host, x + 18, y + 34, 12, C_DIM);
-        text(F::MonoBold, t.deep ? "THE DEEP JOB" : t.kind == Kind::Tower ? "THE LEDGER" : t.kind == Kind::Site ? "CHAIRMAN IRON" : kindName(t.kind), x + cw - 14,
+        text(F::MonoBold, t.deep ? "THE DEEP JOB" : t.kind == Kind::Tower ? "THE LEDGER" : isCage(t) ? "SIGNATURE IRON" : t.kind == Kind::Site ? "CHAIRMAN IRON" : kindName(t.kind), x + cw - 14,
              y + 13, 12, kc, Right);
         text(F::Mono, "SEC", x + 18, y + 60, 12, C_DIM);
         pips(x + 50, y + 61, t.security, 5, mix(C_GREEN, C_RED, (t.security - 1) / 4.0f), 9, 3);
@@ -794,7 +812,8 @@ void App::drawBoard(Rectangle area) {
         }
         if (t.kind == Kind::Site) {
             tx += tag(tx, ty, doctrineName(t.doctrine), doctrineColor(t.doctrine), 11) + 6;
-            tx += tag(tx, ty, std::string("ACCORD ") + ironName(t.tower), kc, 11) + 6;
+            if (isCage(t)) tx += tag(tx, ty, (isCageCapture(t) ? std::string("INNER DOOR ") : std::string("CAGE RUN ")) + ironName(t.tower), kSignatureColor, 11) + 6;
+            else tx += tag(tx, ty, std::string("ACCORD ") + ironName(t.tower), kc, 11) + 6;
         }
         if (t.kind == Kind::Side) tx += tag(tx, ty, "SIDE ROUTE", C_PURPLE, 11) + 6;
         if (t.stealable && g.net.bestScoutTier() > 0) tx += tag(tx, ty, "HW", C_AMBER, 11) + 6;
@@ -941,13 +960,17 @@ void App::drawRecords(Rectangle area) {
     if (ledgerOpen(g)) {
         ledger.clear();
         for (int k = 0; k < kTowerCount; ++k) {
+            if (!towerListed(g, k)) continue;
             std::string corp = towerCorp(k);
-            ledger += (k ? "   " : "") + corp.substr(0, corp.find_first_of(" -")) + " " + std::to_string(g.floorsCleared(k)) + "/" + std::to_string(kFloors);
+            ledger += (k ? (innerOpen(g) ? "  " : "   ") : "") + corp.substr(0, std::min<size_t>(innerOpen(g) ? 6 : 12, corp.find_first_of(" -"))) + " " +
+                      std::to_string(g.floorsCleared(k)) + "/" + std::to_string(kFloors);
         }
     }
-    int accord = 0;
-    for (auto& m : g.net.machines) accord += m.accord() ? 1 : 0;
-    if (accord) iron = std::to_string(accord) + " ACCORD";
+    int accord = 0, signature = 0;
+    for (auto& m : g.net.machines) (m.signature() ? signature : accord) += m.chairIron() ? 1 : 0;
+    if (accord || signature)
+        iron = (accord ? std::to_string(accord) + " ACCORD" : std::string()) + (accord && signature ? "  " : "") +
+               (signature ? std::to_string(signature) + " SIGNATURE" : std::string());
     KV kv[] = {{"runs", std::to_string(s.runs), C_TEXT},
                {"contracts", std::to_string(s.jobs) + " / " + std::to_string(storyCount()), C_MAGENTA},
                {"clears", std::to_string(s.robberies), C_TEXT},
@@ -957,7 +980,7 @@ void App::drawRecords(Rectangle area) {
                {"walk-aways", std::to_string(s.walkaways), C_DIM},
                {"deep job attempts", std::to_string(s.deepAttempts), C_RED},
                {"the ledger", ledger, ledgerOpen(g) ? kindColor(Kind::Tower) : C_DIM},
-               {"chairman iron", iron, accord ? kindColor(Kind::Site) : C_DIM},
+               {"chairman iron", iron, signature ? kSignatureColor : accord ? kindColor(Kind::Site) : C_DIM},
                {"earned", cr(s.earned), C_GREEN},
                {"upkeep paid", cr(s.billsPaid), C_AMBER},
                {"fines", cr(s.finesPaid), C_RED},
@@ -1013,9 +1036,14 @@ void App::drawRecords(Rectangle area) {
 }
 
 void App::drawHelp(Rectangle a) {
+    // The page outgrew one screen (0.10): it scrolls with the wheel, clipped to its panel.
+    static float scroll = 0, contentH = 0;
+    if (modals.empty() && gx::wheel != 0) scroll -= gx::wheel * 60;
+    scroll = std::clamp(scroll, 0.0f, std::max(0.0f, contentH - a.height));
     float colW = (a.width - 30) / 2;
-    float y[2] = {a.y, a.y};
+    float y[2] = {a.y - scroll, a.y - scroll};
     int n = static_cast<int>(sizeof kHelp / sizeof kHelp[0]);
+    BeginScissorMode(static_cast<int>(a.x), static_cast<int>(a.y), static_cast<int>(a.width), static_cast<int>(a.height));
     for (int i = 0; i < n; ++i) {
         int c = i < (n + 1) / 2 ? 0 : 1;
         float x = a.x + c * (colW + 30);
@@ -1023,6 +1051,9 @@ void App::drawHelp(Rectangle a) {
         y[c] += 22;
         y[c] += para(F::Mono, kHelp[i].body, x, y[c], colW, 13, C_TEXT, 1.32f) + 14;
     }
+    EndScissorMode();
+    contentH = std::max(y[0], y[1]) + scroll - a.y;
+    if (scroll + a.height < contentH - 4) text(F::Mono, "scroll for more", a.x + a.width, a.y + a.height + 2, 12, C_DIM, Right);
 }
 
 // ---------------------------------------------------------------------------
@@ -1049,6 +1080,14 @@ void App::drawBrief() {
     else if (t.kind == Kind::Tower)   // the doctrine is always announced here, never discovered mid-run
         story = std::string(towerTitle(t.tower)) + ", " + (t.floor + 1 == kFloors ? std::string("THE BOARDROOM") : "FLOOR " + std::to_string(t.floor + 1)) +
                 " of " + std::to_string(kFloors) + ". Pays " + std::to_string(t.reward) + "cr for its three files. " + doctrineText(t.doctrine);
+    else if (isCageCapture(t))   // SIGNATURE IRON: the inner door, and a hold that burns the key if it fails
+        story = std::string("The inner door of HELIOS CAGE ") + siteName(t.tower) + ". Behind it, " + ironName(t.tower) + ": " + towerCorp(t.tower) +
+                "'s own iron, SIGNATURE grade, tier 5, already imaged as a " + jobName(signatureJob(t.tower)) + ". Get in, CAPTURE and hold " +
+                std::to_string(bal::CAGE_HOLD) + "s (less with the service key's phrase). A trace burns the key - back to the cage run. " + doctrineText(t.doctrine);
+    else if (isCage(t))   // the cage run: a schematic and a key
+        story = std::string("HELIOS cages ") + towerCorp(t.tower) + "'s signature iron, " + ironName(t.tower) + ", behind two doors. This is the outer one. "
+                "Take cage_schematic.enc - the inner door's address - and read service_key.txt for its phrase, then get out clean. "
+                "Nothing here is detachable. " + doctrineText(t.doctrine);
     else if (t.kind == Kind::Site)   // CHAIRMAN IRON: the whole point of the night is the hold
         story = std::string("HELIOS services ") + towerCorp(t.tower) + "'s chair iron here: " + ironName(t.tower) +
                 ", an ACCORD-grade tier 5, unassigned. Get in, then CAPTURE and hold - you pick its job at the hold, for good. "

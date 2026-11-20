@@ -35,6 +35,18 @@ int floorId(int tower, int floor);
 const char* towerCorp(int tower);             // "Kessler-Maru"
 const char* towerTitle(int tower);            // "KESSLER-MARU TOWER"
 Doctrine towerDoctrine(int tower);
+Doctrine floorDoctrine(int tower, int floor);   // 0.10: PROVING GROUND runs FORTRESS / BIOSENTINEL / LOADSHED by floor
+// 0.10 - THE INNER CHAIRS: towers 3..5 list once you own kInnerUnlock of the outer three.
+bool innerTower(int tower);
+int outerOwned(const GameState& g);
+bool innerOpen(const GameState& g);
+bool towerListed(const GameState& g, int tower);
+Job signatureJob(int tower);                  // the job an inner chair's SIGNATURE iron is imaged as (fixed)
+Doctrine siteDoctrine(int tower);             // the doctrine guarding a tower's site or cage
+int cageDoorId(int tower);                    // a cage's inner door (the capture run)
+bool isCage(const Target& t);                 // an inner chair's HELIOS cage, either run
+bool isCageCapture(const Target& t);          // ...the inner door, where the iron is
+std::string cagePassphrase(const GameState& g, int tower);   // the inner door's phrase (from the SERVICE KEY)
 std::string floorOutro(int tower, int floor);
 std::string towerPassphrase(const GameState& g, int tower, int floor);   // at the tower's current key
 Target makeTowerFloor(const GameState& g, int tower, int floor);

@@ -36,6 +36,9 @@ const char* doctrineName(Doctrine d) {
         case Doctrine::Fortress: return "FORTRESS";
         case Doctrine::Biosentinel: return "BIOSENTINEL";
         case Doctrine::Loadshed: return "LOADSHED";
+        case Doctrine::Ledgerlock: return "LEDGERLOCK";
+        case Doctrine::Countertrace: return "COUNTERTRACE";
+        case Doctrine::Proving: return "PROVING GROUND";
         default: return "NONE";
     }
 }
@@ -53,6 +56,18 @@ const char* doctrineText(Doctrine d) {
             return "LOADSHED. Every 15s the grid sheds load for 3s, and every subnet you run goes dark for it: no pooled relay or "
                    "proxy bonus, no role, no cluster, no strike. The main rack and your deck never notice, and a subnet on HOUSE "
                    "POWER from a tower you own stays lit. Beat it with a strong main rack, BREAKER and UPLINK, and strike between sheds.";
+        case Doctrine::Ledgerlock:
+            return "LEDGERLOCK. Every file you download is AUDITED the moment it lands: +9% for an objective, +4% for anything else, "
+                   "and no jammer softens an audit. A working VAULT escrows files first - every file it would keep on a trace-out "
+                   "spares one audit. Beat it with VAULTS (a vault subnet escrows a whole floor), proxies, and by taking only what you need.";
+        case Doctrine::Countertrace:
+            return "COUNTERTRACE. Every 10s Sable Wren reads your route back: +6%, and 2% more each time one lands. Jammers can't "
+                   "soften it and FREEZE doesn't stop it - it follows hops, not the clock. Each working PROXY dead-ends one countertrace "
+                   "a night. Beat it with PROXIES (a STEALTH subnet of them), speed, and short visits.";
+        case Doctrine::Proving:
+            return "PROVING GROUND. HELIOS tests its own doctrines on you, one a floor, at its own trace: FORTRESS on the first, "
+                   "BIOSENTINEL on the second, LOADSHED in the Boardroom. Every floor's doctrine is printed on its listing. Bring "
+                   "the kit that beat each one - and change it between floors.";
         default: return "";
     }
 }
@@ -79,7 +94,7 @@ HardwareSpec hardwareFor(Kind k) {
         case Kind::Guarded: return {Job::Proxy, Job::Compute, 2, 60, 3};
         case Kind::Corporate: return {Job::Compute, Job::Relay, 3, 45, 4};
         case Kind::Prototype: return {Job::Gateway, Job::Relay, 4, 70, 4};
-        case Kind::Site: return {Job::Relay, Job::Proxy, kMaxTier, 100, 1};   // chairman iron: any job, chosen at the hold
+        case Kind::Site: return {Job::Relay, Job::Proxy, kMaxTier, 100, 1};   // chairman iron: any job, chosen at the hold (a cage's is fixed)
         default: return {Job::Relay, Job::Proxy, 1, 50, 2};
     }
 }
@@ -440,6 +455,46 @@ const std::vector<TowerDef>& towers() {
            "copy you've read, the same six signatures. The lights at the top table have never once gone out."}},
          "From: chair@halden-grid\nWhen the grid strains, shed the tenants. Never the towers.\nThe accord keeps the top table lit. "
          "So does HELIOS - ask facilities what they keep in the service sites."},
+        // ---- the inner chairs (0.10): they list once you own two of the outer three ----
+        {"Aurex", "AUREX TOWER", "tower.aurex.corp", Doctrine::Ledgerlock,
+         {{"Aurex: Settlement Floor", "/settle", "Every rent in the city clears through this floor. Every byte that leaves it is counted.",
+           {"settlement_batch.db", "margin_calls.csv", "dark_pool.enc"}, LockType::Keypad, false, true,
+           "Settlement closes its books on you. The margin calls are rent arrears, bundled and sold to the towers you already own."},
+          {"Aurex: Clearing House", "/clearing", "Where the city's debts are netted, and nothing is ever written off.",
+           {"netting_ledger.db", "collateral_map.enc", "haircut_table.xls"}, LockType::Cipher, true, true,
+           "The clearing house balances without you. The collateral map is Kettle Street - every block pledged twice."},
+          {"Aurex: The Boardroom", "/board", "The fourth chair. It audits the other three.",
+           {"board_minutes.enc", "rent_index.db", "landlord_accord.pdf"}, LockType::Rotor, true, true,
+           "AUREX, OWNED. The rent index is the number every landlord in the city raises their rent to. Aurex sets it on a "
+           "Tuesday, by vote, and the accord's fourth signature is the chair's own."}},
+         "From: chair@aurex\nThe index rises 4% this quarter. It always rises 4%.\nHELIOS keeps our iron in a cage nobody audits. "
+         "Keep it that way."},
+        {"Sable Wren", "SABLE WREN TOWER", "tower.sable-wren.corp", Doctrine::Countertrace,
+         {{"Sable Wren: Listening Post", "/listen", "Private security for the top table. They don't guard doors; they follow footprints home.",
+           {"intercept_index.db", "runner_dossiers.enc", "tap_orders.pdf"}, LockType::Cipher, false, true,
+           "The listening post keeps listening. One of the dossiers is yours; it's thinner than you'd like and more accurate."},
+          {"Sable Wren: Countermeasures", "/counter", "Where every trick a runner ever used is catalogued, and answered.",
+           {"trace_heuristics.db", "decoy_registry.csv", "burn_list.enc"}, LockType::Keypad, true, true,
+           "Countermeasures goes quiet. The decoy registry lists every machine that ever died for a runner. Yours are in it, by name."},
+          {"Sable Wren: The Boardroom", "/board", "The fifth chair. It has never once been traced back to.",
+           {"board_minutes.enc", "client_list.enc", "landlord_accord.pdf"}, LockType::Rotor, true, true,
+           "SABLE WREN, OWNED. The client list is five names long, and you own four of their buildings. The accord's fifth "
+           "signature is on a contract for 'tenant pacification'."}},
+         "From: chair@sable-wren\nIf a runner ever reaches this room, the countertrace has failed.\nIt has not failed. "
+         "Our iron is caged at HELIOS. Tell nobody where."},
+        {"HELIOS", "HELIOS PROVING GROUND", "proving.helios", Doctrine::Proving,
+         {{"HELIOS: Trial Hall One", "/trial1", "HELIOS tests its doctrines here first. Today, FORTRESS: two doors in one, no ports.",
+           {"countermeasure_specs.db", "doctrine_scores.csv", "runner_models.enc"}, LockType::Composite, false, false,
+           "Trial Hall One logs a failed test. The runner models are fitted to you - and they have you finishing about here."},
+          {"HELIOS: Trial Hall Two", "/trial2", "BIOSENTINEL, at HELIOS's own pace. The sentinels here are the originals.",
+           {"sentinel_weights.db", "sweep_tables.enc", "test_subjects.csv"}, LockType::Rotor, true, true,
+           "Trial Hall Two goes dark behind you. The test subjects were runners. The ones before you didn't leave."},
+          {"HELIOS: The Boardroom", "/board", "The sixth chair. The grid sheds here too, by design - to see what you keep lit.",
+           {"board_minutes.enc", "accord_original.pdf", "succession_plan.enc"}, LockType::Cipher, true, true,
+           "HELIOS, OWNED. The original accord is a single page: six chairs, one rule - the runners' wins raise everyone's "
+           "rent. The succession plan names whoever takes this room as the seventh chair. The seat is empty. The machines stay on."}},
+         "From: chair@helios\nEvery doctrine is ours. Every tower runs one.\nThe Crucible holds the last of the chair iron. "
+         "Whoever cages it out has passed."},
     };
     return v;
 }
@@ -452,6 +507,18 @@ std::string floorPhrase(uint64_t seed, int tower, int floor, int key) {
     return r.pick(kTowerPhrases);
 }
 
+}  // namespace
+
+// PROVING GROUND runs a different outer doctrine on each floor; everywhere else a floor runs its tower's.
+Doctrine floorDoctrine(int tower, int floor) {
+    Doctrine d = towers()[static_cast<size_t>(tower)].doctrine;
+    if (d != Doctrine::Proving) return d;
+    static const Doctrine exam[kFloors] = {Doctrine::Fortress, Doctrine::Biosentinel, Doctrine::Loadshed};
+    return exam[std::clamp(floor, 0, kFloors - 1)];
+}
+
+namespace {
+
 std::string floorHost(int tower, int floor) {
     static const char* sub[kFloors] = {"f1", "f2", "board"};
     return std::string(sub[floor]) + "." + towers()[static_cast<size_t>(tower)].host;
@@ -459,23 +526,120 @@ std::string floorHost(int tower, int floor) {
 
 // CHAIRMAN IRON (0.9): each tower's custom hardware is serviced off the books at a HELIOS site.
 // Black-site names, one word each: the site, and the iron it keeps.
+// 0.10: the inner chairs' sites are HELIOS CAGES, and their iron is SIGNATURE grade in one fixed job.
 struct SiteDef { const char* site; const char* iron; };
-const SiteDef kSites[kTowerCount] = {{"CITADEL", "MONOLITH"}, {"OSSUARY", "LEVIATHAN"}, {"FURNACE", "COLOSSUS"}};
+const SiteDef kSites[kTowerCount] = {{"CITADEL", "MONOLITH"}, {"OSSUARY", "LEVIATHAN"}, {"FURNACE", "COLOSSUS"},
+                                     {"OUBLIETTE", "ABSOLUTION"}, {"SEPULCHRE", "ECLIPSE"}, {"CRUCIBLE", "PANTHEON"}};
 }  // namespace
+
+bool innerTower(int tower) { return tower >= kOuterTowers && tower < kTowerCount; }
+Job signatureJob(int tower) { return tower == 3 ? Job::Vault : tower == 4 ? Job::Proxy : Job::Gateway; }
+Doctrine siteDoctrine(int tower) {
+    Doctrine d = towerDoctrine(tower);
+    return d == Doctrine::Proving ? Doctrine::Biosentinel : d;   // the Crucible is HELIOS's own: sentinels
+}
+int outerOwned(const GameState& g) {
+    int n = 0;
+    for (int k = 0; k < kOuterTowers; ++k) n += towerOwned(g, k) ? 1 : 0;
+    return n;
+}
+bool innerOpen(const GameState& g) { return ledgerOpen(g) && outerOwned(g) >= kInnerUnlock; }
+bool towerListed(const GameState& g, int tower) { return ledgerOpen(g) && tower >= 0 && tower < kTowerCount && (!innerTower(tower) || innerOpen(g)); }
+int cageDoorId(int tower) { return kCageDoorBase + tower; }
+bool isCage(const Target& t) { return t.kind == Kind::Site && innerTower(t.tower); }
+bool isCageCapture(const Target& t) { return isCage(t) && t.id == cageDoorId(t.tower); }
+std::string cagePassphrase(const GameState& g, int tower) { return floorPhrase(g.worldSeed, tower, kFloors + 1, g.keyOf(tower)); }
 
 const char* siteName(int tower) { return tower >= 0 && tower < kTowerCount ? kSites[tower].site : "?"; }
 const char* ironName(int tower) { return tower >= 0 && tower < kTowerCount ? kSites[tower].iron : "?"; }
 int siteId(int tower) { return kSiteIdBase + tower; }
-int towerOfSite(int id) { return id >= kSiteIdBase && id < kSiteIdBase + kTowerCount ? id - kSiteIdBase : -1; }
+int towerOfSite(int id) {
+    if (id >= kSiteIdBase && id < kSiteIdBase + kTowerCount) return id - kSiteIdBase;
+    if (id >= kCageDoorBase + kOuterTowers && id < kCageDoorBase + kTowerCount) return id - kCageDoorBase;
+    return -1;
+}
 std::string siteHost(int tower) {
     std::string n = siteName(tower);
     for (auto& c : n) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return "svc." + n + ".helios";
+    return (innerTower(tower) ? "cage." : "svc.") + n + ".helios";
 }
 std::string sitePassphrase(const GameState& g, int tower) { return floorPhrase(g.worldSeed, tower, kFloors, g.keyOf(tower)); }
-bool siteListed(const GameState& g, int tower) { return ledgerOpen(g) && towerOwned(g, tower) && g.siteOf(tower) == 1; }
+bool siteListed(const GameState& g, int tower) {
+    return ledgerOpen(g) && towerOwned(g, tower) && (g.siteOf(tower) == 1 || (innerTower(tower) && g.siteOf(tower) == 3));
+}
+
+namespace {
+// 0.10 - a HELIOS CAGE: the inner chair's iron, in two runs. siteState 1 = the cage run, 3 = the capture run.
+Target makeCage(const GameState& g, int tower) {
+    Rng r(seedOf(g.worldSeed, 0xCA6E000 + static_cast<uint64_t>(tower)));
+    const bool capture = g.siteOf(tower) == 3;
+    Target t;
+    t.id = capture ? cageDoorId(tower) : siteId(tower);
+    t.kind = Kind::Site;
+    t.tower = tower;
+    t.floor = -1;
+    t.doctrine = siteDoctrine(tower);
+    t.security = 5;
+    t.traceOverride = bal::CAGE_TRACE;
+    t.lock = t.doctrine == Doctrine::Ledgerlock ? LockType::Keypad : t.doctrine == Doctrine::Countertrace ? LockType::Cipher : LockType::Rotor;
+    t.watchdog = t.doctrine == Doctrine::Biosentinel;
+    t.backdoor = true;
+    std::string lower = siteName(tower);
+    for (auto& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (!capture) {
+        t.name = std::string("Cage ") + siteName(tower);
+        t.host = siteHost(tower);
+        t.blurb = std::string("HELIOS cages ") + towerCorp(tower) + "'s signature iron behind two doors. This is the outer one: take the "
+                  "schematic and the service key, and the inner door will know you.";
+        t.passphrase = sitePassphrase(g, tower);
+        t.stealable = false;
+        File sch;
+        sch.name = "cage_schematic.enc";
+        sch.dir = "/cage";
+        sch.kind = FileKind::Objective;
+        sch.size = bal::CAGE_SCHEMATIC_MB + r.range(-4, 4);
+        sch.text = std::string("Cage ") + siteName(tower) + ": wiring, hold timings and the capture door's address (core." + lower + ".helios).";
+        t.files.push_back(sch);
+        File key;
+        key.name = "service_key.txt";
+        key.dir = "/cage/svc";
+        key.kind = FileKind::Intel;
+        key.size = 1;
+        key.serviceKey = true;
+        key.phraseFor = cageDoorId(tower);
+        key.text = std::string("HELIOS FACILITIES - CAGE ") + siteName(tower) + " SERVICE KEY\nThe capture door at core." + lower + ".helios answers to '" +
+                   cagePassphrase(g, tower) + "'.\nKey burns on any trace at the inner door. Re-issue from this terminal only.";
+        t.files.push_back(key);
+    } else {
+        t.name = std::string("Cage ") + siteName(tower) + ": Inner Door";
+        t.host = "core." + lower + ".helios";
+        t.blurb = std::string("The inner door. ") + ironName(tower) + " is behind it, SIGNATURE grade, already imaged as a " + jobName(signatureJob(tower)) +
+                  ". The hold is long; the service key's phrase shortens it.";
+        t.passphrase = cagePassphrase(g, tower);
+        t.stealable = true;
+        File man;
+        man.name = "cage_manifest.txt";
+        man.dir = "/cage";
+        man.kind = FileKind::Intel;
+        man.size = 1;
+        man.text = std::string("HELIOS FACILITIES - CAGE ") + siteName(tower) + "\nUnit: " + ironName(tower) + " (" + towerCorp(tower) +
+                   " chair)\nGrade: SIGNATURE. Tier 5. Job: " + jobName(signatureJob(tower)) + ", fixed.\nNot to leave the cage. Not to be discussed.";
+        t.files.push_back(man);
+    }
+    File wo;
+    wo.name = "work_order.log";
+    wo.dir = "/var/log";
+    wo.kind = FileKind::Log;
+    wo.size = 1;
+    wo.text = "[cage] ticket #" + std::to_string(r.range(50000, 59999)) + ": " + ironName(tower) + " tolerances out of spec again.\n[cage] the chair "
+              "says ship it anyway. it isn't safe to run. it was never meant to be safe.";
+    t.files.push_back(wo);
+    return t;
+}
+}  // namespace
 
 Target makeSite(const GameState& g, int tower) {
+    if (innerTower(tower)) return makeCage(g, tower);
     Rng r(seedOf(g.worldSeed, 0x51E0000 + static_cast<uint64_t>(tower)));
     Target t;
     t.id = siteId(tower);
@@ -546,19 +710,19 @@ Target makeTowerFloor(const GameState& g, int tower, int floor) {
     t.id = floorId(tower, floor);
     t.tower = tower;
     t.floor = floor;
-    t.doctrine = d.doctrine;
+    t.doctrine = floorDoctrine(tower, floor);   // PROVING GROUND: a different one on every floor
     t.kind = Kind::Tower;
     t.name = f.name;
     t.host = floorHost(tower, floor);
     t.blurb = f.blurb;
     t.security = 5;
-    const int dz = std::clamp(static_cast<int>(d.doctrine) - 1, 0, 2);
+    const int dz = std::clamp(tower, 0, kTowerCount - 1);
     t.traceOverride = bal::TOWER_TRACE[dz][floor];
     t.lock = f.lock;
     t.watchdog = f.watchdog;
-    t.backdoor = d.doctrine != Doctrine::Fortress;   // FORTRESS: the maintenance ports are welded shut
+    t.backdoor = t.doctrine != Doctrine::Fortress;   // FORTRESS: the maintenance ports are welded shut
     if (t.backdoor) t.passphrase = towerPassphrase(g, tower, floor);
-    t.reward = bal::TOWER_REWARD[floor];
+    t.reward = bal::TOWER_REWARD[innerTower(tower) ? 1 : 0][floor];
     for (auto& n : f.objectives) {
         File o;
         o.name = n;
@@ -603,9 +767,14 @@ Target makeTowerFloor(const GameState& g, int tower, int floor) {
         log.kind = FileKind::Log;
         log.size = 1;
         log.revealsSite = tower;
-        log.text = std::string("[helios-svc] chair iron for ") + d.corp + " serviced off-site: HELIOS SERVICE SITE " + siteName(tower) + " (" +
-                   siteHost(tower) + ").\n[helios-svc] its maintenance door answers to '" + sitePassphrase(g, tower) +
-                   "'. rotate on any trace.\n[helios-svc] unit is unimaged. whoever boots it first decides what it is.";
+        if (innerTower(tower))
+            log.text = std::string("[helios-cage] signature iron for ") + d.corp + " held at HELIOS CAGE " + siteName(tower) + " (" + siteHost(tower) +
+                       ").\n[helios-cage] outer door answers to '" + sitePassphrase(g, tower) + "'. the inner door wants the service key.\n[helios-cage] unit " +
+                       ironName(tower) + " is imaged and out of spec. do not run it. do not let anyone run it.";
+        else
+            log.text = std::string("[helios-svc] chair iron for ") + d.corp + " serviced off-site: HELIOS SERVICE SITE " + siteName(tower) + " (" +
+                       siteHost(tower) + ").\n[helios-svc] its maintenance door answers to '" + sitePassphrase(g, tower) +
+                       "'. rotate on any trace.\n[helios-svc] unit is unimaged. whoever boots it first decides what it is.";
         t.files.push_back(log);
     }
     addLore(t, r);
@@ -751,8 +920,8 @@ std::vector<Target> buildBoard(const GameState& g) {
     // Act IV: the current floor of every tower you haven't owned yet, at the top of the board.
     if (ledgerOpen(g)) {
         std::vector<Target> floors;
-        for (int k = 0; k < kTowerCount; ++k)
-            if (g.floorsCleared(k) < kFloors) floors.push_back(makeTowerFloor(g, k, g.floorsCleared(k)));
+        for (int k = 0; k < kTowerCount; ++k)   // 0.10: the inner chairs list once you own two of the outer three
+            if (towerListed(g, k) && g.floorsCleared(k) < kFloors) floors.push_back(makeTowerFloor(g, k, g.floorsCleared(k)));
         for (int k = 0; k < kTowerCount; ++k)   // CHAIRMAN IRON: a pinned service site stays until you take its iron
             if (siteListed(g, k)) floors.push_back(makeSite(g, k));
         board.insert(board.begin(), floors.begin(), floors.end());

@@ -140,11 +140,13 @@ constexpr int    BURST_SECS      = 5;                 // download seconds at dou
 constexpr double BURST_TRACE_MULT = 1.5;              // ...while the trace climbs faster
 
 // ---- Act IV - THE LEDGER: corp towers (0.6) ---------------------------------------
-// Indexed by [doctrine - 1][floor]: FORTRESS is a wall at the door, BIOSENTINEL a clock inside, LOADSHED (0.9)
-// a grid that keeps pulling the plug on your subnets.
-constexpr double TOWER_TRACE[3][3]  = {{3.0, 3.3, 3.6}, {3.6, 3.9, 4.2}, {3.4, 3.7, 4.0}};   // %/s; the deep job is 4.4
-constexpr int    TOWER_OBJ_MB[3][3] = {{30, 35, 40}, {60, 70, 80}, {62, 72, 82}};         // each of a floor's three objective files
-constexpr int    TOWER_REWARD[3]    = {1500, 2500, 9000};  // paid for the floor's objectives; the Boardroom is the jackpot
+// Indexed by [tower][floor]: FORTRESS is a wall at the door, BIOSENTINEL a clock inside, LOADSHED (0.9) a grid that
+// keeps pulling the plug on your subnets. The inner chairs (0.10): LEDGERLOCK, COUNTERTRACE, PROVING GROUND.
+constexpr double TOWER_TRACE[6][3]  = {{3.0, 3.3, 3.6}, {3.6, 3.9, 4.2}, {3.4, 3.7, 4.0},    // %/s; the deep job is 4.4
+                                       {4.4, 4.6, 4.8}, {4.4, 4.6, 4.8}, {4.6, 4.8, 5.0}};
+constexpr int    TOWER_OBJ_MB[6][3] = {{30, 35, 40}, {60, 70, 80}, {62, 72, 82},           // each of a floor's three objective files
+                                       {64, 74, 84}, {66, 76, 86}, {40, 78, 88}};
+constexpr int    TOWER_REWARD[2][3] = {{1500, 2500, 9000}, {3000, 5000, 15000}};   // [outer, inner][floor]; the Boardroom is the jackpot
 constexpr double TOWER_PAY_MULT  = 2.5;               // paydata vs. an ordinary security-5 file
 constexpr int    PREP_PLAN_COST  = 350;               // FLOOR PLAN: a full-quality report, no scout needed
 constexpr int    PREP_PHRASE_COST[3] = {700, 1000, 1400};   // a bought maintenance phrase (BIOSENTINEL: FORTRESS has no ports)
@@ -184,5 +186,31 @@ constexpr int    ACCORD_FREEZE_AT   = 80;             // ...and once a night it 
 constexpr int    ACCORD_VAULT_FILES = 3;              // at 100%, and one tower objective survives the trace
 constexpr int    ACCORD_GATE_POWER  = 16;             // an ACCORD gateway: more power, one more machine,
 constexpr int    ACCORD_GATE_SLOTS  = 4;              // and every member runs a tier higher
+
+// ---- THE INNER CHAIRS (0.10) -----------------------------------------------------------
+// LEDGERLOCK (Aurex): every download is AUDITED when it lands - a flat ping no jammer softens. A working VAULT
+// escrows files first: each one it would keep on a trace-out spares one audit.
+constexpr double LEDGER_AUDIT_OBJ  = 9.0;
+constexpr double LEDGER_AUDIT_FILE = 4.0;
+// COUNTERTRACE (Sable Wren): a countertrace every 10s that grows by 2% each time it lands. Jammers can't soften
+// it and FREEZE doesn't stop it: it reads the route, not the clock. Each working PROXY dead-ends one.
+constexpr int    COUNTER_EVERY  = 10;
+constexpr double COUNTER_SPIKE  = 6.0;
+constexpr double COUNTER_GROWTH = 2.0;
+// A cage: the inner chair's HELIOS site, two runs. The CAGE run takes the schematic and reads the SERVICE KEY;
+// the CAPTURE run is a second door with a long hold. A trace on the capture run burns the key.
+constexpr double CAGE_TRACE     = 4.6;
+constexpr int    CAGE_SCHEMATIC_MB = 120;
+constexpr int    CAGE_HOLD      = 40;                 // seconds (x0.6 by the key's phrase)
+// SIGNATURE grade: fixed job, tier 5, busted. 220cr a run flat, +4% at the handshake each, repairs 4cr a point.
+constexpr int    SIGNATURE_UPKEEP = 220;
+constexpr double SIGNATURE_CONNECT_TRACE = 4.0;
+constexpr int    SIGNATURE_REPAIR = 4;
+constexpr int    ABSOLUTION_WEAR = 40;                // ABSOLUTION (vault): turns a trace into a clean exit, and pays in condition
+constexpr int    ECLIPSE_PROXY   = 30;                // ECLIPSE (proxy): a proxy, then another 25% off past every cap -
+constexpr int    ECLIPSE_CUT     = 25;
+constexpr int    ECLIPSE_SWEEP_CUT = 50;              // - and it halves every sweep or countertrace, warned 3s out
+constexpr int    PANTHEON_POWER  = 20;                // PANTHEON (gateway): 4 machines, every one two tiers up,
+constexpr int    PANTHEON_SLOTS  = 4;                 // and its strike fires all three strikes at once
 
 }  // namespace bal

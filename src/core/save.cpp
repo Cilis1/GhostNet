@@ -17,16 +17,17 @@
 namespace fs = std::filesystem;
 
 namespace {
-constexpr int kVersion = 8;   // v1 (0.1.x), v2 (0.2-0.3), v3 (0.4), v4 (0.5), v5 (0.6), v6 (0.7) and v7 (0.8) saves still load; new fields default
+constexpr int kVersion = 9;   // v1 (0.1.x), v2 (0.2-0.3), v3 (0.4), v4 (0.5), v5 (0.6), v6 (0.7), v7 (0.8) and v8 (0.9) saves still load; new fields default
 // v7 (0.8): HOUSE POWER - which subnet each owned tower powers. (STANDBY is tonight only and never saved.)
 // v8 (0.9): CHAIRMAN IRON - a machine's grade, each tower's service site, objectives an ACCORD vault holds. A third tower.
+// v9 (0.10): THE INNER CHAIRS - three more towers, SIGNATURE grade (2), and a cage's state (3 = the inner door is open).
 
 // v6: a FORTRESS floor record may only name a Kessler-Maru floor (a FORTRESS tower's floor id).
 bool fortressFloorId(int id) {
     int tower = towerOfId(id);
     if (tower < 0) return false;
     int floor = id - floorId(tower, 0);
-    return floor >= 0 && floor < kFloors && towerDoctrine(tower) == Doctrine::Fortress;
+    return floor >= 0 && floor < kFloors && floorDoctrine(tower, floor) == Doctrine::Fortress;   // 0.10: PROVING's first floor too
 }
 bool digits4(const std::string& s, bool distinct) {
     if (s.size() != 4) return false;
@@ -243,11 +244,11 @@ bool loadFrom(const std::string& file, GameState& g, std::string* err) {
             m.bayOn = bayOn != 0;
             int grade = 0;
             if (!(is >> grade)) grade = 0;   // v7 and older: no chairman iron
-            m.grade = grade == 1 ? Grade::Accord : Grade::None;
+            m.grade = grade == 1 ? Grade::Accord : grade == 2 ? Grade::Signature : Grade::None;
             m.id = clampi(id, 0, 1000000000);
             m.name = unesc(name).substr(0, 24);
             m.job = static_cast<Job>(clampi(job, 0, kJobCount - 1));
-            m.tier = clampi(tier, 1, m.accord() ? kMaxTier : 4);   // tier 5 iron is chairman iron, nothing else
+            m.tier = m.chairIron() ? kMaxTier : clampi(tier, 1, 4);   // tier 5 iron is chairman or signature iron, nothing else
             m.captured = cap != 0;
             m.home = home != 0;
             m.active = act != 0;
@@ -255,7 +256,8 @@ bool loadFrom(const std::string& file, GameState& g, std::string* err) {
             m.noise = clampi(noise, 1, bal::MAX_NOISE);
             m.price = clampi(price, 0, 100000);
             m.origin = unesc(origin).substr(0, 120);
-            if (m.accord()) { m.noise = 1; m.trait = Trait::None; m.captured = true; m.home = false; }
+            if (m.signature()) m.job = m.job == Job::Vault || m.job == Job::Proxy ? m.job : Job::Gateway;   // a signature job is one of three
+            if (m.chairIron()) { m.noise = 1; m.trait = Trait::None; m.captured = true; m.home = false; }
             if (m.dark()) m.active = false;
             if (m.home) m.active = true;
             n.net.machines.push_back(m);
@@ -301,7 +303,7 @@ bool loadFrom(const std::string& file, GameState& g, std::string* err) {
         }
         else if (k == "site") {   // v8
             long long tw = -1, st = 0;
-            if (!(is >> tw >> st) || tw < 0 || tw >= kTowerCount || st < 0 || st > 2) continue;
+            if (!(is >> tw >> st) || tw < 0 || tw >= kTowerCount || st < 0 || st > 3) continue;
             if (n.siteState.size() < static_cast<size_t>(kTowerCount)) n.siteState.resize(kTowerCount, 0);
             n.siteState[static_cast<size_t>(tw)] = static_cast<int>(st);
         } else if (k == "vheld") {   // v8
@@ -371,12 +373,16 @@ bool loadFrom(const std::string& file, GameState& g, std::string* err) {
         if (n.towerKey.size() < static_cast<size_t>(kTowerCount)) n.towerKey.resize(kTowerCount, 0);
         if (version > 0 && version < 8)
             n.journal.push_back("THE LEDGER: a third tower - Halden Grid (LOADSHED) - is on your board. Every Boardroom now keeps a maintenance log.");
+        if (version > 0 && version < 9 && innerOpen(n))
+            n.journal.push_back("THE INNER CHAIRS: Aurex (LEDGERLOCK), Sable Wren (COUNTERTRACE) and the HELIOS PROVING GROUND are on your board.");
+        for (int k = 0; k < kOuterTowers; ++k)   // only a cage has an inner door
+            if (n.siteOf(k) == 3) n.siteState[static_cast<size_t>(k)] = 1;
         for (int k = 0; k < kTowerCount; ++k)   // a tower you own has handed over its maintenance log
             if (n.floorsCleared(k) >= kFloors && n.siteOf(k) == 0) {
                 if (n.siteState.size() < static_cast<size_t>(kTowerCount)) n.siteState.resize(kTowerCount, 0);
                 n.siteState[static_cast<size_t>(k)] = 1;
-                n.journal.push_back(std::string("CHAIRMAN IRON: ") + towerCorp(k) + "'s maintenance log names HELIOS SERVICE SITE " + siteName(k) +
-                                    ". It's on your board.");
+                n.journal.push_back(std::string("CHAIRMAN IRON: ") + towerCorp(k) + "'s maintenance log names " +
+                                    (innerTower(k) ? "HELIOS CAGE " : "HELIOS SERVICE SITE ") + siteName(k) + ". It's on your board.");
             }
     }
     for (auto it = n.fortress.begin(); it != n.fortress.end();) {   // a taken floor keeps no record; an empty record is no record

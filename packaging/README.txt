@@ -88,6 +88,20 @@ THE LEDGER (Act IV - after the owner ending)
     job you pick - for good. No re-job, no scrap, never the decoy; 60cr a run
     flat; dark when unpaid like everything else. A trace there only re-keys
     the door.
+  THE INNER CHAIRS (0.10): own two outer towers and three more list.
+    AUREX (LEDGERLOCK): every download is AUDITED (+9% an objective, +4%
+      anything else; no jammer helps). Each file a vault would keep escrows
+      one audit.
+    SABLE WREN (COUNTERTRACE): +6% every 10s, 2% more each time. FREEZE and
+      jammers don't stop it; each working proxy dead-ends one.
+    HELIOS PROVING GROUND: FORTRESS, then BIOSENTINEL, then LOADSHED.
+  SIGNATURE IRON (0.10): an inner Boardroom's log names a HELIOS CAGE. Cage
+    run: take cage_schematic.enc (and read service_key.txt for the phrase).
+    Capture run: a 40s hold at the inner door; a trace burns the key.
+    ABSOLUTION (vault: a trace becomes a clean exit once a run, -40
+    condition), ECLIPSE (proxy: halves sweeps and countertraces, warns 3s
+    early), PANTHEON (gateway: 4 slots, +2 tiers, all three strikes).
+    220cr flat, +4% trace at every handshake, never the decoy, no scrap.
   HEIST PREP, paid once and kept: FLOOR PLAN 350cr, PHRASE 700-1400cr,
   TUMBLER SURVEY 600-1200cr (Kessler: the keypad's digits, unordered).
   PRACTICE RANGE > FORTRESS DRILL: a Kessler door on your real budget.

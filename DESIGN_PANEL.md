@@ -205,6 +205,45 @@ currency, loot-box machine rolls, and machines that work while you're away.
 * **Fixed on the way.** A composite door opened by phrase lost the shorter phrase hold once
   the rotor opened. It now keeps the ×0.6.
 
+## 0.10.0 — Chairman iron, part two: the inner chairs
+
+* **The ask.** Part two of Doc #6: the three hardest chairs, a two-run cage, and busted
+  SIGNATURE machines. Every new piece has a one-word black-site name (answer 7). The inner
+  chairs list once you own 2 of the 3 outer towers (answer 8).
+* **Aurex (LEDGERLOCK).** Every download is audited as it lands: a flat +9% for an objective
+  and +4% for anything else, with no jammer softening. Each file a working vault would keep
+  escrows one audit. The doctrine punishes greed and rewards vaults, a job no other tower
+  asks for.
+* **Sable Wren (COUNTERTRACE).** A countertrace every 10s: +6%, then 2% more each time one
+  lands. FREEZE doesn't stop it, because it follows hops, not the clock. Each working proxy
+  dead-ends one a night. It rewards proxies and short visits.
+* **HELIOS Proving Ground.** FORTRESS, BIOSENTINEL and LOADSHED, one per floor, at 4.6–5.0%/s.
+  No new rule, just the exam.
+* **Cages (OUBLIETTE, SEPULCHRE, CRUCIBLE).** The cage run takes the schematic, which lists
+  the inner door, and the service key, which is its phrase (answer 5, x0.6 on the hold).
+  Nothing in a cage is detachable. The capture run is a 40s hold. A trace there burns the key
+  and re-keys both doors, so you are back to the cage run. Nothing else is lost, which keeps
+  the decoy's rules.
+* **Signature iron.** Tier 5, fixed job, and busted on purpose:
+  * **ABSOLUTION** (vault): a trace becomes a clean exit once a run, at 40 condition. Never
+    at sites or cages.
+  * **ECLIPSE** (proxy): 30 proxy plus 25% past the caps. It halves sweeps and countertraces,
+    flagged 3s ahead.
+  * **PANTHEON** (gateway): 20 power, 4 slots, +2 tiers. All three strikes, each once a run.
+  * **What it costs.** 220cr flat, 4cr/pt repair and +4% at every handshake (answer 3). It is
+    allowed on STANDBY, never the decoy (answer 4), can't be scrapped and goes dark unpaid.
+* **Results (sim bot).**
+  * **Kit trials.** A T3 owner takes each inner tower 3/3 with the matched kit. With a
+    FORTRESS build it gets Aurex 0/3, Sable Wren 1/3 and Proving Ground 1/3.
+  * **Site trials.** Every cage falls in two runs, with or without prep.
+  * **The natural bot** in `chairs` opens the inner chairs in 10 of 12 seeds by run 140, but
+    gets to try them in only 2. It is traced out of every inner floor (18 and 40 tries). By
+    then it runs without proxies and has no vaults to escrow with. The inner ring is endgame
+    for a real build, not for the bot's farm rack.
+* **Selftests.** The unlock, the audit and escrow, countertrace dead-ends, ABSOLUTION's clean
+  exit, PANTHEON's strikes and single wear, the full cage cycle including a burned key, and
+  the v9 save round-trip.
+
 ## Deferred backlog
 
 1. ~~A graphical client~~ built in 0.3.0 (see section 6).

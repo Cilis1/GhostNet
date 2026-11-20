@@ -180,5 +180,6 @@ const char* actName(int act);
 Color jobColor(Job j);
 Color doctrineColor(Doctrine d);
 Color kindColor(Kind k);
+inline constexpr Color kSignatureColor{214, 120, 255, 255};   // 0.10: SIGNATURE iron - a chair's own, never meant to leave
 Color roleColor(BayRole r);
 Color toneColor(Tone t);

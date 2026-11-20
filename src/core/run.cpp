@@ -136,6 +136,18 @@ RunSession::RunSession(GameState& gs, const Target& tg, uint64_t entropy) : g(gs
     }
     standbyCount = g.net.standbyCount();
     standbySaved = std::max(0, g.net.upkeepAwake() - g.net.upkeepTotal());
+    // 0.10 - signature iron and the inner doctrines, fixed at the handshake.
+    if (g.netUnlocked) {
+        for (auto& m : g.net.machines) {
+            if (!g.net.online(m) || m.home) continue;
+            if (m.signature() && m.job == Job::Proxy) eclipse = true;
+            if (m.signature() && m.job == Job::Vault && t.kind != Kind::Site && absolutionId < 0) absolutionId = m.id;
+            if (t.doctrine == Doctrine::Ledgerlock && m.job == Job::Vault)
+                escrowLeft += m.chairIron() ? bal::ACCORD_VAULT_FILES : bal::VAULT_FILES[g.net.effTier(m)];
+            if (t.doctrine == Doctrine::Countertrace && m.job == Job::Proxy) ++deadEnds;
+        }
+        trace = std::min(99.0, signaturesOnline(g.net) * bal::SIGNATURE_CONNECT_TRACE);   // signature iron is loud at the door
+    }
     int nodes = 0;
     if (g.netUnlocked)
         for (auto& m : g.net.machines) if (g.net.online(m)) ++nodes;
@@ -176,6 +188,18 @@ RunSession::RunSession(GameState& gs, const Target& tg, uint64_t entropy) : g(gs
                 (dark ? " (" + std::to_string(dark) + " of yours exposed; HOUSE POWER keeps a subnet lit)." : std::string(" - you have none exposed tonight.")),
             dark ? Tone::Warn : Tone::Dim);
     }
+    if (t.doctrine == Doctrine::Ledgerlock)
+        say("LEDGERLOCK: every download is AUDITED as it lands (+" + std::to_string(static_cast<int>(bal::LEDGER_AUDIT_OBJ)) + "% an objective, +" +
+                std::to_string(static_cast<int>(bal::LEDGER_AUDIT_FILE)) + "% anything else; no jammer softens it). " +
+                (escrowLeft > 0 ? "Your vaults escrow the first " + std::to_string(escrowLeft) + "." : std::string("No vault is running to escrow any.")),
+            escrowLeft > 0 ? Tone::Warn : Tone::Bad);
+    if (t.doctrine == Doctrine::Countertrace)
+        say("COUNTERTRACE: every " + std::to_string(bal::COUNTER_EVERY) + "s Sable Wren reads your route back (+" +
+                std::to_string(static_cast<int>(bal::COUNTER_SPIKE)) + "%, " + std::to_string(static_cast<int>(bal::COUNTER_GROWTH)) + "% more each time; FREEZE and jammers don't stop it). " +
+                (deadEnds > 0 ? "Your proxies dead-end the first " + std::to_string(deadEnds) + "." : std::string("No proxy is running to dead-end one.")),
+            deadEnds > 0 ? Tone::Warn : Tone::Bad);
+    if (trace > 0) say("Your SIGNATURE iron is loud at the handshake: the trace starts at " + std::to_string(static_cast<int>(trace)) + "%.", Tone::Warn);
+    if (absolutionId >= 0) say("ABSOLUTION is running: tonight, a full trace closes on nothing.", Tone::Info);
     if (t.kind == Kind::Tower) {   // an ACCORD vault kept one of this floor's objectives offline through an earlier trace
         auto vh = g.vaultHeld.find(t.id);
         if (vh != g.vaultHeld.end())
@@ -186,7 +210,12 @@ RunSession::RunSession(GameState& gs, const Target& tg, uint64_t entropy) : g(gs
                     say("Your ACCORD vault still holds " + f.name + " offline from last time: it counts as taken.", Tone::Good);
                 }
     }
-    if (t.kind == Kind::Site)
+    if (isCage(t))
+        say(isCageCapture(t) ? std::string("HELIOS CAGE ") + siteName(t.tower) + ", THE INNER DOOR. " + ironName(t.tower) +
+                                   " is behind it. A trace here burns your service key."
+                             : std::string("HELIOS CAGE ") + siteName(t.tower) + ". Take cage_schematic.enc and read service_key.txt, then get out.",
+            Tone::Story);
+    else if (t.kind == Kind::Site)
         say(std::string("HELIOS SERVICE SITE ") + siteName(t.tower) + ". One unimaged ACCORD unit: " + ironName(t.tower) + ". Under " +
                 towerCorp(t.tower) + "'s doctrine.",
             Tone::Story);
@@ -209,6 +238,11 @@ double RunSession::rateNow(double mult) const {
         r *= 1.0 + ramp * std::max(0, secs - jamDelay) / 60.0;
     }
     return r;
+}
+
+int RunSession::nextCounter() const {
+    if (t.doctrine != Doctrine::Countertrace || over()) return -1;
+    return bal::COUNTER_EVERY - secs % bal::COUNTER_EVERY;
 }
 
 int RunSession::nextSweep() const {
@@ -265,15 +299,38 @@ bool RunSession::advance(int seconds, double mult) {
                 }
             }
         }
+        // ECLIPSE: every scheduled sweep or countertrace is flagged 3s before it lands.
+        if (eclipse && (nextSweep() == 3 || nextCounter() == 3)) {
+            say("ECLIPSE: " + std::string(nextSweep() == 3 ? "sentinel sweep" : "countertrace") + " in 3s - it lands at half.", Tone::Info);
+            emit(Ev::SpikeWarn, nextSweep() == 3 ? "SWEEP" : "COUNTERTRACE");
+        }
         // BIOSENTINEL: a sweep on the beat, once the jammers stop holding them back.
         if (t.doctrine == Doctrine::Biosentinel && secs % bal::BIO_SWEEP_EVERY == 0) {
             if (freezeLeft > 0) {
                 say("A sentinel sweep passes over the frozen trace.", Tone::Dim);
             } else {
+                const double size = bal::BIO_SWEEP_SPIKE * (eclipse ? (100 - bal::ECLIPSE_SWEEP_CUT) / 100.0 : 1.0);
                 ++sweeps;
-                say("SENTINEL SWEEP (+" + std::to_string(spikeSize(bal::BIO_SWEEP_SPIKE)) + "% trace).", Tone::Bad);
+                say("SENTINEL SWEEP (+" + std::to_string(spikeSize(size)) + "% trace)" + (eclipse ? " - halved by ECLIPSE." : "."), Tone::Bad);
                 emit(Ev::Sweep);
-                if (spike(bal::BIO_SWEEP_SPIKE)) return true;
+                if (spike(size)) return true;
+            }
+        }
+        // COUNTERTRACE: Sable Wren reads the route back on the beat. No jammer softens it and FREEZE doesn't stop it.
+        if (t.doctrine == Doctrine::Countertrace && secs % bal::COUNTER_EVERY == 0) {
+            if (deadEnds > 0) {
+                --deadEnds;
+                say("A countertrace follows a proxy hop and dead-ends there." +
+                        (deadEnds > 0 ? " (" + std::to_string(deadEnds) + " more your proxies can lose.)" : std::string(" That was your last proxy hop.")),
+                    Tone::Info);
+            } else {
+                double size = bal::COUNTER_SPIKE + bal::COUNTER_GROWTH * counters;
+                if (eclipse) size *= (100 - bal::ECLIPSE_SWEEP_CUT) / 100.0;
+                ++counters;
+                say("COUNTERTRACE (+" + std::to_string(static_cast<int>(std::lround(size))) + "% trace). The next one lands harder.", Tone::Bad);
+                emit(Ev::Countertrace);
+                trace += size;
+                if (trace >= 100.0) { trace = 100.0; traced(); return true; }
             }
         }
     }
@@ -293,6 +350,17 @@ bool RunSession::spike(double amount) {
 void RunSession::traced() {
     act = Act::None;
     endShed();   // the ticket closes on the rack as it really is: a shed doesn't disarm the decoy
+    if (absolutionId >= 0 && !absolved && g.net.find(absolutionId) && t.kind != Kind::Site) {
+        // ABSOLUTION: the ticket closes on nothing. A clean exit - the night kept, the decoy untouched, no re-key.
+        absolved = true;
+        trace = 99.0;
+        end = End::Disconnect;
+        say("TRACE COMPLETE - and ABSOLUTION answers it. " + g.net.find(absolutionId)->name +
+                " closes the ticket on an empty route. You walk out clean.",
+            Tone::Good);
+        emit(Ev::Absolved, g.net.find(absolutionId)->name);
+        return;
+    }
     if (const Machine* b = g.net.decoy()) {
         std::string name = b->name;
         int id = b->id;
@@ -543,14 +611,9 @@ int RunSession::vaultKeeps() const {
     return sum * vaultPct / 100;
 }
 
-bool RunSession::strikeUsable(int gwId, std::string* why) const {
+bool RunSession::roleUsable(BayRole role, std::string* why) const {
     auto no = [&](const std::string& s) { if (why) *why = s; return false; };
-    if (over()) return no("The connection is closed.");
-    if (std::find(strikeBays.begin(), strikeBays.end(), gwId) == strikeBays.end()) return no("That subnet wasn't online when you connected.");
-    if (std::find(strikesUsed.begin(), strikesUsed.end(), gwId) != strikesUsed.end()) return no("That subnet has already struck tonight.");
-    const Machine* gw = g.net.find(gwId);
-    if (!gw || !g.net.bayOnline(*gw)) return no("That subnet is offline.");
-    switch (gw->role) {
+    switch (role) {
         case BayRole::Stealth:
             if (freezeLeft >= bal::STRIKE_BLACKOUT) return no("The trace is already frozen.");
             break;
@@ -569,12 +632,28 @@ bool RunSession::strikeUsable(int gwId, std::string* why) const {
     return true;
 }
 
-bool RunSession::strike(int gwId, std::string& err) {
-    if (!strikeUsable(gwId, &err)) return false;
+bool RunSession::strikeUsable(int gwId, std::string* why) const {
+    auto no = [&](const std::string& s) { if (why) *why = s; return false; };
+    if (over()) return no("The connection is closed.");
+    if (std::find(strikeBays.begin(), strikeBays.end(), gwId) == strikeBays.end()) return no("That subnet wasn't online when you connected.");
+    if (std::find(strikesUsed.begin(), strikesUsed.end(), gwId) != strikesUsed.end()) return no("That subnet has already struck tonight.");
     const Machine* gw = g.net.find(gwId);
-    strikesUsed.push_back(gwId);
-    std::string who = gw->name + "'s subnet";
-    switch (gw->role) {
+    if (!gw || !g.net.bayOnline(*gw)) return no("That subnet is offline.");
+    if (gw->signature()) {   // PANTHEON: all three strikes, each once a run - it fires whichever the moment allows
+        std::string first;
+        for (int r = 0; r < kRoleCount; ++r) {
+            if (pantheonUsed & (1 << r)) continue;
+            std::string w;
+            if (roleUsable(static_cast<BayRole>(r), &w)) return true;
+            if (first.empty()) first = w;
+        }
+        return no(first.empty() ? "PANTHEON has fired all three strikes tonight." : first);
+    }
+    return roleUsable(gw->role, why);
+}
+
+void RunSession::fireRole(BayRole role, const std::string& who) {
+    switch (role) {
         case BayRole::Stealth:
             freezeLeft = std::max(freezeLeft, bal::STRIKE_BLACKOUT);
             say("BLACKOUT. " + who + " floods HELIOS with ghosts: the trace stands still for " + std::to_string(bal::STRIKE_BLACKOUT) + "s.",
@@ -600,6 +679,27 @@ bool RunSession::strike(int gwId, std::string& err) {
             break;
         }
     }
+}
+
+bool RunSession::strike(int gwId, std::string& err) {
+    if (!strikeUsable(gwId, &err)) return false;
+    const Machine* gw = g.net.find(gwId);
+    std::string who = gw->name + "'s subnet";
+    if (gw->signature()) {
+        std::string fired;
+        for (int r = 0; r < kRoleCount && !over(); ++r) {
+            if ((pantheonUsed & (1 << r)) || !roleUsable(static_cast<BayRole>(r))) continue;
+            pantheonUsed |= 1 << r;
+            fireRole(static_cast<BayRole>(r), who);
+            fired += (fired.empty() ? "" : " + ") + std::string(strikeName(static_cast<BayRole>(r)));
+        }
+        if (pantheonUsed == (1 << kRoleCount) - 1) strikesUsed.push_back(gwId);
+        if (std::find(pantheonStruck.begin(), pantheonStruck.end(), gwId) == pantheonStruck.end()) pantheonStruck.push_back(gwId);
+        emit(Ev::Strike, fired);
+        return true;
+    }
+    strikesUsed.push_back(gwId);
+    fireRole(gw->role, who);
     emit(Ev::Strike, strikeName(gw->role));
     return true;
 }
@@ -632,13 +732,22 @@ bool RunSession::read(int i) {
             g.journal.push_back("Passphrase for " + siteHost(k) + ": " + sitePassphrase(g, k) + " (Boardroom maintenance log)");
         }
         if (news) {
-            g.journal.push_back(std::string("CHAIRMAN IRON: ") + towerCorp(k) + "'s chair iron, " + ironName(k) + ", is serviced at HELIOS SERVICE SITE " +
-                                siteName(k) + ". It goes on your board once the tower is yours.");
-            say(std::string("HELIOS SERVICE SITE ") + siteName(k) + ": noted, with its maintenance phrase. " +
+            const std::string where = innerTower(k) ? "HELIOS CAGE " : "HELIOS SERVICE SITE ";
+            g.journal.push_back(std::string("CHAIRMAN IRON: ") + towerCorp(k) + "'s chair iron, " + ironName(k) + ", is " +
+                                (innerTower(k) ? "caged at " : "serviced at ") + where + siteName(k) + ". It goes on your board once the tower is yours.");
+            say(where + siteName(k) + ": noted, with its maintenance phrase. " +
                     (towerOwned(g, k) ? "It's on your board now." : "It goes on your board once this tower is yours."),
                 Tone::Story);
             emit(Ev::SiteFound, siteName(k));
         }
+    }
+    if (f.serviceKey && isCage(t)) {
+        bool down = false;
+        for (auto& x : t.files) if (x.kind == FileKind::Objective && x.taken) down = true;
+        say(std::string("SERVICE KEY read. ") + (down ? "With the schematic down, the inner door will know you - jack out to keep it."
+                                                       : "Take cage_schematic.enc too: the key is no good without the door's address."),
+            Tone::Good);
+        emit(Ev::CageKey, siteName(t.tower));
     }
     if (f.revealsSide >= 0) {
         int s = f.revealsSide;
@@ -667,6 +776,26 @@ bool RunSession::startDownload(int i, std::string& err) {
     return true;
 }
 
+// LEDGERLOCK: every download is audited as it lands - unless a vault escrows it first. No jammer softens an audit.
+bool RunSession::audit(const File& f) {
+    if (t.doctrine != Doctrine::Ledgerlock) return false;
+    if (escrowLeft > 0) {
+        --escrowLeft;
+        ++escrowed;
+        say("AUDIT: " + f.name + " is escrowed by your vault first. Nothing to see." +
+                (escrowLeft > 0 ? " (" + std::to_string(escrowLeft) + " more it can escrow.)" : std::string(" The vault is full.")),
+            Tone::Info);
+        return false;
+    }
+    const double size = f.kind == FileKind::Objective ? bal::LEDGER_AUDIT_OBJ : bal::LEDGER_AUDIT_FILE;
+    ++audits;
+    say("AUDIT: " + f.name + " is logged against you (+" + std::to_string(static_cast<int>(size)) + "% trace).", Tone::Bad);
+    emit(Ev::Audit, f.name);
+    trace += size;
+    if (trace >= 100.0) { trace = 100.0; traced(); return true; }
+    return false;
+}
+
 void RunSession::finishDownload() {
     File& f = t.files[static_cast<size_t>(actFile)];
     act = Act::None;
@@ -685,6 +814,7 @@ void RunSession::finishDownload() {
         spike(bal::HONEYPOT_SPIKE);
         return;
     }
+    if (audit(f)) return;
     if (f.kind == FileKind::Objective) {
         say("Objective secured: " + f.name, Tone::Story);
         emit(Ev::Objective, f.name);
@@ -722,16 +852,19 @@ CaptureQuote RunSession::quote() const {
     probe.noise = q.noise;
     probe.trait = traitFor(t.kind);
     if (t.kind == Kind::Site) {   // chairman iron arrives pristine and quiet, whatever happened in here
-        probe.grade = Grade::Accord;
-        q.accord = true;
+        probe.grade = isCage(t) ? Grade::Signature : Grade::Accord;
+        q.accord = !isCage(t);
+        q.signature = isCage(t);
         q.ironName = ironName(t.tower);
         q.condition = 100;
         q.noise = 1;
+        probe.trait = Trait::None;
     }
     q.trait = probe.trait;
     q.possible = true;
     q.def = hw.def;
     q.alt = hw.alt;
+    if (q.signature) q.def = q.alt = probe.job = signatureJob(t.tower);   // SIGNATURE iron came imaged: its job is fixed
     q.tier = hw.tier;
     q.upkeep = upkeepOf(probe);
     q.holdSecs = anchorSeconds(t, viaPhrase);
@@ -751,7 +884,7 @@ bool RunSession::startHold(Job j, std::string& err) {
     if (over() || !doorOpen || busy()) { err = "Not now."; return false; }
     CaptureQuote q = quote();
     if (!q.possible) { err = q.reason; return false; }
-    if (!q.accord && j != q.def && j != q.alt) { err = "That hardware can't become that."; return false; }
+    if (!q.accord && j != q.def && j != q.alt) { err = q.signature ? std::string(q.ironName) + " is already imaged. It stays a " + jobName(q.def) + "." : "That hardware can't become that."; return false; }
     act = Act::Hold;
     actJob = j;
     actTotal = q.holdSecs;
@@ -778,7 +911,22 @@ void RunSession::finishCapture() {
     std::string base = t.host.substr(0, t.host.find_first_of(".-"));
     m.name = base.substr(0, 10) + "-" + std::to_string(m.id);
     m.origin = "Captured from " + t.name + " (board " + std::to_string(g.mapIndex + 1) + ").";
-    if (t.kind == Kind::Site) {   // CHAIRMAN IRON: imaged to the job you chose, for good
+    if (isCage(t)) {   // SIGNATURE IRON: out of the cage, in the one job HELIOS built it for
+        m.grade = Grade::Signature;
+        m.job = signatureJob(t.tower);
+        m.tier = kMaxTier;
+        m.condition = 100;
+        m.noise = 1;
+        m.trait = Trait::None;
+        m.name = ironName(t.tower);
+        m.origin = std::string("The chair of ") + towerCorp(t.tower) + "'s own iron, taken from HELIOS CAGE " + siteName(t.tower) +
+                   ". It was never meant to leave. It was never meant to be safe.";
+        if (g.siteState.size() < static_cast<size_t>(kTowerCount)) g.siteState.resize(kTowerCount, 0);
+        g.siteState[static_cast<size_t>(t.tower)] = 2;
+        g.knownPhrases.erase(t.id);
+        g.knownPhrases.erase(siteId(t.tower));
+        g.journal.push_back(std::string("SIGNATURE IRON: ") + m.name + " (SIGNATURE " + jobName(m.job) + ") is yours. Cage " + siteName(t.tower) + " is empty.");
+    } else if (t.kind == Kind::Site) {   // CHAIRMAN IRON: imaged to the job you chose, for good
         m.grade = Grade::Accord;
         m.tier = kMaxTier;
         m.condition = 100;
@@ -800,6 +948,7 @@ void RunSession::finishCapture() {
         Tone::Good);
     if (m.trait != Trait::None) say(std::string("It carries a trait for life: ") + traitName(m.trait) + ". " + traitText(m.trait), Tone::Info);
     if (m.accord()) say("ACCORD grade. " + accordEffect(m.job), Tone::Info);
+    if (m.signature()) say("SIGNATURE grade. " + signatureEffect(m.job), Tone::Info);
     stolen = m.name;
     end = End::Steal;
     endShed();
@@ -862,7 +1011,9 @@ Reckoning RunSession::settle() {
     rk.end = end;
     rk.sacrificed = sacrificed;
     rk.captured = stolen;
-    rk.accordCaptured = end == End::Steal && t.kind == Kind::Site;
+    rk.accordCaptured = end == End::Steal && t.kind == Kind::Site && !isCage(t);
+    rk.signatureCaptured = end == End::Steal && isCage(t);
+    rk.absolved = absolved;
     const bool traceOut = end == End::TraceOut;
     const bool sacrifice = end == End::Sacrifice;
     const bool jobCounts = jobDone && !traceOut;   // a trace-out loses the night
@@ -1003,7 +1154,9 @@ Reckoning RunSession::settle() {
             }
         }
     }
-    for (int gwId : strikesUsed) {   // a strike pushes every machine in the bay past its limits
+    std::vector<int> struck = strikesUsed;   // PANTHEON wears once a night, however many of its strikes it fired
+    for (int id : pantheonStruck) if (std::find(struck.begin(), struck.end(), id) == struck.end()) struck.push_back(id);
+    for (int gwId : struck) {   // a strike pushes every machine in the bay past its limits
         Machine* gw = g.net.find(gwId);
         if (!gw) continue;
         std::vector<Machine*> bay = {gw};
@@ -1021,6 +1174,25 @@ Reckoning RunSession::settle() {
         line("Strike wear: -" + std::to_string(bal::STRIKE_WEAR) + " on " + gw->name + "'s subnet (" + std::to_string(bay.size()) + " machines).",
              Tone::Warn);
     }
+    if (absolved)
+        if (Machine* ab = g.net.find(absolutionId)) {   // ABSOLUTION: the ticket closed on nothing, and that costs the iron
+            bool wasDark = ab->dark();
+            ab->condition = std::max(0, ab->condition - bal::ABSOLUTION_WEAR);
+            line("ABSOLUTION closed tonight's trace on an empty route: you walked out clean, the decoy untouched, no re-key. " + ab->name + " -" +
+                     std::to_string(bal::ABSOLUTION_WEAR) + " condition.",
+                 Tone::Good);
+            if (ab->dark() && !wasDark) {
+                ab->active = false;
+                ab->bay = -1;
+                darkNow.push_back(ab->name);
+            }
+        }
+    if (t.doctrine == Doctrine::Ledgerlock && (audits > 0 || escrowed > 0))
+        line("LEDGERLOCK: " + std::to_string(audits) + " audit(s) logged against you" +
+                 (escrowed > 0 ? ", " + std::to_string(escrowed) + " escrowed by your vaults." : std::string(".")),
+             audits > 0 ? Tone::Warn : Tone::Info);
+    if (t.doctrine == Doctrine::Countertrace && counters > 0)
+        line("COUNTERTRACE: " + std::to_string(counters) + " countertrace(s) landed.", Tone::Warn);
     if (worn > 0)
         line(std::string("Wear: ") + (traceOut ? "HEAVY (traced with no decoy)" : "normal") + " on " + std::to_string(worn) + " machine(s)",
              traceOut ? Tone::Bad : Tone::Dim);
@@ -1104,19 +1276,32 @@ Reckoning RunSession::settle() {
                              "'s building can feed one subnet at half its bill. Build a gateway and choose it at the rack.",
                          Tone::Good);
                 // CHAIRMAN IRON (0.9): the building's own maintenance log names the service site that keeps its chair's iron.
+                // 0.10: an inner chair's log names a HELIOS CAGE instead - two runs, and SIGNATURE iron at the end.
                 if (g.siteState.size() < static_cast<size_t>(kTowerCount)) g.siteState.resize(kTowerCount, 0);
                 int& site = g.siteState[static_cast<size_t>(t.tower)];
+                const bool inner = innerTower(t.tower);
+                const std::string where = inner ? "HELIOS CAGE " : "HELIOS SERVICE SITE ";
                 if (site == 0) {
                     site = 1;
-                    g.journal.push_back(std::string("CHAIRMAN IRON: ") + towerCorp(t.tower) + "'s maintenance log names HELIOS SERVICE SITE " +
+                    g.journal.push_back(std::string(inner ? "SIGNATURE IRON: " : "CHAIRMAN IRON: ") + towerCorp(t.tower) + "'s maintenance log names " + where +
                                         siteName(t.tower) + ". It's on your board.");
                 }
                 if (site == 1) {
                     rk.sitePinned = t.tower;
-                    line(std::string("CHAIRMAN IRON: ") + towerCorp(t.tower) + "'s maintenance log names HELIOS SERVICE SITE " + siteName(t.tower) +
-                             ", where its chair's iron waits unimaged. It's pinned to your board until you take it." +
+                    line(std::string(inner ? "SIGNATURE IRON: " : "CHAIRMAN IRON: ") + towerCorp(t.tower) + "'s maintenance log names " + where + siteName(t.tower) +
+                             (inner ? ", where HELIOS cages its chair's own iron behind two doors. It's pinned to your board until you take it."
+                                    : ", where its chair's iron waits unimaged. It's pinned to your board until you take it.") +
                              (g.knownPhrases.count(siteId(t.tower)) ? " You hold its maintenance phrase." : " Its phrase was in that log - you didn't read it."),
                          Tone::Story);
+                }
+                // THE INNER CHAIRS (0.10): the second outer tower you own lists the three that sit above them.
+                if (!inner && outerOwned(g) == kInnerUnlock) {
+                    rk.innerOpened = true;
+                    g.journal.push_back("THE INNER CHAIRS: Aurex (LEDGERLOCK), Sable Wren (COUNTERTRACE) and the HELIOS PROVING GROUND are on your board.");
+                    rk.actCards.push_back({"THE INNER CHAIRS",
+                                           "Two buildings answer to you now, and the table has noticed. Three chairs never sat on the Ledger's board: "
+                                           "Aurex, who audit everything; Sable Wren, who read every route back; and HELIOS itself, proving its doctrines "
+                                           "one floor at a time.\nTheir iron is not chairman iron. It is SIGNATURE iron - and HELIOS keeps it in cages."});
                 }
                 bool all = true;
                 for (int k = 0; k < kTowerCount; ++k) if (g.floorsCleared(k) < kFloors) all = false;
@@ -1144,6 +1329,7 @@ Reckoning RunSession::settle() {
             if (g.towerKey.size() < static_cast<size_t>(kTowerCount)) g.towerKey.resize(kTowerCount, 0);
             g.towerKey[static_cast<size_t>(t.tower)] += 1;
             g.knownPhrases.erase(siteId(t.tower));   // its service site's door shares the key
+            g.knownPhrases.erase(cageDoorId(t.tower));   // ...and so does a cage's inner door
             for (int f = 0; f < kFloors; ++f) {
                 g.knownPhrases.erase(floorId(t.tower, f));
                 g.fortress.erase(floorId(t.tower, f));   // FORTRESS: every logged attempt and survey goes stale too
@@ -1175,10 +1361,41 @@ Reckoning RunSession::settle() {
         if (rec != g.fortress.end() && rec->second.blank()) g.fortress.erase(rec);
     }
 
-    if (t.kind == Kind::Site && traceOut) {   // a service site re-keys its door; nothing else is lost
+    if (isCage(t) && !isCageCapture(t) && !traceOut) {   // the cage run: the schematic is the inner door's address
+        bool schematic = false;
+        for (auto& f : t.files) if (f.kind == FileKind::Objective && f.taken) schematic = true;
+        if (schematic) {
+            if (g.siteState.size() < static_cast<size_t>(kTowerCount)) g.siteState.resize(kTowerCount, 0);
+            g.siteState[static_cast<size_t>(t.tower)] = 3;
+            rk.cageKeyed = true;
+            const bool phrase = g.knownPhrases.count(cageDoorId(t.tower)) > 0;
+            line(std::string("CAGE ") + siteName(t.tower) + ": the schematic has the inner door's address. It's on your board - " + ironName(t.tower) +
+                     " is behind it." + (phrase ? " You hold its SERVICE KEY: the hold runs shorter." : " You never read the service key: the hold runs long."),
+                 Tone::Story);
+            g.journal.push_back(std::string("SIGNATURE IRON: Cage ") + siteName(t.tower) + "'s inner door (core." + [&] {
+                std::string n = siteName(t.tower);
+                for (auto& c : n) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                return n;
+            }() + ".helios) is on your board.");
+        }
+    }
+    if (isCageCapture(t) && traceOut) {   // the inner door burns the key: back to the cage run
+        if (g.towerKey.size() < static_cast<size_t>(kTowerCount)) g.towerKey.resize(kTowerCount, 0);
+        g.towerKey[static_cast<size_t>(t.tower)] += 1;
+        if (g.siteState.size() < static_cast<size_t>(kTowerCount)) g.siteState.resize(kTowerCount, 0);
+        g.siteState[static_cast<size_t>(t.tower)] = 1;
+        g.knownPhrases.erase(t.id);
+        g.knownPhrases.erase(siteId(t.tower));
+        rk.cageKeyBurned = true;
+        rk.siteRekeyed = true;
+        line(std::string("HELIOS BURNS your service key for Cage ") + siteName(t.tower) + " and re-keys both doors. The inner door is gone from your board: " +
+                 "take the schematic again. " + ironName(t.tower) + " stays caged.",
+             Tone::Bad);
+    } else if (t.kind == Kind::Site && traceOut) {   // a service site re-keys its door; nothing else is lost
         if (g.towerKey.size() < static_cast<size_t>(kTowerCount)) g.towerKey.resize(kTowerCount, 0);
         g.towerKey[static_cast<size_t>(t.tower)] += 1;
         g.knownPhrases.erase(t.id);
+        g.knownPhrases.erase(cageDoorId(t.tower));
         rk.siteRekeyed = true;
         line(std::string("HELIOS re-keys SERVICE SITE ") + siteName(t.tower) + "'s maintenance door. Your phrase for it is stale. The site - and " +
                  ironName(t.tower) + " - stay where they are.",

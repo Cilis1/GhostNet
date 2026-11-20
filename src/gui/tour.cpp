@@ -486,6 +486,93 @@ int App::screenshotTour(const std::string& dir, const std::function<void()>& ren
             std::fprintf(stderr, "no service site on the board\n");
             ++failures;
         }
+        // 0.10 THE INNER CHAIRS: two outer towers open them; LEDGERLOCK, COUNTERTRACE, a cage's inner door and SIGNATURE iron.
+        g.towerFloor[0] = g.towerFloor[1] = kFloors;
+        g.siteState[0] = 1;
+        tab = Tab::Board;
+        go(Scr::Hub);
+        dismiss();
+        refreshBoard();
+        shot("47-board-inner-chairs");
+        if (const Target* a = findTarget([](const Target& t) { return t.kind == Kind::Tower && t.doctrine == Doctrine::Ledgerlock; })) {
+            brief = *a;
+            go(Scr::Brief);
+            shot("48-brief-ledgerlock");
+        } else {
+            std::fprintf(stderr, "no Aurex on the board\n");
+            ++failures;
+        }
+        if (const Target* sw = findTarget([](const Target& t) { return t.kind == Kind::Tower && t.doctrine == Doctrine::Countertrace; })) {
+            Target st = *sw;
+            buyPrep(g, st, Prep::Phrase);
+            connect(st);
+            run->phrase(st.passphrase);
+            int landed = 0;
+            for (int s = 0; s < 80 && !run->over() && landed < 2; ++s) {
+                if (!run->busy())
+                    for (size_t i = 0; i < run->t.files.size(); ++i)
+                        if (run->t.files[i].kind == FileKind::Objective && !run->t.files[i].taken && run->startDownload(static_cast<int>(i), err)) break;
+                run->step();
+                run->trace = std::min(run->trace, 55.0);   // staging: keep the line open until Sable Wren reads it back
+                landed = run->counters;
+                if (run->nextCounter() == 2 && landed >= 1) break;
+            }
+            if (run->counters < 1) { std::fprintf(stderr, "no countertrace on Sable Wren\n"); ++failures; }
+            traceShown = static_cast<float>(run->trace);
+            handleEvents();
+            floats.clear();
+            shot("49-run-countertrace", 1.0f);
+            run->disconnect();
+            run.reset();
+        } else {
+            std::fprintf(stderr, "no Sable Wren on the board\n");
+            ++failures;
+        }
+        g.towerFloor[3] = kFloors;
+        g.siteState[3] = 3;   // the cage run done: OUBLIETTE's inner door is on the board, with the service key's phrase
+        g.knownPhrases.insert(cageDoorId(3));
+        while (g.net.externalCount() >= bal::MAX_EXTERNAL) {
+            int victim = -1;
+            for (auto& m : g.net.machines)
+                if (!m.home && !m.chairIron() && m.job != Job::Gateway && m.bay < 0 && g.net.decoyId != m.id) victim = m.id;
+            if (victim < 0 || !scrap(g, victim).ok) break;
+        }
+        refreshBoard();
+        if (const Target* cg = findTarget([](const Target& t) { return isCageCapture(t); })) {
+            Target door = *cg;
+            brief = door;
+            go(Scr::Brief);
+            shot("50-brief-cage-door");
+            connect(door);
+            run->phrase(door.passphrase);
+            handleEvents();
+            floats.clear();
+            startCapture();
+            if (modals.empty() || modals.back().title.find("SIGNATURE") == std::string::npos) { std::fprintf(stderr, "no SIGNATURE hold\n"); ++failures; }
+            shot("51-signature-hold", 1.0f);
+            modals.clear();
+            if (!run->startHold(Job::Vault, err)) { std::fprintf(stderr, "SIGNATURE hold refused: %s\n", err.c_str()); ++failures; }
+            for (int s = 0; s < 200 && run->busy() && !run->over(); ++s) {
+                run->step();
+                run->trace = std::min(run->trace, 60.0);
+            }
+            run->events.clear();
+            run->settle();
+            run.reset();
+            int sig = -1;
+            for (auto& m : g.net.machines) if (m.signature()) sig = m.id;
+            if (sig < 0) { std::fprintf(stderr, "no SIGNATURE machine after the hold\n"); ++failures; }
+            if (Machine* m = g.net.find(sig); m && !m->active) activate(g, *m);
+            tab = Tab::Rack;
+            go(Scr::Hub);
+            dismiss();
+            selMachine = sig;
+            shot("52-rack-signature");
+            selMachine = -1;
+        } else {
+            std::fprintf(stderr, "no cage door on the board\n");
+            ++failures;
+        }
         g.towerFloor = keepFloors;
         tidyHousePower(g);
     }
