@@ -11,6 +11,7 @@ inline double effectiveTraceRate(const GameState& g, const Target& t) {
     double r = baseTraceRate(t);
     r *= 1.0 - g.net.proxyBonus() / 100.0;
     r *= 1.0 - bal::SHROUD_TRACE * g.deck.shroud;
+    if (signatureOnline(g.net, Job::Proxy)) r *= 1.0 - bal::ECLIPSE_CUT / 100.0;   // ECLIPSE: past every cap
     return r;
 }
 
@@ -31,7 +32,7 @@ inline int baseFine(const GameState& g, const Target& t, bool honeypot, bool anc
 
 // [doc] proportional to security, shorter if you came in by passphrase, never under ~5s.
 inline int anchorSeconds(const Target& t, bool viaPhrase) {
-    int s = t.security * 6;
+    int s = isCageCapture(t) ? bal::CAGE_HOLD : t.security * 6;   // a cage's inner door holds the longest
     if (viaPhrase) s = static_cast<int>(std::ceil(s * 0.6));
     return std::max(bal::ANCHOR_FLOOR, s);
 }

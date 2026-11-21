@@ -11,12 +11,15 @@
 //   tower  beat the deep job, open Act IV and climb the corp towers; then kit trials: a build matched to each
 //          tower's doctrine must take all of it, and a single build facing the wrong doctrine must fail
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <map>
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -37,6 +40,11 @@ bool CHAOS = false;
 bool SUBNET = false;   // "subnet" mode: build subnets early, hunt prototypes, never take the deep job
 bool TOWER = false;    // "tower" mode: keep playing after the deep job, into Act IV
 int KIT_TIER = 3;      // the tier of the late-game owner's iron in the kit trials
+bool CHAIRS = false;   // "chairs" mode (0.9): tower mode that also goes after every pinned HELIOS service site
+Job ACCORD_PICK = Job::Proxy;   // the job the bot images chairman iron as
+// 0.8 RUNNING LEAN: the bot takes LEDGER's standby picks, scrubs loud iron it can afford, and lets towers power its subnets.
+// GHOSTNET_SIM_FAT=1 plays the same seed the 0.7 way (no standby, no scrubs) to measure what lean play saves.
+bool LEAN = std::getenv("GHOSTNET_SIM_FAT") == nullptr;
 int problems = 0;
 void fail(const std::string& s) {
     std::cerr << "PROBLEM: " << s << "\n";
@@ -48,9 +56,11 @@ struct Solver {
     std::vector<std::string> cands;
     std::vector<std::set<int>> wheels;
     std::string last;
+    bool directional = false;   // 0.7: a composite's rotor also says which way each wheel lies
     // A composite's rotor stage: every wheel within 2 notches of the keypad digit in its box.
     void carry(const Lock& L) {
         kind = LockType::Rotor;
+        directional = L.directional();
         wheels.clear();
         for (int i = 0; i < 4; ++i) {
             std::set<int> s;
@@ -58,6 +68,17 @@ struct Solver {
             for (int v = 0; v <= 9; ++v) if (k < 0 || std::abs(v - k) <= 2) s.insert(v);
             wheels.push_back(s);
         }
+    }
+    // TUMBLER SURVEY: the keypad's four digits, unordered.
+    void survey(const std::string& digits) {
+        if (kind != LockType::Keypad || digits.size() != 4) return;
+        std::vector<std::string> keep;
+        for (auto& w : cands) {
+            std::string sorted = w;
+            std::sort(sorted.begin(), sorted.end());
+            if (sorted == digits) keep.push_back(w);
+        }
+        cands.swap(keep);
     }
     // What PEEK / CRACK showed on screen: box i is exactly c.
     void pin(int i, char c) {
@@ -90,13 +111,13 @@ struct Solver {
             for (auto& w : wheels) {
                 int best = *w.begin(), bestScore = 99;
                 for (int v : w) {
-                    int same = 0, adj = 0, far = 0;
+                    int same = 0, adj = 0, far = 0, adjUp = 0, farUp = 0;
                     for (int o : w) {
                         if (o == v) ++same;
-                        else if (std::abs(o - v) == 1) ++adj;
-                        else ++far;
+                        else if (std::abs(o - v) == 1) { ++adj; adjUp += o > v; }
+                        else { ++far; farUp += o > v; }
                     }
-                    int sc = std::max({same, adj, far});
+                    int sc = directional ? std::max({same, adjUp, adj - adjUp, farUp, far - farUp}) : std::max({same, adj, far});
                     if (sc < bestScore) { bestScore = sc; best = v; }
                 }
                 g += char('0' + best);
@@ -156,7 +177,8 @@ struct Solver {
                 for (int o : wheels[i]) {
                     int d = std::abs(o - v);
                     int m = d == 0 ? 2 : d == 1 ? 1 : 0;
-                    if (m == row.marks[static_cast<size_t>(i)]) keep.insert(o);
+                    bool dirOk = row.dir.size() != 4 || (o > v ? 1 : o < v ? -1 : 0) == row.dir[static_cast<size_t>(i)];
+                    if (m == row.marks[static_cast<size_t>(i)] && dirOk) keep.insert(o);
                 }
                 wheels[i] = keep;
             }
@@ -183,7 +205,25 @@ struct SimStats {
     int bought = 0, decoys = 0, deepAttempts = 0, shortfalls = 0, deepWon = 0, annex = 0, contracts = 0, unpaid = 0;
     int gateways = 0, plugged = 0, strikes = 0, clusters = 0, protos = 0, protoSeen = 0, protoTries = 0;
     int towerRuns = 0, floors = 0, rekeys = 0, prepBought = 0, sweeps = 0, misses = 0, programs = 0;
+    int standbyNights = 0, standbySaved = 0, houseSaved = 0, scrubs = 0, scrubSpent = 0;
+    int siteTries = 0, siteCaptures = 0, siteRekeys = 0, accordFreezes = 0, sheds = 0, firstSiteRun = -1;
+    int signatures = 0, cageKeys = 0, keysBurned = 0, absolved = 0;   // 0.10: the inner chairs
 } st;
+
+// LEDGER's picks, taken (the GUI starts them OFF; this bot always opts in).
+void leanUp(GameState& g, const Target& t) {
+    if (!LEAN) { g.net.house.clear(); return; }   // the 0.7 way: every subnet pays in full
+    if (!g.netUnlocked) return;
+    int n = 0;
+    for (auto& p : standbyPicks(g, t))
+        if (Machine* m = g.net.find(p.id)) n += setStandby(g, *m, true).ok ? 1 : 0;
+    if (n > 0) ++st.standbyNights;
+    if (g.net.decoyId >= 0 && !g.net.decoy()) fail("standby disarmed the decoy");
+}
+void leanTally(const Reckoning& rk) {
+    st.standbySaved += rk.standbySaved;
+    st.houseSaved += rk.houseSaved;
+}
 
 // Fire any subnet strike that is usable right now (the bot is greedy with them).
 void useStrikes(RunSession& r) {
@@ -191,13 +231,13 @@ void useStrikes(RunSession& r) {
         std::string err;
         // On a tower the bot saves BLACKOUT for when the trace is actually climbing.
         const Machine* gw = r.g.net.find(id);
-        if (r.t.kind == Kind::Tower && gw && gw->role == BayRole::Stealth && r.trace < 35) continue;
+        if ((r.t.kind == Kind::Tower || r.t.kind == Kind::Site) && gw && gw->role == BayRole::Stealth && r.trace < 35) continue;
         if (r.strikeUsable(id) && r.strike(id, err)) ++st.strikes;
     }
 }
 // Deck programs, on towers: PEEK at the door, FREEZE when the trace climbs, BURST on a big download.
 void usePrograms(RunSession& r) {
-    if (r.t.kind != Kind::Tower) return;
+    if (r.t.kind != Kind::Tower && r.t.kind != Kind::Site) return;
     for (int s = 0; s < kProgramSlots; ++s) {
         Program p = r.g.programs[s];
         bool want = (p == Program::Peek && !r.doorOpen) || (p == Program::Freeze && r.trace >= 45) ||
@@ -223,13 +263,29 @@ void checkInvariants(const GameState& g) {
         const Machine* gw = g.net.find(m.bay);
         if (!gw || gw->job != Job::Gateway || gw->bay >= 0) fail(m.name + " is plugged into something that isn't a gateway");
         if (!m.active || m.home || m.job == Job::Gateway) fail(m.name + " sits in a subnet it can't be in");
-        if (gw && static_cast<int>(g.net.bayMembers(gw->id).size()) > bal::BAY_SLOTS) fail("a subnet holds more than its slots");
+        if (gw && static_cast<int>(g.net.bayMembers(gw->id).size()) > g.net.baySlots(*gw)) fail("a subnet holds more than its slots");
+    }
+    for (auto& m : g.net.machines) {   // 0.9: chairman iron
+        if (m.accord() && (m.tier != kMaxTier || m.noise != 1 || m.trait != Trait::None || m.home)) fail(m.name + " is ACCORD iron out of spec");
+        if (m.signature() && (m.tier != kMaxTier || m.noise != 1 || m.trait != Trait::None || m.home)) fail(m.name + " is SIGNATURE iron out of spec");
+        if (m.signature() && m.job != Job::Vault && m.job != Job::Proxy && m.job != Job::Gateway) fail(m.name + " is SIGNATURE iron in a job it was never built for");
+        if (!m.chairIron() && m.tier > 4) fail(m.name + " is tier 5 without being chairman iron");
+        if (m.chairIron() && g.net.decoyId == m.id) fail("chairman iron armed as the decoy");
+    }
+    if (g.net.shed) fail("the grid is still shedding between runs");
+    for (int k = 0; k < kTowerCount; ++k) {
+        if (g.siteOf(k) < 0 || g.siteOf(k) > (innerTower(k) ? 3 : 2)) fail("service site state out of range");
+        if (towerListed(g, k) != (ledgerOpen(g) && (!innerTower(k) || outerOwned(g) >= kInnerUnlock))) fail("an inner chair listed out of turn");
+        if (towerOwned(g, k) && g.siteOf(k) == 0) fail("an owned tower's service site was never pinned");
     }
     if (g.net.relayBonus() > bal::RELAY_HARD_CAP || g.net.proxyBonus() > bal::PROXY_HARD_CAP) fail("a bonus passed its hard cap");
     if (g.netUnlocked && !g.net.home()) fail("network unlocked without N0");
     if (g.act < 1 || g.act > kMaxAct) fail("act out of range");
     if (g.act == 4 && !g.deepDone) fail("Act IV without the deep job");
     for (int k = 0; k < kTowerCount; ++k) if (g.floorsCleared(k) < 0 || g.floorsCleared(k) > kFloors) fail("tower progress out of range");
+    if (g.net.standbyCount() > 0) fail("a machine is still on standby between runs");
+    for (size_t k = 0; k < g.net.house.size(); ++k)
+        if (g.net.house[k] >= 0 && !towerOwned(g, static_cast<int>(k))) fail("house power from a tower you don't own");
 }
 
 void roundTrip(const GameState& g) {
@@ -250,8 +306,22 @@ void roundTrip(const GameState& g) {
         if (!k || k->bay != m.bay || k->role != m.role || k->bayOn != m.bayOn || k->tier != m.tier || k->active != m.active)
             fail("save/load lost a machine's subnet, role or tier");
     }
+    for (auto& m : g.net.machines) {
+        const Machine* k = h.net.find(m.id);
+        if (k && k->noise != m.noise) fail("save/load lost a machine's noise (scrub)");
+        if (m.job == Job::Gateway && h.net.houseTower(m.id) != g.net.houseTower(m.id)) fail("save/load lost house power");
+    }
     if (h.net.relayBonus() != g.net.relayBonus() || h.net.proxyBonus() != g.net.proxyBonus() || h.net.upkeepTotal() != g.net.upkeepTotal())
         fail("save/load changed the network's numbers");
+    for (auto& m : g.net.machines) {
+        const Machine* k = h.net.find(m.id);
+        if (k && k->grade != m.grade) fail("save/load lost a machine's grade (chairman iron)");
+    }
+    for (int k = 0; k < kTowerCount; ++k)   // (a doctored owned tower with no site gets its log on load)
+        if (h.siteOf(k) != g.siteOf(k) && !(g.siteOf(k) == 0 && towerOwned(g, k) && h.siteOf(k) == 1)) fail("save/load lost a service site");
+    if (h.vaultHeld != g.vaultHeld) fail("save/load lost an objective the ACCORD vault holds");
+    if (h.net.computeCapacity() != g.net.computeCapacity() || h.net.jamDelay() != g.net.jamDelay() || h.net.scoutCapacity() != g.net.scoutCapacity())
+        fail("save/load changed chairman iron's numbers");
 }
 
 void solveDoor(RunSession& r) {
@@ -263,6 +333,8 @@ void solveDoor(RunSession& r) {
     }
     Solver s(r.lock.type);
     if (r.lock.composite() && r.lock.stage == 1) s.carry(r.lock);
+    if (r.lock.stage == 0) s.survey(r.lock.surveyDigits());
+    for (auto& row : r.lock.history) s.feed(row);   // FORTRESS: the logged attempts on screen
     int stage = r.lock.stage;
     size_t pinned = 0;
     for (int i = 0; i < 24 && !r.doorOpen && !r.over(); ++i) {
@@ -285,9 +357,10 @@ void solveDoor(RunSession& r) {
         }
         std::string err;
         if (!r.guess(guess, err)) { fail("lock rejected a well-formed guess: " + err); r.disconnect(); return; }
-        if (r.lock.stage != stage) {   // the keypad opened: the rotor starts from its digits
+        if (r.lock.stage != stage) {   // the keypad opened: the rotor starts from its digits (and any logged rotor rows)
             stage = r.lock.stage;
             s.carry(r.lock);
+            for (auto& row : r.lock.history) s.feed(row);
             pinned = 0;
         } else if (!r.lock.history.empty()) {
             s.feed(r.lock.history.back());
@@ -311,7 +384,7 @@ void playInside(RunSession& r, bool wantSteal, bool deep, const ReportView& rep)
         if (q.possible) {
             std::string err;
             ++st.steals;
-            if (r.startHold(q.def, err)) {
+            if (r.startHold(q.accord ? ACCORD_PICK : q.def, err)) {
                 runTimed(r);
                 return;
             }
@@ -340,7 +413,8 @@ void playInside(RunSession& r, bool wantSteal, bool deep, const ReportView& rep)
     order.insert(order.end(), pay.begin(), pay.end());
     if (r.t.kind == Kind::Tower)   // the way up: the facilities memo, right after the objectives
         for (size_t i = 0; i < r.t.files.size(); ++i)
-            if (r.t.files[i].phraseFor >= 0) order.insert(order.begin() + static_cast<long>(r.t.objectiveCount()), -1 - static_cast<int>(i));
+            if (r.t.files[i].phraseFor >= 0 || r.t.files[i].revealsSite >= 0)   // ...and a Boardroom's maintenance log
+                order.insert(order.begin() + static_cast<long>(r.t.objectiveCount()), -1 - static_cast<int>(i));
     for (int i : order) {
         if (r.over()) return;
         if (i < 0) {   // a memo to read
@@ -481,16 +555,28 @@ void manage(GameState& g) {
         }
     }
     armAnyDecoy(g, CHAOS);
+    if (LEAN) {   // SIGNAL SCRUB: the loudest running iron first, only with a healthy cushion left
+        for (int k = 0; k < 4; ++k) {
+            Machine* best = nullptr;
+            for (auto& m : g.net.machines)
+                if (g.net.online(m) && !m.home && scrubSaving(m) > 0 && (!best || scrubSaving(m) > scrubSaving(*best))) best = &m;
+            if (!best || scrubSaving(*best) < 15 || g.credits < scrubCost(*best) + 2 * g.net.upkeepTotal() + 400) break;
+            int cost = scrubCost(*best);
+            if (scrubSignal(g, *best).ok) { ++st.scrubs; st.scrubSpent += cost; }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Act IV: the careful bot on a tower floor. Prep is bought with credits, the
 // floor is played, and nothing happens unless the player starts it.
 // ---------------------------------------------------------------------------
-void towerPrep(GameState& g, const Target& t, bool buyPhrase) {
+void towerPrep(GameState& g, const Target& t, bool buyPhrase, bool buySurvey = true) {
     int reserve = 2 * g.net.upkeepTotal() + 300;
     if (prepAvailable(g, t, Prep::Plan) && g.credits - prepCost(t, Prep::Plan) >= reserve && buyPrep(g, t, Prep::Plan).ok) ++st.prepBought;
     if (buyPhrase && prepAvailable(g, t, Prep::Phrase) && g.credits - prepCost(t, Prep::Phrase) >= reserve && buyPrep(g, t, Prep::Phrase).ok)
+        ++st.prepBought;
+    if (buySurvey && prepAvailable(g, t, Prep::Survey) && g.credits - prepCost(t, Prep::Survey) >= reserve && buyPrep(g, t, Prep::Survey).ok)
         ++st.prepBought;
 }
 
@@ -498,8 +584,11 @@ void towerPrep(GameState& g, const Target& t, bool buyPhrase) {
 void loadPrograms(GameState& g, Doctrine d) {
     for (int s = 0; s < kProgramSlots; ++s) unloadProgram(g, s);
     if (d == Doctrine::Fortress) { buyProgram(g, Program::Peek); buyProgram(g, Program::Freeze); }
+    else if (d == Doctrine::Loadshed) { buyProgram(g, Program::Burst); buyProgram(g, Program::Freeze); }
     else { buyProgram(g, Program::Freeze); buyProgram(g, Program::Burst); }
 }
+
+bool lastDoorOpened = false;   // did the last playFloor get through the door at all
 
 Reckoning playFloor(GameState& g, const Target& t, uint64_t entropy) {
     ReportView rep = reportView(g, t);
@@ -507,6 +596,7 @@ Reckoning playFloor(GameState& g, const Target& t, uint64_t entropy) {
     RunSession r(g, t, entropy);
     ++st.towerRuns;
     solveDoor(r);
+    lastDoorOpened = r.doorOpen;
     playInside(r, false, false, rep);
     if (!r.over()) r.disconnect();
     st.sweeps += r.sweeps;
@@ -525,11 +615,20 @@ Reckoning playFloor(GameState& g, const Target& t, uint64_t entropy) {
 }
 
 // The natural bot's retool for a doctrine, with real purchases only: a gateway in the role the
-// tower calls for, and its subnet filled with compute boxes (FORTRESS) or jammers (BIOSENTINEL).
-// Returns false if it can't afford the kit yet.
+// tower calls for, and its subnet filled with compute boxes (FORTRESS), jammers (BIOSENTINEL) or relays (LOADSHED:
+// a SPEED subnet that strikes between the sheds). Returns false if it can't afford the kit yet.
+// 0.10: LEDGERLOCK wants VAULTS (each escrows audits) in a SPEED subnet; COUNTERTRACE wants PROXIES (each dead-ends one) in a SPEED subnet.
+Job kitJob(Doctrine d) {
+    return d == Doctrine::Fortress ? Job::Compute : d == Doctrine::Loadshed ? Job::Relay : d == Doctrine::Ledgerlock ? Job::Vault
+         : d == Doctrine::Countertrace ? Job::Proxy : Job::Jammer;
+}
+BayRole kitRole(Doctrine d) {
+    return d == Doctrine::Fortress ? BayRole::Siege : d == Doctrine::Loadshed || d == Doctrine::Ledgerlock || d == Doctrine::Countertrace ? BayRole::Speed
+                                                                                                                                         : BayRole::Stealth;
+}
 bool retoolFor(GameState& g, Doctrine d) {
-    const Job want = d == Doctrine::Fortress ? Job::Compute : Job::Jammer;
-    const BayRole role = d == Doctrine::Fortress ? BayRole::Siege : BayRole::Stealth;
+    const Job want = kitJob(d);
+    const BayRole role = kitRole(d);
     Machine* gw = nullptr;
     for (auto& m : g.net.machines) if (m.job == Job::Gateway && m.working()) { gw = &m; break; }
     auto reserve = [&] { return 2 * g.net.upkeepTotal() + 400; };
@@ -607,19 +706,53 @@ GameState ledgerOwner(uint64_t seed) {
 // The doctrine slot of the main rack: a gateway whose subnet is built for one doctrine.
 void fitKit(GameState& g, Doctrine d) {
     auto& v = g.net.machines;
-    for (auto& m : v) if (m.bay >= 0) unplug(g, m);
-    v.erase(std::remove_if(v.begin(), v.end(), [](const Machine& m) { return m.job == Job::Gateway || m.job == Job::Compute || m.job == Job::Jammer; }),
+    std::set<int> oldKit;   // the last kit's bay members go with it (repeated fittings mustn't pile up spares)
+    for (auto& m : v) if (m.bay >= 0) { oldKit.insert(m.id); unplug(g, m); }
+    v.erase(std::remove_if(v.begin(), v.end(), [&](const Machine& m) {
+                return m.job == Job::Gateway || m.job == Job::Compute || m.job == Job::Jammer || m.job == Job::Vault || oldKit.count(m.id);
+            }),
             v.end());
     int gw = owned(g, Job::Gateway, KIT_TIER).id;
     if (!activate(g, *g.net.find(gw)).ok) fail("kit: the gateway has no slot");
-    std::vector<Job> bay = d == Doctrine::Fortress ? std::vector<Job>{Job::Compute, Job::Compute, Job::Relay}
+    std::vector<Job> bay = d == Doctrine::Fortress   ? std::vector<Job>{Job::Compute, Job::Compute, Job::Relay}
+                         : d == Doctrine::Loadshed ? std::vector<Job>{Job::Relay, Job::Relay, Job::Proxy}
+                         : d == Doctrine::Ledgerlock ? std::vector<Job>{Job::Vault, Job::Vault, Job::Relay}
+                         : d == Doctrine::Countertrace ? std::vector<Job>{Job::Proxy, Job::Proxy, Job::Relay}
                                                    : std::vector<Job>{Job::Jammer, Job::Jammer, Job::Proxy};
     for (Job j : bay) {
         int id = owned(g, j, KIT_TIER).id;
         if (!plugIn(g, *g.net.find(id), *g.net.find(gw)).ok) fail("kit: a machine wouldn't plug in");
     }
-    setRole(g, *g.net.find(gw), d == Doctrine::Fortress ? BayRole::Siege : BayRole::Stealth);
+    setRole(g, *g.net.find(gw), kitRole(d));
     loadPrograms(g, d);
+}
+
+// 0.7 - a Kessler-Maru climb with a persistent code: how many connections it takes, which floors fell on
+// their first visit, how often the alarm log filled, and whether any door opened at all.
+struct Climb { int floors = 0, runs = 0, firstVisit = 0, alarmRekeys = 0, traceRekeys = 0, opened = 0; };
+Climb climbKessler(GameState g, Doctrine kit, int breaker, bool survey, uint64_t entropy, int attempts, int floorsWanted = kFloors) {
+    Climb c;
+    std::set<int> visited;
+    for (int a = 0; a < attempts && g.floorsCleared(0) < floorsWanted; ++a) {
+        repairAll(g);
+        for (auto& m : g.net.machines) if (m.bay >= 0 || m.job == Job::Gateway) m.condition = 100;
+        fitKit(g, kit);
+        g.deck.breaker = breaker;
+        int floor = g.floorsCleared(0);
+        Target t = makeTowerFloor(g, 0, floor);
+        towerPrep(g, t, true, survey);
+        g.credits = std::max(g.credits, 30000);
+        bool first = visited.insert(floor).second;
+        Reckoning rk = playFloor(g, t, entropy * 104729 + static_cast<uint64_t>(a));
+        ++c.runs;
+        if (lastDoorOpened) ++c.opened;
+        if (rk.floorCleared >= 0 && first) ++c.firstVisit;
+        if (rk.alarmRekeyed) ++c.alarmRekeys;
+        if (rk.rekeyed) ++c.traceRekeys;
+        checkInvariants(g);
+    }
+    c.floors = g.floorsCleared(0);
+    return c;
 }
 
 // Climb one tower with one kit. Returns floors taken.
@@ -628,7 +761,7 @@ int climb(GameState g, int tower, Doctrine kit, uint64_t entropy, int attempts, 
     for (int a = 0; a < attempts && g.floorsCleared(tower) < kFloors; ++a) {
         repairAll(g);
         for (auto& m : g.net.machines) if (m.bay >= 0 || m.job == Job::Gateway) m.condition = 100;
-        fitKit(g, kit);
+        fitKit(g, kit == Doctrine::Proving ? floorDoctrine(tower, g.floorsCleared(tower)) : kit);   // PROVING: the kit for tonight's exam
         Target t = makeTowerFloor(g, tower, g.floorsCleared(tower));
         towerPrep(g, t, true);
         g.credits = std::max(g.credits, 30000);
@@ -638,6 +771,53 @@ int climb(GameState g, int tower, Doctrine kit, uint64_t entropy, int attempts, 
     }
     if (runsUsed) *runsUsed = runs;
     return g.floorsCleared(tower);
+}
+
+// 0.9 - CHAIRMAN IRON: one attempt on a pinned service site, imaging the iron as ACCORD_PICK.
+Reckoning playSite(GameState& g, const Target& t, uint64_t entropy) {
+    ReportView rep = reportView(g, t);
+    (void)panelBriefing(g, t);
+    RunSession r(g, t, entropy);
+    ++st.siteTries;
+    solveDoor(r);
+    playInside(r, true, false, rep);
+    if (!r.over()) r.disconnect();
+    st.sheds += r.sheds;
+    if (std::getenv("GHOSTNET_SIM_VERBOSE"))
+        std::printf("    site %s: end %d door %d phrase %d trace %.0f secs %d sheds %d\n", t.name.c_str(), static_cast<int>(r.end), r.doorOpen,
+                    r.viaPhrase, r.trace, r.secs, r.sheds);
+    Reckoning rk = r.settle();
+    if (rk.accordCaptured || rk.signatureCaptured) ++st.siteCaptures;
+    if (rk.signatureCaptured) ++st.signatures;
+    if (rk.cageKeyed) ++st.cageKeys;
+    if (rk.cageKeyBurned) ++st.keysBurned;
+    if (rk.absolved) ++st.absolved;
+    if (rk.siteRekeyed) ++st.siteRekeys;
+    return rk;
+}
+// A late-game owner who owns `tower` and has its site pinned, with the doctrine's kit: tries until the iron is taken.
+struct SiteTrial { int tries = 0; bool taken = false; int traced = 0; };
+SiteTrial siteTrial(uint64_t seed, int tower, bool prep, int attempts) {
+    SiteTrial out;
+    GameState o = ledgerOwner(seed);
+    if (o.towerFloor.size() < static_cast<size_t>(kTowerCount)) o.towerFloor.resize(kTowerCount, 0);
+    o.towerFloor[static_cast<size_t>(tower)] = kFloors;
+    o.siteState.assign(kTowerCount, 0);
+    o.siteState[static_cast<size_t>(tower)] = 1;
+    for (int a = 0; a < attempts && o.siteOf(tower) != 2; ++a) {   // a cage is two runs: the cage, then the inner door
+        repairAll(o);
+        for (auto& m : o.net.machines) m.condition = 100;
+        fitKit(o, Doctrine::Biosentinel);   // a capture is a hold: STEALTH, jammers and cover, whatever the doctrine
+        Target t = makeSite(o, tower);
+        if (prep) towerPrep(o, t, true);
+        o.credits = std::max(o.credits, 30000);
+        Reckoning rk = playSite(o, t, seed * 7 + static_cast<uint64_t>(a));
+        ++out.tries;
+        if (rk.siteRekeyed) ++out.traced;
+        checkInvariants(o);
+    }
+    out.taken = o.siteOf(tower) == 2;
+    return out;
 }
 
 }  // namespace
@@ -667,6 +847,782 @@ Target testTarget(LockType lock) {
     bait.kind = FileKind::Honeypot;
     t.files = {pay, small, bait};
     return t;
+}
+
+// 0.8 - RUNNING LEAN: STANDBY (tonight only), SIGNAL SCRUB (paid, permanent), HOUSE POWER (a tower halves one subnet's bill).
+void leanSelfTest() {
+    auto mk = [](GameState& h, Job j, int tier, int noise, Trait tr, bool captured) -> int {
+        Machine m;
+        m.id = h.net.nextId++;
+        m.name = std::string(jobName(j)).substr(0, 3) + std::to_string(m.id);
+        m.job = j;
+        m.tier = tier;
+        m.noise = noise;
+        m.trait = tr;
+        m.captured = captured;
+        m.condition = 100;
+        h.net.machines.push_back(m);
+        return m.id;
+    };
+    auto payRun = [](GameState& h, uint64_t e) {   // one billable night: download a paydata file and leave
+        Target t = testTarget(LockType::None);
+        t.traceOverride = 0.05;
+        RunSession r(h, t, e);
+        std::string err;
+        r.startDownload(1, err);
+        while (r.busy()) r.step();
+        if (!r.over()) r.disconnect();
+        return r.settle();
+    };
+    {   // --- SIGNAL SCRUB: the doc's three worked examples, the floors, the price
+        GameState h;
+        h.credits = 5000;
+        unlockNetwork(h);
+        const int hotId = mk(h, Job::Relay, 2, 3, Trait::HotIron, true);   // ids, never pointers: the rack vector grows
+        const int corpId = mk(h, Job::Proxy, 3, 4, Trait::CorpBuild, true);
+        const int protoId = mk(h, Job::Compute, 4, 4, Trait::Unstable, true);
+        CHECK(upkeepOf(*h.net.find(hotId)) == 55 && scrubSaving(*h.net.find(hotId)) == 16 && scrubCost(*h.net.find(hotId)) == 400, "scrub: Hot Iron T2 55 -> 39 for 400cr");
+        CHECK(upkeepOf(*h.net.find(corpId)) == 108 && scrubCost(*h.net.find(corpId)) == 450, "scrub: Corp T3 108 -> 90 for 450cr");
+        CHECK(upkeepOf(*h.net.find(protoId)) == 175 && scrubCost(*h.net.find(protoId)) == 525, "scrub: prototype T4 175 -> 154 for 525cr");
+        for (int id : {hotId, corpId, protoId}) {
+            const Machine& m = *h.net.find(id);
+            CHECK(scrubCost(m) % 25 == 0 && scrubCost(m) == bal::SCRUB_PAYBACK_RUNS * scrubSaving(m), "scrub pays back in 25 billed runs");
+        }
+        int c0 = h.credits;
+        CHECK(scrubSignal(h, *h.net.find(corpId)).ok && h.net.find(corpId)->noise == 3 && upkeepOf(*h.net.find(corpId)) == 90 && h.credits == c0 - 450,
+              "scrub: one step, paid once");
+        CHECK(scrubSignal(h, *h.net.find(corpId)).ok && h.net.find(corpId)->noise == 2 && upkeepOf(*h.net.find(corpId)) == 72, "scrub: a second step");
+        std::string why;
+        CHECK(!canScrub(h, *h.net.find(corpId), &why) && scrubSaving(*h.net.find(corpId)) == 0 && why.find("2") != std::string::npos,
+              "captured hardware stops at noise 2");
+        CHECK(buyMachine(h, Job::Relay).ok, "buy a relay");
+        CHECK(!canScrub(h, h.net.machines.back()) && scrubCost(h.net.machines.back()) == 0, "bought hardware is already quiet");
+        CHECK(!canScrub(h, *h.net.home()), "N0 can't be scrubbed");
+        h.credits = 100;
+        CHECK(!scrubSignal(h, *h.net.find(protoId)).ok && h.net.find(protoId)->noise == 4 && h.credits == 100, "no credits, no scrub");
+        roundTrip(h);
+        GameState back;
+        std::string err;
+        CHECK(saveGame(h, &err) && loadGame(back, &err) && back.net.find(corpId) && back.net.find(corpId)->noise == 2, "a scrub is saved");
+    }
+    {   // --- STANDBY: not billed, not worn, no effect, back at the reckoning
+        GameState h;
+        h.credits = 5000;
+        unlockNetwork(h);
+        h.net.slots = bal::MAX_SLOTS;
+        int r1 = mk(h, Job::Relay, 3, 3, Trait::None, true);
+        int sc = mk(h, Job::Scout, 3, 3, Trait::None, true);
+        int px = mk(h, Job::Proxy, 2, 1, Trait::None, false);
+        for (int id : {r1, sc, px}) activate(h, *h.net.find(id));
+        int awake = h.net.upkeepTotal(), relay = h.net.relayBonus();
+        std::string why;
+        CHECK(!canStandby(h, *h.net.home(), &why), "N0 never goes on standby");
+        CHECK(setStandby(h, *h.net.find(r1), true).ok && !h.net.online(*h.net.find(r1)), "a relay on standby is offline tonight");
+        CHECK(h.net.upkeepTotal() == awake - upkeepOf(*h.net.find(r1)) && h.net.upkeepAwake() == awake, "standby comes off tonight's bill");
+        CHECK(h.net.relayBonus() < relay, "standby: no effect");
+        CHECK(h.net.activeCount() == 4, "standby keeps its rack slot");
+        Target t = testTarget(LockType::Keypad);
+        auto picks = standbyPicks(h, t);
+        CHECK(h.net.standbyCount() == 1, "asking LEDGER changes nothing: picks start OFF");
+        bool scoutPicked = false;
+        for (auto& p : picks) scoutPicked = scoutPicked || p.id == sc;
+        CHECK(scoutPicked, "LEDGER suggests the scout - it scouts between runs, not during one");
+        CHECK(!standbyLosses(h).empty(), "amber lines say what standby costs tonight");
+        int scoutTier = h.net.bestScoutTier();
+        CHECK(setStandby(h, *h.net.find(sc), true).ok && h.net.bestScoutTier() == scoutTier, "a sleeping scout still vouches for its reports");
+        Reckoning rk = payRun(h, 41);
+        CHECK(rk.bill == upkeepOf(*h.net.find(px)), "the bill counted only what was awake");
+        CHECK(rk.standbySaved == upkeepOf(*h.net.find(r1)) + upkeepOf(*h.net.find(sc)), "the reckoning says what standby saved");
+        CHECK(h.net.find(r1)->condition == 100 && h.net.find(sc)->condition == 100 && h.net.find(px)->condition < 100, "standby: no wear");
+        CHECK(h.net.standbyCount() == 0 && h.net.online(*h.net.find(r1)), "everything is back on after the reckoning");
+        bool said = false;
+        for (auto& l : rk.lines) said = said || l.text.find("STANDBY") != std::string::npos;
+        CHECK(said, "the reckoning mentions standby");
+        // The armed decoy can't sleep.
+        CHECK(armDecoy(h, *h.net.find(px), true).ok, "arm the proxy");
+        CHECK(!setStandby(h, *h.net.find(px), true).ok && !canStandby(h, *h.net.find(px)), "the armed decoy can't go on standby");
+        for (auto& p : standbyPicks(h, t)) CHECK(p.id != px, "LEDGER never suggests the decoy");
+        // Standby isn't saved: a reloaded game is wide awake.
+        CHECK(setStandby(h, *h.net.find(r1), true).ok, "standby again");
+        std::string err;
+        GameState back;
+        CHECK(saveGame(h, &err) && loadGame(back, &err) && back.net.standbyCount() == 0, "standby is never saved");
+        clearStandby(h);
+    }
+    {   // --- a gateway on standby takes its subnet with it; a decoy subnet can't be emptied by standby
+        GameState h;
+        h.credits = 20000;
+        unlockNetwork(h);
+        h.net.slots = bal::MAX_SLOTS;
+        CHECK(buyMachine(h, Job::Gateway).ok, "buy a gateway");
+        int gw = h.net.machines.back().id;
+        h.net.find(gw)->tier = 3;
+        int a = mk(h, Job::Relay, 3, 2, Trait::None, true), b = mk(h, Job::Relay, 3, 2, Trait::None, true);
+        CHECK(plugIn(h, *h.net.find(a), *h.net.find(gw)).ok && plugIn(h, *h.net.find(b), *h.net.find(gw)).ok, "fill the subnet");
+        int awake = h.net.upkeepTotal(), bay = h.net.bayUpkeep(gw);
+        CHECK(bay > 0 && setStandby(h, *h.net.find(gw), true).ok && !h.net.bayOnline(*h.net.find(gw)) && h.net.bayUpkeep(gw) == 0,
+              "a gateway on standby takes its subnet with it");
+        CHECK(h.net.upkeepTotal() == awake - bay - upkeepOf(*h.net.find(gw)), "...and its whole bill");
+        clearStandby(h);
+        CHECK(setStandby(h, *h.net.find(a), true).ok && h.net.bayOnline(*h.net.find(gw)) && h.net.bayUpkeep(gw) == upkeepOf(*h.net.find(b)),
+              "one member on standby: the subnet runs on the other");
+        clearStandby(h);
+        CHECK(armDecoy(h, *h.net.find(gw), true).ok, "arm the subnet");
+        CHECK(!canStandby(h, *h.net.find(gw)), "an armed decoy subnet's gateway can't sleep");
+        CHECK(setStandby(h, *h.net.find(a), true).ok, "one member of a decoy subnet may sleep");
+        CHECK(!setStandby(h, *h.net.find(b), true).ok && h.net.decoy(), "but not the last one - that would disarm the decoy");
+        clearStandby(h);
+    }
+    {   // --- HOUSE POWER: each owned tower halves one chosen subnet's bill; never the main rack, never credits
+        GameState h = ledgerOwner(77);
+        CHECK(buyMachine(h, Job::Gateway).ok && buyMachine(h, Job::Gateway).ok, "two gateways");
+        int g1 = h.net.machines[h.net.machines.size() - 2].id, g2 = h.net.machines.back().id;
+        deactivate(h, h.net.machines[1]);   // make room in the main rack for both gateways
+        activate(h, *h.net.find(g1));
+        activate(h, *h.net.find(g2));
+        h.net.find(g1)->tier = h.net.find(g2)->tier = 4;   // a T4 gateway powers two prototypes
+        CHECK(h.net.bayOpen(*h.net.find(g1)) && h.net.bayOpen(*h.net.find(g2)), "both subnets open");
+        int p1 = mk(h, Job::Compute, 4, 4, Trait::Unstable, true), p2 = mk(h, Job::Compute, 4, 4, Trait::Unstable, true);
+        int p3 = mk(h, Job::Compute, 4, 4, Trait::Unstable, true);
+        for (int id : {p1, p2}) CHECK(plugIn(h, *h.net.find(id), *h.net.find(g1)).ok, "prototype into subnet 1");
+        CHECK(plugIn(h, *h.net.find(p3), *h.net.find(g2)).ok, "prototype into subnet 2");
+        int raw = h.net.bayUpkeep(g1), total = h.net.upkeepTotal();
+        CHECK(raw == 350, "two prototypes bill 350");
+        CHECK(!setHousePower(h, 0, g1).ok && !h.net.housePowered(g1), "no tower owned, no house power");
+        if (h.towerFloor.size() < static_cast<size_t>(kTowerCount)) h.towerFloor.resize(kTowerCount, 0);
+        h.towerFloor[0] = kFloors;
+        int mainBox = h.net.machines[2].id;
+        CHECK(!setHousePower(h, 0, mainBox).ok, "house power never feeds the main rack");
+        CHECK(!setHousePower(h, 1, g1).ok, "a tower you don't own powers nothing");
+        CHECK(setHousePower(h, 0, g1).ok && h.net.housePowered(g1) && h.net.bayBill(g1) == 175, "house power halves the subnet's bill");
+        CHECK(h.net.upkeepTotal() == total - 175, "...and tonight's total");
+        int c0 = h.credits;
+        CHECK(setHousePower(h, 0, g2).ok && !h.net.housePowered(g1) && h.net.housePowered(g2) && h.credits == c0, "one subnet per tower; it moves, it never pays");
+        h.towerFloor[1] = kFloors;
+        CHECK(setHousePower(h, 1, g1).ok && h.net.housePowered(g1) && h.net.housePowered(g2), "two towers, two subnets");
+        CHECK(setHousePower(h, 1, g2).ok && h.net.houseTower(g2) == 1 && !h.net.housePowered(g1), "a subnet takes one tower's power at most");
+        CHECK(setHousePower(h, 0, g1).ok, "back to both");
+        roundTrip(h);
+        GameState back;
+        std::string err;
+        CHECK(saveGame(h, &err) && loadGame(back, &err) && back.net.houseTower(g1) == 0 && back.net.houseTower(g2) == 1, "house power is saved (v7)");
+        Reckoning rk = payRun(h, 43);
+        bool said = false;
+        for (auto& l : rk.lines) said = said || l.text.find("HOUSE POWER") != std::string::npos;
+        CHECK(said && rk.houseSaved > 0, "the reckoning bills the subnet at half and says so");
+        h.towerFloor[1] = 0;   // a tower you no longer own (only a doctored save does this) powers nothing after a load
+        CHECK(saveGame(h, &err) && loadGame(back, &err) && back.net.housePowered(g1) && !back.net.housePowered(g2), "a load drops an unowned tower's house power");
+    }
+    {   // --- owning a Boardroom feeds your dearest subnet
+        GameState o = ledgerOwner(12);
+        CHECK(buyMachine(o, Job::Gateway).ok, "a gateway");
+        int gw = o.net.machines.back().id;
+        activate(o, *o.net.find(gw));
+        o.net.find(gw)->tier = 3;
+        int pm = mk(o, Job::Relay, 3, 3, Trait::None, true);
+        CHECK(plugIn(o, *o.net.find(pm), *o.net.find(gw)).ok, "a member");
+        for (int f = 0; f < kFloors; ++f) {
+            Target t = makeTowerFloor(o, 1, f);
+            t.lock = LockType::None;
+            t.watchdog = false;
+            t.doctrine = Doctrine::None;
+            t.traceOverride = 0.1;
+            RunSession r(o, t, 190 + static_cast<uint64_t>(f));
+            std::string err;
+            for (size_t i = 0; i < r.t.files.size(); ++i)
+                if (r.t.files[i].kind == FileKind::Objective) { r.startDownload(static_cast<int>(i), err); while (r.busy()) r.step(); }
+            r.disconnect();
+            r.settle();
+            repairAll(o);
+        }
+        CHECK(towerOwned(o, 1) && o.net.houseTower(gw) == 1, "the Boardroom's house power goes to your subnet");
+    }
+}
+
+// 0.9 - CHAIRMAN IRON: Halden Grid's LOADSHED, the Boardroom's maintenance log, service sites, ACCORD iron, save v8.
+void chairsSelfTest() {
+    auto iron = [](GameState& h, Job j, bool accord) -> int {
+        Machine m;
+        m.id = h.net.nextId++;
+        m.name = std::string(accord ? "ACC" : "STD") + std::to_string(m.id);
+        m.job = j;
+        m.tier = accord ? kMaxTier : 3;
+        m.grade = accord ? Grade::Accord : Grade::None;
+        m.noise = 1;
+        m.captured = true;
+        m.condition = 100;
+        h.net.machines.push_back(m);
+        return m.id;
+    };
+    auto strip = [](GameState& h) {   // the main rack down to N0
+        auto& v = h.net.machines;
+        v.erase(std::remove_if(v.begin(), v.end(), [](const Machine& m) { return !m.home; }), v.end());
+        h.net.decoyId = -1;
+    };
+    // The third tower, on the board from the start of Act IV.
+    {
+        GameState h = ledgerOwner(21);
+        std::vector<Target> b = buildBoard(h);
+        int towers = 0;
+        bool halden = false;
+        for (auto& t : b)
+            if (t.kind == Kind::Tower) {
+                ++towers;
+                if (t.tower == 2 && t.doctrine == Doctrine::Loadshed && t.backdoor && t.traceOverride == bal::TOWER_TRACE[2][0]) halden = true;
+            }
+        CHECK(towers == kOuterTowers && halden, "Halden Grid (LOADSHED) leads the board with the other towers");
+        CHECK(std::string(doctrineText(Doctrine::Loadshed)).find("HOUSE") != std::string::npos, "LOADSHED says plainly what keeps a subnet lit");
+        CHECK(h.journal.back().find("Halden Grid") != std::string::npos, "the Ledger's journal line names all three towers");
+    }
+    // ACCORD numbers, refusals and the bill.
+    {
+        GameState h = ledgerOwner(22);
+        strip(h);
+        int ar = iron(h, Job::Relay, true), r1 = iron(h, Job::Relay, false), r2 = iron(h, Job::Relay, false);
+        for (int id : {ar, r1, r2}) CHECK(activate(h, *h.net.find(id)).ok, "racked");
+        CHECK(h.net.relayBonus() == bal::RELAY_CAP + bal::ACCORD_RELAY_LIFT, "an ACCORD relay lifts the rack's relay cap");
+        CHECK(jobValue(*h.net.find(ar)) == bal::ACCORD_RELAY, "an ACCORD relay is worth 45 on its own");
+        CHECK(upkeepOf(*h.net.find(ar)) == bal::ACCORD_UPKEEP, "chairman iron bills one flat number");
+        Machine& a = *h.net.find(ar);
+        CHECK(!rejob(h, a, Job::Proxy).ok && a.job == Job::Relay, "chairman iron can't be re-imaged");
+        CHECK(!scrap(h, ar).ok && h.net.find(ar), "chairman iron can't be scrapped");
+        strip(h);
+        int ap = iron(h, Job::Proxy, true), p1 = iron(h, Job::Proxy, false);
+        for (int id : {ap, p1}) activate(h, *h.net.find(id));
+        CHECK(h.net.proxyBonus() == bal::ACCORD_PROXY + bal::PROXY_BONUS[3] && h.net.proxyBonus() <= bal::PROXY_CAP + bal::ACCORD_PROXY_LIFT,
+              "an ACCORD proxy adds 30 under a lifted cap");
+        CHECK(!armDecoy(h, *h.net.find(ap), true).ok && h.net.decoyId < 0, "chairman iron can never be the decoy");
+        h.net.decoyId = ap;
+        CHECK(!h.net.decoy(), "...not even by a doctored decoy id");
+        h.net.decoyId = -1;
+        CHECK(armDecoy(h, *h.net.find(p1), true).ok, "an ordinary proxy still can");
+        disarmDecoy(h);
+        strip(h);
+        int ac = iron(h, Job::Compute, true), c1 = iron(h, Job::Compute, false), c2 = iron(h, Job::Compute, false);
+        for (int id : {ac, c1, c2}) activate(h, *h.net.find(id));
+        CHECK(h.net.computeCapacity() == bal::COMPUTE_MAX + 1, "an ACCORD compute answers twice and lifts the cap by one");
+        strip(h);
+        int aj = iron(h, Job::Jammer, true);
+        activate(h, *h.net.find(aj));
+        CHECK(h.net.jamDelay() == bal::ACCORD_JAM_DELAY && h.net.jamSpikeCut() == bal::ACCORD_JAM_SPIKE, "an ACCORD jammer passes the old caps");
+        {   // ...and freezes the trace once, on its own
+            Target t = testTarget(LockType::None);
+            RunSession r(h, t, 300);
+            CHECK(r.accordFreeze, "the ACCORD freeze is armed at connect");
+            r.trace = bal::ACCORD_FREEZE_AT + 0.5;
+            std::string err;
+            r.startDownload(0, err);
+            r.step();
+            CHECK(r.freezeLeft > 0 && !r.accordFreeze, "it freezes at 80%");
+            r.disconnect();
+            r.settle();
+        }
+        strip(h);
+        int ag = iron(h, Job::Gateway, true);
+        activate(h, *h.net.find(ag));
+        std::vector<int> mem;
+        for (Job j : {Job::Relay, Job::Proxy, Job::Jammer, Job::Scout}) {
+            Machine m;
+            m.id = h.net.nextId++;
+            m.name = "M" + std::to_string(m.id);
+            m.job = j;
+            m.tier = 2;
+            m.noise = 1;
+            m.condition = 100;
+            h.net.machines.push_back(m);
+            mem.push_back(m.id);
+        }
+        for (int id : mem) CHECK(plugIn(h, *h.net.find(id), *h.net.find(ag)).ok, "an ACCORD gateway holds four");
+        CHECK(h.net.baySlots(*h.net.find(ag)) == bal::ACCORD_GATE_SLOTS && h.net.bayBudget(*h.net.find(ag)) == bal::ACCORD_GATE_POWER,
+              "an ACCORD gateway's slots and power");
+        CHECK(h.net.effTier(*h.net.find(mem[0])) == 3, "...and its members act a tier higher");
+        roundTrip(h);
+        {   // an unpaid bill switches chairman iron off like anything else
+            strip(h);
+            int ax = iron(h, Job::Relay, true);
+            activate(h, *h.net.find(ax));
+            h.credits = 0;
+            Target t = testTarget(LockType::None);
+            RunSession r(h, t, 301);
+            std::string err;
+            r.trace = 99.99;   // traced with no decoy: a billable night, and nothing to pay it with
+            r.startDownload(0, err);
+            while (r.busy() && !r.over()) r.step();
+            CHECK(r.end == End::TraceOut, "traced, broke");
+            r.settle();
+            CHECK(!h.net.find(ax)->active, "an unpaid bill takes chairman iron dark too");
+        }
+    }
+    // The paper trail: the Boardroom's maintenance log, the pinned site, its phrase.
+    {
+        GameState h = ledgerOwner(23);
+        Target bd = makeTowerFloor(h, 2, kFloors - 1);
+        int logIdx = -1;
+        for (size_t i = 0; i < bd.files.size(); ++i) if (bd.files[i].revealsSite == 2) logIdx = static_cast<int>(i);
+        CHECK(logIdx >= 0 && bd.files[size_t(logIdx)].text.find(sitePassphrase(h, 2)) != std::string::npos, "every Boardroom keeps a maintenance log");
+        bd.lock = LockType::None;
+        bd.doctrine = Doctrine::None;
+        bd.watchdog = false;
+        bd.traceOverride = 0.1;
+        {
+            RunSession r(h, bd, 310);
+            CHECK(r.read(logIdx), "the log reads");
+            r.disconnect();
+            r.settle();
+        }
+        CHECK(h.siteOf(2) == 1 && h.knownPhrases.count(siteId(2)) && !siteListed(h, 2), "reading it pins the site - listed once the tower is yours");
+        h.towerFloor[2] = kFloors;
+        CHECK(siteListed(h, 2), "an owned tower lists its service site");
+        Target site = makeSite(h, 2);
+        CHECK(site.kind == Kind::Site && site.security == 5 && site.traceOverride == bal::SITE_TRACE && site.doctrine == Doctrine::Loadshed &&
+                  site.passphrase == sitePassphrase(h, 2) && site.stealable,
+              "a service site: security 5, the deep job's trace, the tower's doctrine");
+        int pay = 0;
+        for (auto& f : site.files) pay += f.kind == FileKind::Paydata ? 1 : 0;
+        CHECK(pay == 0, "a service site has no paydata");
+        // A trace re-keys its door; nothing else is lost.
+        size_t machines = h.net.machines.size();
+        int key = h.keyOf(2);
+        {
+            RunSession r(h, site, 311);
+            r.trace = 99.9;
+            r.phrase("WRONGWORD");
+            CHECK(r.end == End::TraceOut, "traced at a service site");
+            Reckoning rk = r.settle();
+            CHECK(rk.siteRekeyed, "the reckoning says the site re-keyed");
+        }
+        CHECK(h.keyOf(2) == key + 1 && !h.knownPhrases.count(siteId(2)) && h.siteOf(2) == 1 && h.net.machines.size() == machines &&
+                  siteListed(h, 2),
+              "a trace re-keys the site and takes nothing else");
+        // The capture: any job, chosen at the hold, for good.
+        Target s2 = makeSite(h, 2);
+        s2.lock = LockType::None;
+        s2.doctrine = Doctrine::None;
+        s2.watchdog = false;
+        s2.traceOverride = 0.1;
+        {
+            RunSession r(h, s2, 312);
+            CaptureQuote q = r.quote();
+            CHECK(q.possible && q.accord && q.tier == kMaxTier && q.noise == 1 && q.condition == 100 && q.ironName == ironName(2), "the quote names chairman iron");
+            CHECK(q.holdSecs == s2.security * 6, "the hold is security x 6s");
+            std::string err;
+            CHECK(r.startHold(Job::Vault, err), "any job at a service site");
+            while (r.busy()) r.step();
+            CHECK(r.end == End::Steal, "held to the end");
+            Reckoning rk = r.settle();
+            CHECK(rk.accordCaptured, "the reckoning knows it was chairman iron");
+        }
+        const Machine* got = nullptr;
+        for (auto& m : h.net.machines) if (m.accord()) got = &m;
+        CHECK(got && got->job == Job::Vault && got->tier == kMaxTier && got->name == ironName(2) && got->noise == 1 && got->trait == Trait::None,
+              "ACCORD VAULT T5, named for its tower");
+        CHECK(h.siteOf(2) == 2 && !siteListed(h, 2), "the site empties once its iron is taken");
+        bool listed = false;
+        for (auto& t : buildBoard(h)) listed = listed || t.kind == Kind::Site;
+        CHECK(!listed, "...and leaves the board");
+        checkInvariants(h);
+        roundTrip(h);
+        // The ACCORD vault: one objective you took stays taken through a trace.
+        {
+            Target f = makeTowerFloor(h, 1, 0);
+            f.lock = LockType::None;
+            f.doctrine = Doctrine::None;
+            f.watchdog = false;
+            f.traceOverride = 0.1;
+            RunSession r(h, f, 313);
+            CHECK(r.accordVault, "the ACCORD vault is armed at connect");
+            int obj = -1;
+            for (size_t i = 0; i < r.t.files.size(); ++i) if (r.t.files[i].kind == FileKind::Objective) { obj = static_cast<int>(i); break; }
+            std::string err;
+            r.startDownload(obj, err);
+            while (r.busy()) r.step();
+            std::string name = r.t.files[size_t(obj)].name;
+            r.trace = 99.99;
+            r.startDownload(obj + 1, err);
+            while (r.busy() && !r.over()) r.step();
+            CHECK(r.end == End::TraceOut, "traced on the floor");
+            r.settle();
+            CHECK(h.vaultHeld.count(f.id) && h.vaultHeld[f.id] == name, "the vault kept one objective");
+            roundTrip(h);
+            RunSession r2(h, makeTowerFloor(h, 1, 0), 314);
+            bool held = false;
+            for (auto& x : r2.t.files) held = held || (x.name == name && x.taken);
+            CHECK(held && r2.heldObjective == name, "it counts as taken next time");
+            r2.disconnect();
+            r2.settle();
+        }
+    }
+    // An ACCORD scout pulls one doctrine secret with each new report.
+    {
+        GameState h = ledgerOwner(24);
+        strip(h);
+        int sc = iron(h, Job::Scout, true);
+        activate(h, *h.net.find(sc));
+        h.net.refillScout();
+        CHECK(h.net.scoutCapacity() == bal::ACCORD_SCOUT_CHARGES, "three charges");
+        Target f = makeTowerFloor(h, 1, 0);
+        CHECK(scanTarget(h, f).ok && h.knownPhrases.count(f.id) && h.reports[f.id] == 3, "a scanned floor gives up its phrase");
+        Target k0 = makeTowerFloor(h, 0, 0);
+        CHECK(scanTarget(h, k0).ok && h.fortress.count(k0.id) && h.fortress[k0.id].peeks.size() == 1, "a FORTRESS floor gives up one keypad box");
+        roundTrip(h);
+    }
+    // LOADSHED: every 15s the subnets go dark for 3s - except one on HOUSE POWER.
+    {
+        GameState h = ledgerOwner(25);
+        fitKit(h, Doctrine::Loadshed);
+        int gw = -1;
+        for (auto& m : h.net.machines) if (m.job == Job::Gateway) gw = m.id;
+        Target t = makeTowerFloor(h, 2, 0);
+        t.lock = LockType::None;
+        t.traceOverride = 0.01;
+        t.watchdog = false;
+        RunSession r(h, t, 320);
+        int relayLit = h.net.relayBonus(), proxyLit = h.net.proxyBonus();
+        CHECK(!r.shedding() && r.nextShed() > 0 && std::count(r.strikeBays.begin(), r.strikeBays.end(), gw) == 1, "no shed at connect");
+        while (r.secs < bal::LOADSHED_EVERY && !r.over()) { std::string err; r.startDownload(0, err); r.step(); r.abortAction(); }
+        CHECK(r.shedding() && h.net.shed && !h.net.bayOnline(*h.net.find(gw)) && r.sheds == 1, "the grid sheds at 15s");
+        {
+            std::string err;
+            r.startDownload(0, err);
+            CHECK(h.net.relayBonus() < relayLit && h.net.proxyBonus() < proxyLit && !r.strikeUsable(gw), "no subnet bonus, no strike while it sheds");
+            r.abortAction();
+        }
+        CHECK(h.net.decoyId < 0 || h.net.decoy(), "a shed never quietly disarms a decoy");
+        while (r.secs < bal::LOADSHED_EVERY + bal::LOADSHED_SECS && !r.over()) { std::string err; r.startDownload(0, err); r.step(); r.abortAction(); }
+        CHECK(!r.shedding() && !h.net.shed && h.net.bayOnline(*h.net.find(gw)) && h.net.relayBonus() == relayLit, "the grid comes back after 3s");
+        r.disconnect();
+        r.settle();
+        CHECK(!h.net.shed, "the grid never stays shed after a run");
+        // HOUSE POWER keeps a subnet lit.
+        h.towerFloor[0] = kFloors;
+        h.siteState.assign(kTowerCount, 0);
+        h.siteState[0] = 1;
+        CHECK(setHousePower(h, 0, gw).ok, "house power");
+        RunSession r2(h, t, 321);
+        while (r2.secs < bal::LOADSHED_EVERY && !r2.over()) { std::string err; r2.startDownload(0, err); r2.step(); r2.abortAction(); }
+        CHECK(r2.shedding() && h.net.bayOnline(*h.net.find(gw)) && h.net.relayBonus() == relayLit, "a subnet on HOUSE POWER stays lit through a shed");
+        r2.disconnect();
+        r2.settle();
+        // A trace during a shed still finds the decoy subnet.
+        clearStandby(h);
+        h.net.house.clear();
+        armDecoy(h, *h.net.find(gw), true);
+        CHECK(h.net.decoyId == gw, "a decoy subnet");
+        RunSession r3(h, t, 322);
+        while (r3.secs < bal::LOADSHED_EVERY && !r3.over()) { std::string err; r3.startDownload(0, err); r3.step(); r3.abortAction(); }
+        CHECK(r3.shedding(), "shedding");
+        r3.trace = 99.999;
+        { std::string err; r3.startDownload(0, err); while (r3.shedding() && !r3.over()) r3.step(); }
+        CHECK(r3.end == End::Sacrifice, "a trace during a shed still burns the decoy subnet, not you");
+        r3.settle();
+        checkInvariants(h);
+    }
+    // Save v8: a v7 save loads with Halden Grid unclimbed and an owned tower's site pinned.
+    {
+        GameState h = ledgerOwner(26);
+        h.towerFloor.assign(2, 0);
+        h.towerKey.assign(2, 0);
+        h.towerFloor[0] = kFloors;
+        std::string err;
+        CHECK(saveGame(h, &err), "save");
+        std::ifstream in(savePath());
+        std::stringstream ss;
+        ss << in.rdbuf();
+        in.close();
+        std::string txt = ss.str(), out;
+        std::istringstream lines(txt);
+        std::string line;
+        while (std::getline(lines, line)) {
+            if (line.rfind("GHOSTNET ", 0) == 0) line = "GHOSTNET 7";
+            if (line.rfind("site ", 0) == 0 || line.rfind("tower 2", 0) == 0) continue;
+            if (line.rfind("m ", 0) == 0) line = line.substr(0, line.find_last_of(' '));   // v7 machines have no grade
+            out += line + "\n";
+        }
+        { std::ofstream o(savePath(), std::ios::trunc); o << out; }
+        std::remove(saveTempPath().c_str());
+        GameState l;
+        CHECK(loadGame(l, &err), "a v7 save loads: " + err);
+        CHECK(l.towerFloor.size() == static_cast<size_t>(kTowerCount) && l.floorsCleared(2) == 0 && l.floorsCleared(0) == kFloors, "Halden Grid starts unclimbed");
+        CHECK(l.siteOf(0) == 1 && siteListed(l, 0), "a tower owned before 0.9 pins its service site on load");
+        bool said = false;
+        for (auto& j : l.journal) said = said || j.find("Halden Grid") != std::string::npos;
+        CHECK(said, "the journal says a third tower opened");
+        for (auto& m : l.net.machines) CHECK(!m.accord(), "nothing becomes chairman iron by loading");
+        checkInvariants(l);
+    }
+}
+
+// 0.10 - THE INNER CHAIRS: the unlock, the three doctrines, the cage's two runs and the SIGNATURE iron.
+void innerSelfTest() {
+    auto iron = [](GameState& h, Job j, Grade grade, bool on = true) -> int {
+        Machine m;
+        m.id = h.net.nextId++;
+        m.name = std::string(grade == Grade::Signature ? "SIG" : "STD") + std::to_string(m.id);
+        m.job = j;
+        m.tier = grade == Grade::None ? 3 : kMaxTier;
+        m.grade = grade;
+        m.noise = 1;
+        m.captured = true;
+        m.condition = 100;
+        h.net.machines.push_back(m);
+        if (on) activate(h, h.net.machines.back());
+        return m.id;
+    };
+    auto strip = [](GameState& h) {   // the main rack down to N0
+        auto& v = h.net.machines;
+        v.erase(std::remove_if(v.begin(), v.end(), [](const Machine& m) { return !m.home; }), v.end());
+        h.net.decoyId = -1;
+    };
+    auto calm = [](Target& t) {   // keep the doctrine, lose the lock and the clock
+        t.lock = LockType::None;
+        t.watchdog = false;
+        t.traceOverride = 0.1;
+    };
+    auto takeAll = [](RunSession& r) {
+        std::string err;
+        for (size_t i = 0; i < r.t.files.size() && !r.over(); ++i)
+            if (r.t.files[i].kind == FileKind::Objective && !r.t.files[i].taken) { r.startDownload(static_cast<int>(i), err); while (r.busy()) r.step(); }
+    };
+    // The unlock: the second outer tower you own lists the three inner chairs.
+    {
+        GameState h = ledgerOwner(61);
+        CHECK(!innerOpen(h) && !towerListed(h, 3) && !towerListed(h, 5), "the inner chairs wait for two outer towers");
+        h.towerFloor[0] = kFloors;
+        CHECK(!innerOpen(h), "one outer tower isn't enough");
+        h.towerFloor[1] = kFloors - 1;
+        Target bd = makeTowerFloor(h, 1, kFloors - 1);
+        calm(bd);
+        Reckoning rk;
+        {
+            RunSession r(h, bd, 600);
+            takeAll(r);
+            r.disconnect();
+            rk = r.settle();
+        }
+        CHECK(rk.towerOwned && rk.innerOpened && innerOpen(h), "the second Boardroom opens the inner chairs");
+        bool card = false;
+        for (auto& c : rk.actCards) card = card || c.first == "THE INNER CHAIRS";
+        CHECK(card, "...with a card that says so");
+        int inner = 0;
+        for (auto& t : buildBoard(h)) if (t.kind == Kind::Tower && innerTower(t.tower)) ++inner;
+        CHECK(inner == kTowerCount - kOuterTowers, "Aurex, Sable Wren and the Proving Ground are on the board");
+        CHECK(makeTowerFloor(h, 5, 0).doctrine == Doctrine::Fortress && makeTowerFloor(h, 5, 1).doctrine == Doctrine::Biosentinel &&
+                  makeTowerFloor(h, 5, 2).doctrine == Doctrine::Loadshed,
+              "PROVING GROUND examines FORTRESS, BIOSENTINEL, LOADSHED by floor");
+        CHECK(makeTowerFloor(h, 3, 0).doctrine == Doctrine::Ledgerlock && makeTowerFloor(h, 4, 1).doctrine == Doctrine::Countertrace,
+              "Aurex runs LEDGERLOCK, Sable Wren COUNTERTRACE");
+        CHECK(makeTowerFloor(h, 3, 2).reward == bal::TOWER_REWARD[1][2], "an inner Boardroom pays the inner jackpot");
+        roundTrip(h);
+    }
+    // LEDGERLOCK: every download is audited unless a vault escrows it first. No jammer softens it.
+    {
+        GameState h = ledgerOwner(62);
+        h.towerFloor[0] = h.towerFloor[1] = kFloors;
+        strip(h);
+        CHECK(h.net.find(iron(h, Job::Jammer, Grade::None))->active, "a jammer runs");
+        Target t = makeTowerFloor(h, 3, 0);
+        calm(t);
+        {
+            RunSession r(h, t, 610);
+            CHECK(r.escrowLeft == 0, "no vault, no escrow");
+            int obj = -1;
+            for (size_t i = 0; i < r.t.files.size(); ++i) if (r.t.files[i].kind == FileKind::Objective) { obj = static_cast<int>(i); break; }
+            std::string err;
+            r.startDownload(obj, err);
+            double before = r.trace;
+            while (r.busy()) r.step();
+            CHECK(r.audits == 1 && r.trace - before >= bal::LEDGER_AUDIT_OBJ, "an objective is audited at the full +9%, jammer or not");
+            r.disconnect();
+            r.settle();
+        }
+        int v = iron(h, Job::Vault, Grade::None);
+        Target t2 = makeTowerFloor(h, 3, 0);
+        calm(t2);
+        RunSession r(h, t2, 611);
+        CHECK(r.escrowLeft == bal::VAULT_FILES[h.net.effTier(*h.net.find(v))], "a vault escrows one audit per file it would keep");
+        takeAll(r);
+        CHECK(r.escrowed == std::min(3, bal::VAULT_FILES[h.net.effTier(*h.net.find(v))]) && r.audits == 3 - r.escrowed, "escrow first, then audits");
+        r.disconnect();
+        r.settle();
+    }
+    // COUNTERTRACE: on the beat, growing; each working proxy dead-ends one.
+    {
+        GameState h = ledgerOwner(63);
+        h.towerFloor[0] = h.towerFloor[1] = kFloors;
+        int proxies = 0;
+        for (auto& m : h.net.machines) proxies += h.net.online(m) && m.job == Job::Proxy && !m.home ? 1 : 0;
+        Target t = makeTowerFloor(h, 4, 0);
+        calm(t);
+        RunSession r(h, t, 620);
+        CHECK(r.deadEnds == proxies && proxies > 0, "every working proxy dead-ends a countertrace");
+        takeAll(r);
+        CHECK(r.counters + (proxies - r.deadEnds) == r.secs / bal::COUNTER_EVERY, "a countertrace every 10s, landed or dead-ended");
+        r.disconnect();
+        r.settle();
+        strip(h);   // no proxies: every one lands, each bigger than the last
+        Target t2 = makeTowerFloor(h, 4, 0);
+        calm(t2);
+        RunSession r2(h, t2, 621);
+        CHECK(r2.deadEnds == 0, "no proxy, no dead ends");
+        takeAll(r2);
+        CHECK(r2.counters == r2.secs / bal::COUNTER_EVERY && r2.counters > 0, "...and once the proxies run out, they land");
+        r2.disconnect();
+        r2.settle();
+    }
+    // SIGNATURE iron: ABSOLUTION, ECLIPSE, PANTHEON.
+    {
+        GameState h = ledgerOwner(64);
+        h.towerFloor[0] = h.towerFloor[1] = kFloors;
+        strip(h);
+        int ab = iron(h, Job::Vault, Grade::Signature);
+        const Machine* a = h.net.find(ab);
+        CHECK(a && a->active && a->chairIron() && upkeepOf(*a) == bal::SIGNATURE_UPKEEP, "ABSOLUTION runs at 220cr flat");
+        CHECK(!armDecoy(h, *h.net.find(ab), true).ok && !scrap(h, ab).ok, "signature iron is never the decoy and never scrap");
+        int key = h.keyOf(0);
+        Target t = makeTowerFloor(h, 0, 0);
+        t.doctrine = Doctrine::None;
+        calm(t);
+        t.lock = LockType::Keypad;
+        {
+            RunSession r(h, t, 640);
+            CHECK(r.absolutionId == ab && r.trace == bal::SIGNATURE_CONNECT_TRACE, "ABSOLUTION is armed, and the handshake starts +4%");
+            r.trace = 99.95;
+            r.phrase("WRONGWORD");
+            if (!r.over()) r.disconnect();
+            CHECK(r.absolved && r.end == End::Disconnect, "a full trace closes on nothing: a clean exit");
+            Reckoning rk = r.settle();
+            CHECK(rk.absolved && !rk.rekeyed && h.keyOf(0) == key, "no re-key, no seizure");
+        }
+        CHECK(h.net.find(ab)->condition <= 100 - bal::ABSOLUTION_WEAR, "ABSOLUTION pays in condition");
+        h.net.find(ab)->condition = 100;
+        h.siteState.assign(kTowerCount, 0);
+        h.siteState[0] = 1;
+        {
+            RunSession r(h, makeSite(h, 0), 641);
+            CHECK(r.absolutionId < 0, "ABSOLUTION never answers at a service site or cage");
+            r.disconnect();
+            r.settle();
+        }
+        strip(h);
+        int ec = iron(h, Job::Proxy, Grade::Signature);
+        CHECK(h.net.proxyBonus() >= bal::ECLIPSE_PROXY, "ECLIPSE: a proxy first");
+        Target bio = makeTowerFloor(h, 1, 0);
+        calm(bio);
+        {
+            RunSession r(h, bio, 642);
+            CHECK(r.eclipse, "ECLIPSE is online");
+            bool warned = false;
+            takeAll(r);
+            for (auto& e : r.events) warned = warned || e.type == Ev::SpikeWarn;
+            CHECK(warned || r.sweeps == 0, "ECLIPSE flags a sweep 3s before it lands");
+            r.disconnect();
+            r.settle();
+        }
+        (void)ec;
+        strip(h);
+        int pg = iron(h, Job::Gateway, Grade::Signature);
+        CHECK(h.net.baySlots(*h.net.find(pg)) == bal::PANTHEON_SLOTS && h.net.bayBudget(*h.net.find(pg)) == bal::PANTHEON_POWER, "PANTHEON: 4 slots, 20 power");
+        int mem = iron(h, Job::Relay, Grade::None, false);
+        Machine* mm = h.net.find(mem);
+        mm->tier = 2;
+        CHECK(plugIn(h, *mm, *h.net.find(pg)).ok, "a relay plugs into PANTHEON");
+        CHECK(h.net.effTier(*h.net.find(mem)) == 4, "every member two tiers up");
+        Target k = makeTowerFloor(h, 0, 0);
+        k.doctrine = Doctrine::None;
+        k.watchdog = false;
+        k.traceOverride = 0.1;
+        k.lock = LockType::Keypad;
+        RunSession r(h, k, 643);
+        std::string err;
+        CHECK(r.strike(pg, err), "PANTHEON strikes at a closed door: " + err);
+        CHECK(r.freezeLeft > 0 && (r.pantheonUsed & (1u << static_cast<int>(BayRole::Siege))) && !(r.pantheonUsed & (1u << static_cast<int>(BayRole::Speed))),
+              "...BLACKOUT and CRACK at once; MIRROR waits for a download");
+        r.phrase(r.t.passphrase);
+        if (!r.doorOpen) for (int g2 = 0; g2 < 10 && !r.doorOpen && !r.over(); ++g2) r.guess(r.lock.secret, err);
+        int obj = -1;
+        for (size_t i = 0; i < r.t.files.size(); ++i) if (r.t.files[i].kind == FileKind::Objective) { obj = static_cast<int>(i); break; }
+        if (r.doorOpen && r.startDownload(obj, err)) {
+            CHECK(r.strike(pg, err), "PANTHEON fires MIRROR once a download runs: " + err);
+            CHECK(r.pantheonUsed == 7u && !r.strikeUsable(pg), "all three strikes, each once a run");
+        } else fail("selftest: PANTHEON's door wouldn't open");
+        r.disconnect();
+        Reckoning rk = r.settle();
+        (void)rk;
+        CHECK(h.net.find(pg)->condition <= 100 - bal::STRIKE_WEAR && h.net.find(pg)->condition > 100 - 2 * bal::STRIKE_WEAR,
+              "PANTHEON wears once a night, however many strikes it fired");
+    }
+    // The cage: two runs. The schematic lists the inner door; the key is its phrase; a trace there burns it.
+    {
+        GameState h = ledgerOwner(65);
+        h.towerFloor[0] = h.towerFloor[1] = h.towerFloor[3] = kFloors;
+        h.siteState.assign(kTowerCount, 0);
+        h.siteState[0] = h.siteState[1] = h.siteState[3] = 1;
+        CHECK(siteListed(h, 3), "an owned inner tower lists its cage");
+        Target c = makeSite(h, 3);
+        CHECK(isCage(c) && !isCageCapture(c) && !c.stealable && c.id == siteId(3) && c.host == "cage.oubliette.helios" && c.traceOverride == bal::CAGE_TRACE,
+              "the cage run: nothing detachable, cage.<site>.helios");
+        calm(c);
+        int keyIdx = -1;
+        for (size_t i = 0; i < c.files.size(); ++i) if (c.files[i].serviceKey) keyIdx = static_cast<int>(i);
+        CHECK(keyIdx >= 0 && c.files[size_t(keyIdx)].text.find(cagePassphrase(h, 3)) != std::string::npos, "the service key holds the inner door's phrase");
+        auto cageRun = [&](uint64_t e) {
+            Target cc = makeSite(h, 3);
+            calm(cc);
+            RunSession r(h, cc, e);
+            r.read(keyIdx);
+            takeAll(r);
+            r.disconnect();
+            return r.settle();
+        };
+        Reckoning rk = cageRun(650);
+        bool journal = false;
+        for (auto& j : h.journal) journal = journal || j.find("core.oubliette.helios") != std::string::npos;
+        CHECK(rk.cageKeyed && h.siteOf(3) == 3 && h.knownPhrases.count(cageDoorId(3)) && journal, "the cage run lists the inner door, with its phrase");
+        Target d = makeSite(h, 3);
+        CHECK(isCageCapture(d) && d.stealable && d.id == cageDoorId(3) && d.passphrase == cagePassphrase(h, 3), "the inner door: stealable, keyed to the phrase");
+        int key = h.keyOf(3);
+        {
+            RunSession r(h, d, 651);
+            r.trace = 99.95;
+            r.phrase("WRONGWORD");
+            CHECK(r.end == End::TraceOut, "traced at the inner door");
+            Reckoning rk2 = r.settle();
+            CHECK(rk2.cageKeyBurned, "the reckoning says the key burned");
+        }
+        CHECK(h.siteOf(3) == 1 && !h.knownPhrases.count(cageDoorId(3)) && h.keyOf(3) == key + 1 && siteListed(h, 3), "a burned key: back to the cage run");
+        cageRun(652);
+        CHECK(h.siteOf(3) == 3, "the cage run, again");
+        Target d2 = makeSite(h, 3);
+        d2.watchdog = false;
+        d2.traceOverride = 0.1;
+        d2.doctrine = Doctrine::None;
+        {
+            RunSession r(h, d2, 653);
+            CHECK(r.phrase(cagePassphrase(h, 3)) || r.doorOpen, "the key's phrase opens the inner door");
+            CaptureQuote q = r.quote();
+            CHECK(q.possible && q.signature && !q.accord && q.def == Job::Vault && q.upkeep == bal::SIGNATURE_UPKEEP, "the quote: SIGNATURE, a VAULT, 220cr");
+            CHECK(q.holdSecs == static_cast<int>(std::ceil(bal::CAGE_HOLD * 0.6)), "a 40s hold, x0.6 by the key's phrase");
+            std::string err;
+            CHECK(!r.startHold(Job::Relay, err), "signature iron comes imaged: no other job");
+            CHECK(r.startHold(Job::Vault, err), "hold for it");
+            while (r.busy()) r.step();
+            Reckoning rk3 = r.settle();
+            CHECK(rk3.signatureCaptured && !rk3.accordCaptured, "the reckoning knows it was SIGNATURE iron");
+        }
+        const Machine* got = nullptr;
+        for (auto& m : h.net.machines) if (m.signature()) got = &m;
+        CHECK(got && got->name == "ABSOLUTION" && got->job == Job::Vault && got->tier == kMaxTier && got->noise == 1 && got->condition == 100,
+              "ABSOLUTION, SIGNATURE VAULT T5");
+        CHECK(h.siteOf(3) == 2 && !siteListed(h, 3), "the cage empties");
+        checkInvariants(h);
+        roundTrip(h);
+        GameState l;
+        std::string err;
+        CHECK(saveGame(h, &err) && loadGame(l, &err), "a v9 save round-trips: " + err);
+        bool sig = false;
+        for (auto& m : l.net.machines) sig = sig || (m.signature() && m.tier == kMaxTier && m.job == Job::Vault);
+        CHECK(sig, "SIGNATURE iron survives a save");
+    }
 }
 
 void selfTest() {
@@ -916,8 +1872,20 @@ void selfTest() {
         CHECK(r.end == End::Sacrifice, "the subnet takes the ticket");
         CHECK(h.net.machines.size() == before - 2 && !h.net.find(pId) && !h.net.find(gwId), "the gateway's subnet is lost as a group");
         long long fines = h.stats.finesPaid;
-        r.settle();
+        // Only survivors are billed and worn: the burned subnet's machines are gone, not charged.
+        int expectBill = 0;
+        std::map<int, int> condBefore;
+        for (auto& m : h.net.machines) {
+            if (h.net.online(m) && !m.home) expectBill += upkeepOf(m);
+            condBefore[m.id] = m.condition;
+        }
+        Reckoning rk = r.settle();
         CHECK(h.wall.size() == 2 && h.stats.finesPaid == fines, "two nameplates; the fine is waived");
+        CHECK(rk.bill == expectBill, "a burned subnet is never billed; the survivors are");
+        bool survivorsOk = true;
+        for (auto& m : h.net.machines)
+            if (!condBefore.count(m.id) || (!m.home && h.net.online(m) && m.condition > condBefore[m.id])) survivorsOk = false;
+        CHECK(survivorsOk && !h.net.find(pId) && !h.net.find(gwId), "settling touches only machines that still exist");
         roundTrip(h);
     }
     // Prototypes: the only real tier 4.
@@ -964,6 +1932,356 @@ void selfTest() {
         r.settle();
         roundTrip(h);
         CHECK(upgradeHome(h).ok || h.net.home()->tier <= 3, "N0 never passes tier 3");
+    }
+    // 0.7 - Kessler-Maru keeps its code: logged rows, the alarm log, directional rotors, CODES LEFT, save v6.
+    {
+        auto sealFloor0 = [](GameState& o, uint64_t salt) {   // a fresh code on floor 0 via its alarm log; returns misses spent
+            int spent = 0;
+            for (int conn = 0; conn < 20; ++conn) {
+                Target f = makeTowerFloor(o, 0, 0);
+                RunSession r(o, f, salt + static_cast<uint64_t>(conn));
+                std::string err;
+                bool sealed = false;
+                for (const auto& c : {std::string("0123"), std::string("4567"), std::string("8901"), std::string("2345"), std::string("6789"),
+                                      std::string("1032"), std::string("5476"), std::string("9810"), std::string("3254")}) {
+                    if (r.lock.stage != 0 || r.lock.left() <= 0 || c == r.lock.secret) continue;
+                    bool dup = false;
+                    for (auto& row : r.lock.history) dup = dup || row.guess == c;
+                    if (dup) continue;
+                    r.trace = 0;
+                    if (r.guess(c, err)) ++spent;
+                    if (r.alarmSealed) { sealed = true; break; }
+                }
+                r.disconnect();
+                Reckoning rk = r.settle();
+                if (sealed) { CHECK(rk.alarmRekeyed, "a full alarm log re-keys at settle"); return spent; }
+            }
+            return -1;
+        };
+        // 1. The same code on every connection until a re-key.
+        GameState o = ledgerOwner(21);
+        o.deck.breaker = bal::DECK_MAX;
+        Target f = makeTowerFloor(o, 0, 0);
+        CHECK(isFortressFloor(f) && fortressSeed(o, 0, 0) != fortressSeed(o, 0, 1), "each Kessler floor has its own code");
+        std::string out1, in1;
+        {
+            RunSession a(o, f, 1001);
+            out1 = a.lock.outer;
+            in1 = a.lock.inner;
+            a.disconnect();
+            a.settle();
+            RunSession b(o, f, 1002);
+            CHECK(b.lock.outer == out1 && b.lock.inner == in1 && b.lock.secret == out1, "a Kessler code is the same on the next connection");
+            b.disconnect();
+            b.settle();
+            CHECK(!o.fortress.count(f.id), "a connection that tried nothing leaves no record");
+        }
+        // 2. Logged rows are free; the known keypad costs one guess and isn't a miss.
+        {
+            std::string miss = out1.substr(1) + out1.substr(0, 1);
+            RunSession c(o, f, 1003);
+            std::string err;
+            int c0 = o.credits;
+            CHECK(c.guess(miss, err) && c.alarms() == 1, "a miss goes on the alarm log");
+            c.disconnect();
+            c.settle();
+            CHECK(o.credits < c0, "a Kessler connection that spends a guess is billed");
+            RunSession d(o, f, 1004);
+            CHECK(d.lock.history.size() == 1 && d.lock.history[0].logged && d.lock.history[0].guess == miss && d.lock.used == 0 &&
+                      d.lock.liveRows() == 0, "a logged row is shown and costs nothing");
+            CHECK(d.lock.codesLeft() < 5040 && d.lock.codesLeft() > 1, "the logged row narrows CODES LEFT");
+            CHECK(d.guess(out1, err) && d.lock.stage == 1 && d.alarms() == 1, "finding the keypad");
+            d.disconnect();
+            d.settle();
+            RunSession e(o, f, 1005);
+            CHECK(e.lock.keypadKnown() && e.lock.stage == 0 && e.lock.codesLeft() == 1, "KEYPAD KNOWN on the next connection");
+            int m0 = e.misses, a0 = e.alarms();
+            CHECK(e.guess(out1, err) && e.lock.used == 1 && e.misses == m0 && e.alarms() == a0 && e.lock.stage == 1,
+                  "re-entering the known keypad spends one guess and isn't a miss");
+            std::string rmiss = e.lock.inner;
+            rmiss[0] = static_cast<char>(rmiss[0] == '9' ? '0' : rmiss[0] + 1);
+            CHECK(e.guess(rmiss, err) && e.lock.history.back().dir.size() == 4, "a rotor row carries arrows");
+            e.disconnect();
+            e.settle();
+            RunSession h(o, f, 1006);
+            std::string err2;
+            CHECK(h.guess(out1, err2) && h.lock.stage == 1 && h.lock.history.size() == 1 && h.lock.history[0].logged && h.lock.history[0].guess == rmiss,
+                  "the logged rotor rows replay when the keypad opens");
+            CHECK(h.lock.used == 1, "...for nothing");
+            h.disconnect();
+            h.settle();
+        }
+        // 3. The 7th miss seals the door and re-keys only that floor; a trace re-keys every Kessler floor.
+        {
+            const uint64_t s1 = fortressSeed(o, 0, 1), s2 = fortressSeed(o, 0, 2), s0 = fortressSeed(o, 0, 0);
+            const int before = fortressMissesOn(o, f);
+            int spent = sealFloor0(o, 2000);
+            CHECK(spent >= 0 && before + spent == bal::FORTRESS_ALARM_LOG + 1, "the 7th miss on a code seals the door");
+            CHECK(fortressSeed(o, 0, 0) != s0 && fortressSeed(o, 0, 1) == s1 && fortressSeed(o, 0, 2) == s2 && o.keyOf(0) == 0,
+                  "a full alarm log re-keys that floor only");
+            CHECK(o.fortress.count(f.id) && o.fortress[f.id].rekeys == 1 && o.fortress[f.id].rows.empty() && fortressMissesOn(o, f) == 0,
+                  "the new code starts with a clean log");
+            RunSession r(o, makeTowerFloor(o, 0, 0), 2100);
+            CHECK(r.lock.outer != out1 || r.lock.inner != in1, "the code differs after the alarm re-key");
+            r.disconnect();
+            r.settle();
+            const uint64_t a0 = fortressSeed(o, 0, 0), a1 = fortressSeed(o, 0, 1), a2 = fortressSeed(o, 0, 2);
+            RunSession t(o, makeTowerFloor(o, 0, 1), 2200);
+            std::string err;
+            t.trace = 99.9;
+            t.guess(t.lock.secret.substr(1) + t.lock.secret.substr(0, 1), err);
+            CHECK(t.end == End::TraceOut, "traced at Kessler");
+            Reckoning rk = t.settle();
+            CHECK(rk.rekeyed && !rk.alarmRekeyed && o.keyOf(0) == 1, "a trace re-keys the tower");
+            CHECK(fortressSeed(o, 0, 0) != a0 && fortressSeed(o, 0, 1) != a1 && fortressSeed(o, 0, 2) != a2, "...every Kessler floor");
+            bool none = true;
+            for (int fl = 0; fl < kFloors; ++fl) none = none && !o.fortress.count(floorId(0, fl));
+            CHECK(none, "...and wipes every floor's log");
+        }
+        // 3b. A sealed door takes no emergency answers or programs; a survey is bought once and named in order.
+        {
+            GameState q = ledgerOwner(22);
+            q.deck.breaker = bal::DECK_MAX;
+            q.credits = 50000;
+            Target t = makeTowerFloor(q, 0, 0);
+            CHECK(prepAvailable(q, t, Prep::Survey) && buyPrep(q, t, Prep::Survey).ok && !buyPrep(q, t, Prep::Survey).ok, "a survey is bought once per code");
+            CHECK(!prepAvailable(q, makeTowerFloor(q, 1, 0), Prep::Survey), "surveys are Kessler only");
+            RunSession r(q, t, 2300);
+            std::string d = r.lock.outer;
+            std::sort(d.begin(), d.end());
+            CHECK(r.lock.surveyed && r.lock.surveyDigits() == d && r.lock.codesLeft() == 24, "the survey names the digits: 24 orders left");
+            CHECK(r.lock.guessesLikely() <= 5, "a survey shortens the estimate");
+            r.disconnect();
+            r.settle();
+        }
+        // 4. Directional marks, every wheel position against every guess.
+        {
+            Rng rr(23);
+            Lock base = makeLock(LockType::Composite, rr, 0);
+            std::string err;
+            base.maxGuesses = 50;
+            CHECK(base.guess(base.outer, err) && base.directional(), "the composite's rotor is directional");
+            bool ok = true;
+            for (int w = 0; w <= 9; ++w)
+                for (int gs = 0; gs <= 9; ++gs) {
+                    Lock L = base;
+                    L.secret = std::string(4, static_cast<char>('0' + w));
+                    if (!L.guess(std::string(4, static_cast<char>('0' + gs)), err)) { ok = false; continue; }
+                    const Lock::Row& row = L.history.back();
+                    int wantMark = w == gs ? 2 : std::abs(w - gs) == 1 ? 1 : 0, wantDir = w > gs ? 1 : w < gs ? -1 : 0;
+                    for (int i = 0; i < 4; ++i)
+                        ok = ok && row.dir.size() == 4 && row.marks[static_cast<size_t>(i)] == wantMark && row.dir[static_cast<size_t>(i)] == wantDir;
+                }
+            CHECK(ok, "every wheel position 0-9 marks and points the right way");
+            Lock plain = makeLock(LockType::Rotor, rr, 0);
+            plain.guess("5555", err);
+            CHECK(plain.history.back().dir.empty() && !plain.directional(), "a plain rotor keeps its old marks");
+        }
+        // 5. CODES LEFT against a brute-force count, 200 locks (keypad and rotor stages).
+        {
+            Rng rr(24);
+            int wrongCounts = 0;
+            for (int n = 0; n < 200; ++n) {
+                Lock L = makeLock(LockType::Composite, rr, 0);
+                L.maxGuesses = 20;
+                std::string err;
+                bool rotor = n % 2 == 1;
+                L.surveyed = n % 3 == 0;
+                if (n % 5 == 0) L.peek();
+                if (rotor) L.guess(L.outer, err);
+                int rows = rr.range(0, 3);
+                for (int k = 0; k < rows && !L.open; ++k) {
+                    std::string g;
+                    if (L.stage == 0) {
+                        std::string d = "0123456789";
+                        for (int i = 9; i > 0; --i) std::swap(d[static_cast<size_t>(i)], d[static_cast<size_t>(rr.range(0, i))]);
+                        g = d.substr(0, 4);
+                    } else for (int i = 0; i < 4; ++i) g += static_cast<char>('0' + rr.range(0, 9));
+                    if (g != L.secret) L.guess(g, err);
+                }
+                if (L.open) continue;
+                if (n % 7 == 0) L.peek();
+                long brute = 0;
+                auto fits = [&](const std::string& code) {
+                    Lock P = L;
+                    P.secret = code;
+                    for (auto& row : L.history) {
+                        Lock Q = P;
+                        Q.history.clear();
+                        Q.used = 0;
+                        Q.maxGuesses = 5;
+                        Q.open = false;
+                        if (!Q.guess(row.guess, err) || Q.history.empty() || Q.history.back().marks != row.marks || Q.history.back().dir != row.dir) return false;
+                    }
+                    for (int pz : L.peeked) if (code[static_cast<size_t>(pz)] != L.secret[static_cast<size_t>(pz)]) return false;
+                    if (L.stage == 0 && L.surveyed) {
+                        std::string a = code, b = L.outer;
+                        std::sort(a.begin(), a.end());
+                        std::sort(b.begin(), b.end());
+                        if (a != b) return false;
+                    }
+                    if (L.stage == 1)
+                        for (int i = 0; i < 4; ++i) if (std::abs(code[static_cast<size_t>(i)] - L.outer[static_cast<size_t>(i)]) > 2) return false;
+                    return true;
+                };
+                for (int c = 0; c < 10000; ++c) {
+                    std::string code = {static_cast<char>('0' + c / 1000), static_cast<char>('0' + c / 100 % 10), static_cast<char>('0' + c / 10 % 10),
+                                        static_cast<char>('0' + c % 10)};
+                    if (L.stage == 0 && (code[0] == code[1] || code[0] == code[2] || code[0] == code[3] || code[1] == code[2] || code[1] == code[3] ||
+                                         code[2] == code[3]))
+                        continue;
+                    if (fits(code)) ++brute;
+                }
+                if (brute != L.codesLeft()) ++wrongCounts;
+            }
+            CHECK(wrongCounts == 0, "CODES LEFT matches a brute-force count on 200 locks");
+        }
+        // 10. Save v6 round-trips FORTRESS records; v1-v5 headers still load; bad lines are dropped.
+        {
+            namespace fs = std::filesystem;
+            GameState v = ledgerOwner(25);
+            FortressRecord& r0 = v.fortress[floorId(0, 1)];
+            r0.rekeys = 2;
+            r0.survey = true;
+            r0.rows = {{0, "0123"}, {0, "4567"}, {1, "5555"}};
+            r0.peeks = {{0, 2}};
+            std::string err;
+            CHECK(saveGame(v, &err), "save v6");
+            GameState w;
+            CHECK(loadGame(w, &err) && w.fortress.size() == 1 && w.fortress.count(floorId(0, 1)), "load v6");
+            const FortressRecord& r1 = w.fortress[floorId(0, 1)];
+            CHECK(r1.rekeys == 2 && r1.survey && r1.rows.size() == 3 && r1.rows[2].stage == 1 && r1.rows[2].guess == "5555" && r1.peeks.size() == 1 &&
+                      r1.peeks[0] == std::make_pair(0, 2) && fortressSeed(w, 0, 1) == fortressSeed(v, 0, 1),
+                  "FORTRESS records round-trip");
+            std::string text;
+            {
+                std::ifstream in(savePath());
+                std::ostringstream ss;
+                ss << in.rdbuf();
+                text = ss.str();
+            }
+            for (int ver = 1; ver <= 5; ++ver) {
+                std::string old = text;
+                old.replace(0, old.find('\n'), "GHOSTNET " + std::to_string(ver));
+                { std::ofstream outF(savePath(), std::ios::trunc); outF << old; }
+                GameState x;
+                CHECK(loadGame(x, &err) && x.credits == v.credits, "an older save header still loads");
+            }
+            std::string bad = text;
+            size_t endAt = bad.rfind("end\n");
+            // floor ids: Kessler 8200-8202, Tidewater 8210-8212
+            bad.insert(endAt, "frow 8201 0 1123\nfrow 8201 2 0123\nfrow 8201 0 12a4\nfrow 8201 1 99999\nfortress 8202 x 1\nfortress 8200 0 1\n"
+                              "fortress 8205 0 1\nfortress 8210 0 1\nfrow 8202\nfpeek 8201 0 7\nfpeek 8201 0 3\nfortress 99999999999 0 0\n");
+            for (int i = 0; i < 9; ++i) bad.insert(bad.rfind("end\n"), "frow 8201 1 1234\n");
+            { std::ofstream outF(savePath(), std::ios::trunc); outF << bad; }
+            GameState y;
+            CHECK(loadGame(y, &err), "a save with bad FORTRESS lines still loads");
+            CHECK(floorId(0, 1) == 8201 && !y.fortress.count(8202) && !y.fortress.count(8205) && y.fortress.count(8200) && y.fortress.count(8201) &&
+                      static_cast<int>(y.fortress[8201].rows.size()) == bal::FORTRESS_ROWS_MAX && y.fortress[8201].peeks.size() == 2,
+                  "bad FORTRESS lines are dropped and rows capped");
+            CHECK(!y.fortress.count(floorId(1, 0)), "Tidewater floors keep no FORTRESS record");
+            GameState z = v;
+            z.deepDone = false;
+            z.act = 3;
+            CHECK(saveGame(z, &err) && loadGame(y, &err) && y.fortress.empty(), "no Ledger, no FORTRESS records");
+            fs::remove(savePath());
+        }
+    }
+    // 0.6.1 - a capture hold charges every second it shows, the last one included.
+    {
+        Target t = testTarget(LockType::None);
+        t.kind = Kind::Corporate;
+        t.id = 1037;
+        t.stealable = true;
+        // Two identical holds: the first measures the trace on the final second, the second starts
+        // high enough that the final second (and only that one) fills the trace.
+        double before = 0, after = 0;
+        int holdSecs = 0;
+        for (int pass = 0; pass < 2; ++pass) {
+            GameState h;
+            h.worldSeed = 8;
+            h.credits = 20000;
+            unlockNetwork(h);
+            h.net.slots = bal::MAX_SLOTS;
+            size_t owned = h.net.machines.size();
+            RunSession r(h, t, 13);
+            CaptureQuote q = r.quote();
+            std::string err;
+            if (pass == 1) r.trace += 100.0 - after + (after - before) / 2;
+            int s0 = r.secs;
+            CHECK(q.possible && r.startHold(q.def, err), "start a capture hold");
+            holdSecs = q.holdSecs;
+            while (r.busy() && !r.over()) {
+                if (pass == 0) before = r.trace;
+                r.step();
+            }
+            if (pass == 0) {
+                after = r.trace;
+                CHECK(r.end == End::Steal, "an unhurried hold captures the hardware");
+                CHECK(r.secs - s0 == holdSecs, "a capture costs exactly the seconds it shows");
+                CHECK(after > before, "the final held second runs the trace too");
+            } else {
+                CHECK(r.end == End::TraceOut && r.secs - s0 == holdSecs, "a trace that fills on the last held second wins");
+                CHECK(h.net.machines.size() == owned, "no hardware arrives if the last second traces you");
+            }
+        }
+    }
+    // 0.6.1 - lock input is judged against the game's ASCII alphabets; high-bit bytes are refused.
+    {
+        Rng rr(5);
+        const std::string hi(1, static_cast<char>(0xFF)), e9(1, static_cast<char>(0xE9));
+        for (LockType lt : {LockType::Keypad, LockType::Rotor, LockType::Cipher, LockType::Composite}) {
+            Lock L = makeLock(lt, rr, 0);
+            std::string err;
+            int used = L.used;
+            std::string bad = lt == LockType::Cipher ? "caf" + e9 + "s" : "12" + hi + "4";
+            CHECK(!L.guess(bad, err) && !err.empty() && L.used == used, "a high-bit byte is refused without spending a guess");
+            CHECK(!L.guess(hi + hi + hi + hi + (lt == LockType::Cipher ? hi : ""), err) && L.used == used, "all high-bit input is refused");
+        }
+        Lock c = makeLock(LockType::Cipher, rr, 0);
+        std::string err, up = txt::upper(c.secret);
+        CHECK(c.guess(up, err) && c.open, "cipher guesses are still case-insensitive");
+    }
+    // 0.6.1 - a save that can't be moved into place never costs the old one.
+    {
+        namespace fs = std::filesystem;
+        GameState a;
+        a.credits = 111;
+        std::string err;
+        CHECK(saveGame(a, &err), "first save");
+        // A finished write left in the temp file (its move failed) is newer than the main save:
+        // main holds 111, the temp file 222. It loads, and is promoted into place.
+        GameState b;
+        b.credits = 222;
+        CHECK(saveGame(b, &err), "second save");
+        const std::string keep = saveTempPath() + ".keep";
+        fs::copy_file(savePath(), keep, fs::copy_options::overwrite_existing);
+        CHECK(saveGame(a, &err), "rewrite the older save");
+        std::error_code ec;
+        fs::rename(keep, saveTempPath(), ec);
+        fs::last_write_time(saveTempPath(), fs::last_write_time(savePath()) + std::chrono::seconds(5), ec);
+        GameState l;
+        CHECK(loadGame(l, &err) && l.credits == 222 && !fs::exists(saveTempPath()), "a newer complete temp save loads and is promoted");
+        // A write cut short (no end line) never shadows the real save.
+        { std::ofstream f(saveTempPath(), std::ios::trunc); f << "GHOSTNET 5\ncredits 999\n"; }
+        fs::last_write_time(saveTempPath(), fs::last_write_time(savePath()) + std::chrono::seconds(5), ec);
+        GameState m;
+        CHECK(loadGame(m, &err) && m.credits == 222, "a half-written temp file falls back to the real save");
+        // The real save gone, a complete temp save is still found by Continue and loads.
+        CHECK(saveGame(b, &err), "save again");
+        fs::copy_file(savePath(), saveTempPath(), fs::copy_options::overwrite_existing);
+        fs::remove(savePath());
+        GameState n;
+        CHECK(saveExists() && loadGame(n, &err) && n.credits == 222 && fs::exists(savePath()), "a lone temp save is recovered");
+        // A failed replace leaves the old save alone: make the destination a directory so rename must fail.
+        fs::remove(savePath());
+        fs::create_directories(fs::path(savePath()) / "blocker");
+        GameState f;
+        f.credits = 333;
+        CHECK(!saveGame(f, &err) && err.find("untouched") != std::string::npos, "a failed replace reports an error");
+        CHECK(fs::exists(fs::path(savePath()) / "blocker"), "a failed replace deletes nothing");
+        fs::remove_all(savePath());
+        fs::remove(saveTempPath(), ec);
     }
     // 0.6 - the composite lock: keypad marks carry into the rotor's start; each stage judges itself.
     {
@@ -1097,11 +2415,17 @@ void selfTest() {
             std::vector<Target> b2 = buildBoard(o);
             int towersListed = 0;
             for (auto& t : b2) if (t.kind == Kind::Tower) ++towersListed;
-            CHECK(towersListed == 1, "an owned tower leaves the board");
+            CHECK(towersListed == kOuterTowers - 1, "an owned tower leaves the board");
+            int sites = 0;
+            for (auto& t : b2) if (t.kind == Kind::Site) { ++sites; CHECK(t.tower == 1 && t.id == siteId(1), "the owned tower's service site is listed"); }
+            CHECK(sites == 1 && o.siteOf(1) == 1, "owning a tower pins its service site");
             roundTrip(o);
         }
     }
-    if (!problems) std::printf("selftest: keypad marks, programs, jammer/vault, traits, memorial, subnets, strikes, prototypes, composite, ledger - OK\n");
+    leanSelfTest();
+    chairsSelfTest();
+    innerSelfTest();
+    if (!problems) std::printf("selftest: keypad marks, programs, jammer/vault, traits, memorial, subnets, strikes, prototypes, composite, ledger, capture timing, lock input, save recovery, kessler records, running lean, chairman iron - OK\n");
 }
 
 int main(int argc, char** argv) {
@@ -1110,7 +2434,8 @@ int main(int argc, char** argv) {
     std::string mode = argc > 3 ? argv[3] : "careful";
     CHAOS = mode == "chaos";
     SUBNET = mode == "subnet";
-    TOWER = mode == "tower";
+    CHAIRS = mode == "chairs";
+    TOWER = mode == "tower" || CHAIRS;
     std::srand(static_cast<unsigned>(seed));
     auto dir = std::filesystem::temp_directory_path() / ("ghostnet-sim-" + std::to_string(seed) + "-" + mode);
     paths::overrideSaveDir(dir.string());
@@ -1124,29 +2449,53 @@ int main(int argc, char** argv) {
     for (int i = 0; i < runs && (!g.deepDone || TOWER); ++i) {
         if (g.deepDone && TOWER) {   // Act IV: the bot opens the Ledger and climbs with whatever it built
             if (enterLedger(g)) std::printf("--- ACT IV: THE LEDGER ---\n");
+            int sk = -1;   // CHAIRS: a pinned service site comes first
+            for (int c = 0; c < kTowerCount && CHAIRS && sk < 0 && i % 3 == 0; ++c) if (siteListed(g, c)) sk = c;   // every third night
+            if (sk >= 0 && g.credits >= 2500 && g.net.externalCount() < bal::MAX_EXTERNAL) {
+                repairAll(g);
+                if (retoolFor(g, Doctrine::Biosentinel)) {   // a hold wants STEALTH and jammers, whatever the doctrine
+                    static const Job picks[3] = {Job::Proxy, Job::Relay, Job::Jammer};
+                    ACCORD_PICK = picks[st.siteCaptures % 3];
+                    Target t = makeSite(g, sk);
+                    towerPrep(g, t, true);
+                    leanUp(g, t);
+                    Reckoning rk = playSite(g, t, seed * 7919 + static_cast<uint64_t>(i));
+                    leanTally(rk);
+                    if (rk.accordCaptured && st.firstSiteRun < 0) st.firstSiteRun = st.runs + st.towerRuns + st.siteTries;
+                    checkInvariants(g);
+                    roundTrip(g);
+                    std::printf("run %2d  %-34s %-10s credits %6d  site %d  accord %d\n", st.runs + st.towerRuns + st.siteTries, t.name.c_str(),
+                                rk.end == End::TraceOut ? "TRACED" : rk.end == End::Sacrifice ? "SACRIFICE" : rk.accordCaptured ? "ACCORD" : "short",
+                                g.credits, sk, st.siteCaptures);
+                    continue;
+                }
+            }
             int k = -1;
-            for (int c = 0; c < kTowerCount && k < 0; ++c) if (g.floorsCleared(c) < kFloors) k = c;
-            if (k < 0) break;
+            for (int c = 0; c < kTowerCount && k < 0; ++c) if (g.floorsCleared(c) < kFloors && towerListed(g, c)) k = c;
+            if (k < 0 && !CHAIRS) break;
+            if (k < 0) goto farm;   // every tower owned: farm (and come back for any site still pinned)
             repairAll(g);
             for (auto& m : g.net.machines) if (!m.active && !m.dark() && m.bay < 0 && m.job != Job::Compute && m.job != Job::Jammer) activate(g, m);
-            bool ready = g.credits >= 2500 && retoolFor(g, towerDoctrine(k));
+            bool ready = g.credits >= 2500 && retoolFor(g, floorDoctrine(k, g.floorsCleared(k)));
             if (!ready) goto farm;   // earn the kit on ordinary listings first
             {
             Target t = makeTowerFloor(g, k, g.floorsCleared(k));
             towerPrep(g, t, true);
+            leanUp(g, t);
             Reckoning rk = playFloor(g, t, seed * 7919 + static_cast<uint64_t>(i));
+            leanTally(rk);
             checkInvariants(g);
             roundTrip(g);
-            std::printf("run %2d  %-34s %-10s credits %6d  tower %d floors %d/%d  act %d\n", st.runs + st.towerRuns, t.name.c_str(),
+            std::printf("run %2d  %-34s %-10s credits %6d  tower %d floors %d/%d  act %d\n", st.runs + st.towerRuns + st.siteTries, t.name.c_str(),
                         rk.end == End::TraceOut ? "TRACED" : rk.end == End::Sacrifice ? "SACRIFICE" : rk.floorCleared >= 0 ? "FLOOR" : "short",
-                        g.credits, k, g.floorsCleared(0), g.floorsCleared(1), g.act);
+                        g.credits, k, g.floorsCleared(0) + g.floorsCleared(1) + g.floorsCleared(2), kTowerCount * kFloors, g.act);
             continue;
             }
         }
     farm:
         manage(g);
         std::vector<Target> board = buildBoard(g);
-        auto usable = [&](const Target& t) { return !g.burned.count(t.id); };
+        auto usable = [&](const Target& t) { return !g.burned.count(t.id) && t.kind != Kind::Site; };   // sites: CHAIRS mode only, above
         bool deepReady = g.netUnlocked && (g.knownPhrases.count(kDeepId) || CHAOS) &&
                          g.net.relayBonus() + g.net.proxyBonus() >= 45 && g.deck.uplink + g.deck.shroud >= 3;
         bool early = st.deepAttempts == 0 && !SUBNET;
@@ -1177,6 +2526,7 @@ int main(int argc, char** argv) {
         bool wantSteal = t.stealable && g.net.bestScoutTier() > 0 && (i % 3 == 1 || t.kind == Kind::Prototype) && !t.deep &&
                          g.net.externalCount() < (t.kind == Kind::Prototype ? bal::MAX_EXTERNAL : bal::MAX_EXTERNAL - 4);
 
+        leanUp(g, t);
         RunSession r(g, t, seed * 7919 + static_cast<uint64_t>(i));
         ++st.runs;
         if (t.deep) ++st.deepAttempts;
@@ -1185,6 +2535,7 @@ int main(int argc, char** argv) {
         playInside(r, wantSteal, t.deep, rep);
         if (!r.over()) r.disconnect();
         Reckoning rk = r.settle();
+        leanTally(rk);
         if (rk.end == End::TraceOut) ++st.traceouts;
         if (rk.end == End::Sacrifice) ++st.sacrifices;
         if (rk.end == End::Steal) ++st.captures;
@@ -1211,6 +2562,16 @@ int main(int argc, char** argv) {
                 static_cast<unsigned long long>(seed), mode.c_str(), st.runs, st.contracts, st.captures, st.steals, st.traceouts,
                 st.sacrifices, st.phrases, st.extra, st.honeypots, st.bought, st.decoys, st.unpaid, st.annex, st.deepWon, st.deepAttempts,
                 st.shortfalls, st.gateways, st.plugged, st.strikes, st.clusters, st.protos, st.protoTries, st.protoSeen);
+    {
+        const Stats& s = g.stats;
+        double share = s.earned > 0 ? 100.0 * (s.billsPaid + st.scrubSpent) / s.earned : 0.0;
+        // The same nights, billed the 0.7 way: what was paid, plus what standby and house power took off.
+        double same = s.earned > 0 ? 100.0 * (s.billsPaid + st.standbySaved + st.houseSaved) / s.earned : 0.0;
+        std::printf("LEAN STATS (%s): bills+scrubs %lld of %lld earned = %.1f%% (same nights unlean %.1f%%)  standby nights %d saved %d  "
+                    "house power saved %d  scrubs %d for %dcr\n",
+                    LEAN ? "lean" : "fat", s.billsPaid + st.scrubSpent, s.earned, share, same, st.standbyNights, st.standbySaved, st.houseSaved,
+                    st.scrubs, st.scrubSpent);
+    }
     std::error_code ec;
     std::filesystem::remove_all(dir, ec);
     if (problems) { std::printf("problems: %d\n", problems); return 1; }
@@ -1219,10 +2580,37 @@ int main(int argc, char** argv) {
     if (TOWER) {
         // Kit trials on a fresh owner: a matched build takes each tower; one build against the wrong doctrine fails.
         int bad = 0;
-        const Doctrine docs[2] = {Doctrine::Fortress, Doctrine::Biosentinel};
+        auto wrongFor = [](Doctrine d) { return d == Doctrine::Fortress ? Doctrine::Biosentinel : Doctrine::Fortress; };
+        {   // 0.7 - Kessler-Maru: the wall is the first visit. The matched kit takes every floor on its first visit; the wrong
+            // kit can't, but patience, surveys and BREAKER get it there later; BREAKER 0 never opens a door.
+            const uint64_t ks = seed * 31;
+            GameState o = ledgerOwner(ks);
+            Climb matched = climbKessler(o, Doctrine::Fortress, bal::DECK_MAX, false, seed + 11, 6);
+            Climb wrongK = climbKessler(o, Doctrine::Biosentinel, bal::DECK_MAX, false, seed + 22, 9);
+            Climb patient = climbKessler(o, Doctrine::Biosentinel, bal::DECK_MAX, true, seed + 33, 9);
+            Climb slow = climbKessler(o, Doctrine::Biosentinel, 1, true, seed + 44, 6, 1);
+            Climb wall = climbKessler(o, Doctrine::Biosentinel, 0, true, seed + 55, 10, 1);
+            KIT_TIER = 2;   // all of it bought, nothing captured
+            Climb bought = climbKessler(ledgerOwner(ks), Doctrine::Fortress, bal::DECK_MAX, false, seed + 66, 6);
+            KIT_TIER = 3;
+            std::printf("KIT TRIAL KESSLER-MARU TOWER (FORTRESS): matched kit %d/%d floors on first visits (%d runs; T2 kit %d/%d in %d); "
+                        "BIOSENTINEL kit %d/%d on first visits (%d/%d in %d runs)\n",
+                        matched.firstVisit, kFloors, matched.runs, bought.floors, kFloors, bought.runs, wrongK.firstVisit, kFloors,
+                        wrongK.floors, kFloors, wrongK.runs);
+            std::printf("KESSLER PATIENCE: BREAKER 3 + surveys %d/%d floors in %d runs (alarm re-keys %d, traced %d); BREAKER 1 + survey floor 1 "
+                        "%s in %d runs; BREAKER 0 opened %d door(s) in %d runs\n",
+                        patient.floors, kFloors, patient.runs, patient.alarmRekeys, patient.traceRekeys, slow.floors >= 1 ? "taken" : "NOT taken",
+                        slow.runs, wall.opened, wall.runs);
+            if (matched.firstVisit < kFloors || bought.floors < kFloors) { std::printf("FAIL: the matched kit did not take every Kessler floor on its first visit\n"); ++bad; }
+            if (wrongK.firstVisit >= kFloors) { std::printf("FAIL: the wrong kit took every Kessler floor on its first visit - the doctrine doesn't matter\n"); ++bad; }
+            if (patient.floors < kFloors || patient.runs > 9 || patient.alarmRekeys > 0) { std::printf("FAIL: patience with surveys did not climb Kessler cleanly in 9\n"); ++bad; }
+            if (slow.floors < 1 || slow.runs > 6) { std::printf("FAIL: BREAKER 1 + survey did not take floor 1 within 6\n"); ++bad; }
+            if (wall.opened > 0 || wall.floors > 0) { std::printf("FAIL: BREAKER 0 opened a Kessler door\n"); ++bad; }
+        }
         for (int k = 0; k < kTowerCount; ++k) {
+            if (towerDoctrine(k) == Doctrine::Fortress) continue;   // trialled above
             GameState o = ledgerOwner(seed * 31 + static_cast<uint64_t>(k));
-            Doctrine d = towerDoctrine(k), wrong = docs[d == Doctrine::Fortress ? 1 : 0];
+            Doctrine d = towerDoctrine(k), wrong = wrongFor(d);
             int used = 0, used2 = 0;
             int got = climb(o, k, d, seed + 1000 * static_cast<uint64_t>(k), 6, &used);
             int miss = climb(o, k, wrong, seed + 1000 * static_cast<uint64_t>(k) + 500, 6, nullptr);
@@ -1237,7 +2625,32 @@ int main(int argc, char** argv) {
         }
         std::printf("TOWER STATS: tower runs %d floors %d re-keys %d prep %d sweeps %d logged-misses %d programs %d\n", st.towerRuns, st.floors,
                     st.rekeys, st.prepBought, st.sweeps, st.misses, st.programs);
+        if (CHAIRS) {
+            // 0.9 - CHAIRMAN IRON: on a fresh owner with the doctrine's kit, every service site falls to prep and patience,
+            // and a trace there only ever re-keys the door.
+            int baseTries = st.siteTries, baseCaps = st.siteCaptures;
+            for (int k = 0; k < kTowerCount; ++k) {
+                ACCORD_PICK = Job::Proxy;
+                SiteTrial prepped = siteTrial(seed * 41 + static_cast<uint64_t>(k), k, true, 8);
+                SiteTrial fresh = siteTrial(seed * 43 + static_cast<uint64_t>(k), k, false, 8);
+                std::printf("SITE TRIAL %s (%s): with prep %s in %d tries (%d traced); no prep %s in %d tries (%d traced)\n", siteName(k),
+                            doctrineName(siteDoctrine(k)), prepped.taken ? "TAKEN" : "not taken", prepped.tries, prepped.traced,
+                            fresh.taken ? "TAKEN" : "not taken", fresh.tries, fresh.traced);
+                if (!prepped.taken) { std::printf("FAIL: service site %s was not taken with prep in 8 tries\n", siteName(k)); ++bad; }
+            }
+            st.siteTries = baseTries;
+            st.siteCaptures = baseCaps;
+            int accord = 0, signature = 0, ownedN = 0;
+            for (auto& m : g.net.machines) { accord += m.accord() ? 1 : 0; signature += m.signature() ? 1 : 0; }
+            for (int k = 0; k < kTowerCount; ++k) ownedN += towerOwned(g, k) ? 1 : 0;
+            std::printf("CHAIRS STATS: site tries %d captures %d re-keys %d sheds %d first ACCORD at run %d; ACCORD iron owned %d; towers owned %d/%d\n",
+                        st.siteTries, st.siteCaptures, st.siteRekeys, st.sheds, st.firstSiteRun, accord, ownedN, kTowerCount);
+            std::printf("INNER STATS: inner chairs %s; cage keys %d burned %d; SIGNATURE iron owned %d (captured %d); absolutions %d\n",
+                        innerOpen(g) ? "OPEN" : "closed", st.cageKeys, st.keysBurned, signature, st.signatures, st.absolved);
+            if (accord + signature != st.siteCaptures) { std::printf("FAIL: chair iron owned doesn't match the captures\n"); ++bad; }
+        }
         if (!g.deepDone || g.act != 4) { std::printf("FAIL: the bot never reached Act IV\n"); ++bad; }
+        if (problems) { std::printf("problems in the kit trials: %d\n", problems); return 1; }
         if (bad) return 1;
     }
     std::printf("problems: none\n");

@@ -108,6 +108,22 @@ all four locks with no trace and no bill.
     is waived.
 * **The bill:** running machines bill you after a run that does something. If you can't
   pay, nothing is taken and everything except N0 goes dark. There is never debt.
+* **Running lean (0.8)** gives you three ways to pay less. None of them involves a timer, and none
+  makes credits for you:
+  * **STANDBY** (at the briefing, on the **TONIGHT'S RACK** tab). Pick machines to sit out this
+    one connection. A machine on standby is not billed, not worn and does nothing. Everything is
+    back on at the reckoning, and leaving the briefing wakes it all. LEDGER suggests machines
+    that do nothing on tonight's job (scouts, relays past their cap) and loud ones the job won't
+    miss. Its picks start **OFF**: **STANDBY SUGGESTED** takes them in one click. Amber lines say
+    what you give up (vault, proxy cover, a subnet, scans). The armed decoy can't go on standby,
+    and a gateway on standby takes its whole subnet with it.
+  * **SIGNAL SCRUB** (on the machine at the rack) lowers a machine's noise by one, for good. It
+    costs what it saves in 25 billed runs, rounded to 25cr. For example, a Hot Iron T2 goes from
+    55 to 39cr for 400cr, and a prototype from 175 to 154cr for 525cr. Captured hardware never
+    gets quieter than noise 2.
+  * **HOUSE POWER.** Each tower you own powers one subnet of your choice, and that subnet bills
+    at half. It never applies to the main rack and never pays credits. Taking a Boardroom feeds
+    your most expensive subnet; switch it with **HOUSE POWER** on any gateway.
 * **Decoy:** arm a Proxy (or a whole subnet, by its Gateway). If the trace fills, HELIOS traces it instead of you. The decoy
   is destroyed, the fine is halved, and you keep the night. Its nameplate goes on the
   **Memorial Wall** in Records.
@@ -117,7 +133,7 @@ all four locks with no trace and no bill.
   * **Renter ending:** walk away and be filed as a runner who kept renting.
   * Neither ending is a loss.
 * **Act IV: the Ledger** (0.6) opens once you've finished the deep job. The owner ending
-  now offers **THE LEDGER**, and a card puts two corp towers on your board. Each has
+  now offers **THE LEDGER**, and a card puts the corp towers on your board (three since 0.9). Each has
   3 floors; the third is the Boardroom, and taking it means you own the tower. A tower is
   never timed and never moves on its own: you start every climb, and a floor you've taken
   stays taken.
@@ -127,22 +143,81 @@ all four locks with no trace and no bill.
       maintenance ports (so no phrase). You get one guess for the whole door, plus one per
       Breaker level. Each compute box (and a SIEGE subnet) answers *once* per door. Every
       miss is logged as an alarm ping (+4% trace).
+    * **Kessler codes persist (0.7).** A Kessler floor keeps its code between connections.
+      Your earlier attempts come back as **LOGGED** rows that cost nothing. A keypad you
+      already found shows **KEYPAD KNOWN**: typing it costs one guess and is never a miss.
+      The rotor behind it gets **arrows** (up = the wheel is higher, down = lower), and
+      **CODES LEFT** counts every answer that still fits. Misses fill a 6-slot **ALARM
+      LOG**; a 7th miss seals the door and re-keys that floor only. A trace still re-keys
+      every floor. The matched kit takes each floor on its first visit; any other kit can
+      win with patience. BREAKER 0 without compute can't, because the one guess always goes
+      on re-entering the keypad.
     * **Tidewater BioSys, BIOSENTINEL.** Ordinary locks, but a watchdog on every floor and a
       **sentinel sweep** every 12s (+6% trace). Jammers soften a sweep but can't delay it;
       FREEZE lets one pass. Each floor's facilities memo names the next floor's
       maintenance phrase.
+    * **Halden Grid, LOADSHED (0.9).** Keypad, rotor and cipher doors with ports, and the fastest
+      trace of the three. Every 15s the grid **sheds** for 3s: every subnet not on HOUSE
+      POWER goes dark (no spike, no damage; the main rack and deck keep working). A shed
+      never disarms the decoy. The banner counts down to the next one.
+  * **Chairman iron (0.9).** An owned tower's Boardroom holds a `maintenance_log.txt`. Read
+    it and that tower's **HELIOS service site** is pinned to your board, with its
+    maintenance phrase: **CITADEL** (Kessler-Maru), **OSSUARY** (Tidewater), **FURNACE**
+    (Halden). A site is security 5 at 4.4%/s under its tower's doctrine, has nothing worth
+    selling, and holds one machine: an **ACCORD**-grade tier 5 (**MONOLITH**, **LEVIATHAN**,
+    **COLOSSUS**). Get in, CAPTURE, hold, and pick its job from all seven. The choice is
+    permanent: no re-job, no scrap, never the decoy. ACCORD iron costs 60cr a run flat
+    (signal 1, no trait), can go on STANDBY, and goes dark when the bill isn't paid like
+    everything else. A trace at a site only re-keys its door. The site stays pinned until
+    you take the machine.
+    * RELAY +45% (rack cap 60%), PROXY -30% (rack cap 42%), SCOUT 3 charges plus a doctrine
+      secret with each new tower or site report, COMPUTE answers twice (cap 3), JAMMER 90s /
+      -70% and FREEZES the trace on its own once at 80%, VAULT keeps 100% of 3 files and one
+      taken tower objective, GATEWAY a 4-slot subnet with 16 power where every member acts a
+      tier up. The hard caps (90% / 50%) never move.
+  * **The inner chairs (0.10).** Own **two** of the three outer towers and three more chairs
+    list. Their trace runs 4.4–5.0%/s and their Boardrooms pay 3000 / 5000 / 15000cr.
+    * **Aurex, LEDGERLOCK.** Every file is **AUDITED** as it lands: +9% for an objective, +4% for
+      anything else, and no jammer softens it. A working VAULT **escrows** first: each file it
+      would keep on a trace spares one audit. Kit: a SPEED subnet of vaults.
+    * **Sable Wren, COUNTERTRACE.** Every 10s a **countertrace** reads your route back: +6%, and
+      2% more each time one lands. FREEZE and jammers don't stop it. Each working PROXY dead-ends
+      one a night. Kit: proxies, and be quick.
+    * **HELIOS Proving Ground.** FORTRESS on floor 1, BIOSENTINEL on floor 2, LOADSHED in the
+      Boardroom. Change your kit between floors.
+  * **Signature iron (0.10).** An inner Boardroom's log names a **HELIOS CAGE** (**OUBLIETTE**,
+    **SEPULCHRE**, **CRUCIBLE**). A cage takes two runs. On the **cage run**, download
+    `cage_schematic.enc` and get out clean, and the **inner door** goes on your board. Read
+    `service_key.txt` too and you hold the door's phrase (x0.6 on the hold). The **capture
+    run** is a 40s hold at the inner door. A trace there **burns the key**, and you're back to
+    the cage run. The prize is a **SIGNATURE** tier 5 in a fixed job:
+    * **ABSOLUTION** (vault): once a run, a full trace closes on nothing and you walk out
+      clean. The decoy is untouched and nothing re-keys, but it costs 40 condition. It never
+      works at a site or cage. Otherwise it is a vault that keeps 100% of your 3 best files.
+    * **ECLIPSE** (proxy): -30% trace, plus 25% more past the rack cap. It halves every
+      sentinel sweep and countertrace, and flags each one 3s before it lands.
+    * **PANTHEON** (gateway): a 4-slot subnet with 20 power where every member acts **two**
+      tiers up. Its strike fires BLACKOUT, MIRROR and CRACK, each once a run, whichever the
+      moment allows.
+    * Each costs 220cr a run flat and 4cr a point to repair, and adds **+4%** to the trace at
+      every handshake. It is never the decoy and can't be scrapped. It can go on STANDBY, and
+      it goes dark unpaid like everything else.
   * **Composite lock:** one door, two stages, one guess budget. First a keypad (4 different
     digits, judged as usual). Once it opens, a rotor wakes, and every wheel sits within 2
     notches of the keypad digit in the same box. The screen shows the carried code and
     each box's range, and both stages give their own feedback.
   * **Heist prep** is paid for once and kept: a **FLOOR PLAN** (350cr) is a full-quality
     report, and a **MAINTENANCE PHRASE** (700/1000/1400cr, Biosentinel only) opens the
-    door outright.
+    door outright. A **TUMBLER SURVEY** (600/900/1200cr, Fortress only) names a Kessler
+    keypad's four digits but not their order, and lasts until that floor re-keys.
+  * **FORTRESS DRILL** in the practice range is a Kessler door on your real budget. Press
+    RECONNECT to practise against the same code and its logged rows.
   * **Re-key:** the only thing a tower does to you is react to a trace. Get traced on a floor
     and that tower re-keys every door: phrases you held for it go stale. Floor plans and
     taken floors are kept.
   * Floors pay 1500 / 2500 / 9000cr. Records shows your progress on the Ledger. Saves from
-    any earlier version carry over (save format v5).
+    any earlier version carry over (save format v9 since 0.10; a 0.8 save that already owns a
+    tower gets its service site pinned on load).
 * **The Panel:** VESPER (risk), LEDGER (money) and MOTH (intel) are advisor AIs. They read
   your meters and vote before each run. They never solve a lock.
 * **Never in this game:** idle income, offline progress, build timers, raids, a second currency, gacha or levelling.
@@ -150,6 +225,7 @@ all four locks with no trace and no bill.
 ## Troubleshooting
 
 * **Clicks don't land / the game ignores the mouse:** fixed in 0.3.1. Version 0.3.0 mis-mapped the mouse on Windows displays scaled above 100% (most laptops). Run `GhostNet-Setup.exe` again to update.
+* **"Save failed" toast:** something (usually a virus scanner) held the save file while the game replaced it. Since 0.6.1 the game retries, never deletes your previous save to make room, and keeps the new one in `ghostnet_save.txt.tmp`, which it loads automatically if it's the newest complete save.
 * **The window won't open:** GhostNet needs OpenGL 3.3, so update your graphics driver. The game writes `ghostnet.log` to `%APPDATA%\GhostNet` every time it starts; include it if you report a problem.
 
 ## Build from source
@@ -178,9 +254,9 @@ all, for CI. That build only takes `--shots DIR`.
 
 * `ctest --test-dir build` runs:
   * the installer's JSON / manifest / file-name validation tests;
-  * `ghostnet_sim`, an automated player (`tests/sim_bot.cpp`) that plays the real rules end to end. It solves locks only from their feedback and learns passphrases only by reading files. There are five modes: `careful`, `chaos` (lockouts, trace-outs, decoy sacrifices, unpaid bills), `deep`, `subnet` (gateways, strikes and prototype captures over 70 runs), and `tower` (Act IV). Tower mode plays on past the deep job into the Ledger. Then it runs *kit trials*: an owner with the kit matched to a tower's doctrine must take all 3 floors of both towers, and a single build sent against the wrong doctrine must fail. Deep fails unless the bot builds a network and beats the deep job, after one doomed early attempt that checks the shortfall readout.
+  * `ghostnet_sim`, an automated player (`tests/sim_bot.cpp`) that plays the real rules end to end. It solves locks only from their feedback and learns passphrases only by reading files. There are six modes: `careful`, `chaos` (lockouts, trace-outs, decoy sacrifices, unpaid bills), `deep`, `subnet` (gateways, strikes and prototype captures over 70 runs), `tower` (Act IV) and `chairs` (0.9, inner chairs since 0.10). Tower mode plays on past the deep job into the Ledger. Then it runs *kit trials*: an owner with the kit matched to a tower's doctrine must take all 3 floors of every tower, and a build sent against the wrong doctrine must fall short. Chairs mode also reads the Boardroom logs, raids the pinned service sites for ACCORD iron, and runs *site trials*: a prepared owner must take every site and every cage (both runs). Deep fails unless the bot builds a network and beats the deep job, after one doomed early attempt that checks the shortfall readout.
 * `gui_autoplay` (headless builds): the game plays its own UI through a simulated 1600×1000 window using only mouse clicks and typing: practice range, new game, every hub tab, the first contract (lock typed and clicked), the reckoning, naming N0, buying, storing and switching on a machine, save & quit, continue, then the Act IV card, buying a floor plan and solving a composite lock (keypad clicked, rotor typed). A dead button or mouse mapping that misses fails the build.
-* `build/GhostNet --shots shots` drives every screen of the actual front end and saves 35 screenshots. CI does this on every push and uploads them as the **screenshots** artifact.
+* `build/GhostNet --shots shots` drives every screen of the actual front end and saves 46 screenshots. CI does this on every push and uploads them as the **screenshots** artifact.
 * `GhostNet-Setup.exe --selftest`: the downloader's offline security self-test.
 
 ## Releasing

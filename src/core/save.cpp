@@ -2,18 +2,42 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <thread>
 
 #include "balance.h"
 #include "paths.h"
+#include "rack.h"
+#include "world.h"
 
 namespace fs = std::filesystem;
 
 namespace {
-constexpr int kVersion = 5;   // v1 (0.1.x), v2 (0.2-0.3), v3 (0.4) and v4 (0.5) saves still load; new fields default
+constexpr int kVersion = 9;   // v1 (0.1.x), v2 (0.2-0.3), v3 (0.4), v4 (0.5), v5 (0.6), v6 (0.7), v7 (0.8) and v8 (0.9) saves still load; new fields default
+// v7 (0.8): HOUSE POWER - which subnet each owned tower powers. (STANDBY is tonight only and never saved.)
+// v8 (0.9): CHAIRMAN IRON - a machine's grade, each tower's service site, objectives an ACCORD vault holds. A third tower.
+// v9 (0.10): THE INNER CHAIRS - three more towers, SIGNATURE grade (2), and a cage's state (3 = the inner door is open).
+
+// v6: a FORTRESS floor record may only name a Kessler-Maru floor (a FORTRESS tower's floor id).
+bool fortressFloorId(int id) {
+    int tower = towerOfId(id);
+    if (tower < 0) return false;
+    int floor = id - floorId(tower, 0);
+    return floor >= 0 && floor < kFloors && floorDoctrine(tower, floor) == Doctrine::Fortress;   // 0.10: PROVING's first floor too
+}
+bool digits4(const std::string& s, bool distinct) {
+    if (s.size() != 4) return false;
+    for (char c : s) if (c < '0' || c > '9') return false;
+    if (distinct)
+        for (int i = 0; i < 4; ++i)
+            for (int j = i + 1; j < 4; ++j)
+                if (s[static_cast<size_t>(i)] == s[static_cast<size_t>(j)]) return false;
+    return true;
+}
 
 std::string esc(const std::string& s) {
     static const char* hex = "0123456789ABCDEF";
@@ -43,7 +67,12 @@ int clampi(long long v, int lo, int hi) { return static_cast<int>(std::max<long 
 }  // namespace
 
 std::string savePath() { return (fs::path(paths::saveDir()) / "ghostnet_save.txt").string(); }
-bool saveExists() { std::error_code ec; return fs::exists(savePath(), ec); }
+std::string saveTempPath() { return savePath() + ".tmp"; }
+// A finished write that couldn't be moved into place still counts: loadGame recovers it.
+bool saveExists() {
+    std::error_code ec;
+    return fs::exists(savePath(), ec) || fs::exists(saveTempPath(), ec);
+}
 
 bool saveGame(const GameState& g, std::string* err) {
     std::ostringstream o;
@@ -65,7 +94,8 @@ bool saveGame(const GameState& g, std::string* err) {
     for (auto& m : g.net.machines)
         o << "m " << m.id << " " << esc(m.name) << " " << static_cast<int>(m.job) << " " << m.tier << " " << m.captured << " "
           << m.home << " " << m.active << " " << m.condition << " " << m.noise << " " << m.price << " " << esc(m.origin) << " "
-          << static_cast<int>(m.trait) << " " << m.bay << " " << static_cast<int>(m.role) << " " << (m.bayOn ? 1 : 0) << "\n";
+          << static_cast<int>(m.trait) << " " << m.bay << " " << static_cast<int>(m.role) << " " << (m.bayOn ? 1 : 0) << " "
+          << static_cast<int>(m.grade) << "\n";
     o << "programs";
     for (auto p : g.programs) o << " " << static_cast<int>(p);
     o << "\n";
@@ -79,40 +109,90 @@ bool saveGame(const GameState& g, std::string* err) {
     for (int sd : g.sidesBurned) o << "sideburned " << sd << "\n";
     for (size_t i = 0; i < g.towerFloor.size() || i < g.towerKey.size(); ++i)   // v5: Act IV towers
         o << "tower " << i << " " << g.floorsCleared(static_cast<int>(i)) << " " << g.keyOf(static_cast<int>(i)) << "\n";
+    for (size_t i = 0; i < g.net.house.size(); ++i)   // v7: HOUSE POWER
+        if (g.net.house[i] >= 0) o << "house " << i << " " << g.net.house[i] << "\n";
+    for (size_t i = 0; i < g.siteState.size(); ++i)   // v8: CHAIRMAN IRON
+        if (g.siteState[i] > 0) o << "site " << i << " " << g.siteState[i] << "\n";
+    for (auto& [id, name] : g.vaultHeld) o << "vheld " << id << " " << esc(name) << "\n";
+    for (auto& [id, r] : g.fortress) {   // v6: FORTRESS floor records - guesses only, never marks
+        o << "fortress " << id << " " << r.rekeys << " " << (r.survey ? 1 : 0) << "\n";
+        for (auto& row : r.rows) o << "frow " << id << " " << row.stage << " " << row.guess << "\n";
+        for (auto& pk : r.peeks) o << "fpeek " << id << " " << pk.first << " " << pk.second << "\n";
+    }
     for (auto& j : g.journal) o << "journal " << esc(j) << "\n";
     for (auto& l : g.stats.log) o << "log " << esc(l) << "\n";
     o << "end\n";
 
     std::string path = savePath();
-    std::string tmp = path + ".tmp";
+    std::string tmp = saveTempPath();
     {
         std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
         if (!f) { if (err) *err = "cannot write " + tmp; return false; }
         f << o.str();
         if (!f) { if (err) *err = "write failed"; return false; }
     }
+    // rename replaces the old save in one step (POSIX rename; MoveFileExW with REPLACE_EXISTING
+    // under MSVC). It can fail for a moment while something else holds the file - a virus
+    // scanner, a backup tool - so retry briefly. Never delete the old save to make room: if the
+    // move still fails, the old save stays loadable and the new one waits in the temp file,
+    // which loadGame falls back to.
     std::error_code ec;
-    fs::rename(tmp, path, ec);
-    if (ec) {   // some platforms refuse to rename over an existing file
-        fs::remove(path, ec);
+    for (int attempt = 0; attempt < 5; ++attempt) {
+        if (attempt) std::this_thread::sleep_for(std::chrono::milliseconds(40 * attempt));
         fs::rename(tmp, path, ec);
-        if (ec) { if (err) *err = ec.message(); return false; }
+        if (!ec) return true;
     }
-    return true;
+    if (err) *err = "could not replace the save (" + ec.message() + "); the previous save is untouched";
+    return false;
 }
 
+namespace {
+bool loadFrom(const std::string& file, GameState& g, std::string* err);
+}
+
+// A temp file left behind is either a finished write whose move into place failed (the newest
+// save there is) or a write cut short (no "end" line, so it fails to load). Try the newer file
+// first; whichever loads, the other is the fallback.
 bool loadGame(GameState& g, std::string* err) {
-    std::ifstream f(savePath(), std::ios::binary);
+    std::error_code ec;
+    const std::string mainF = savePath(), tmpF = saveTempPath();
+    bool tmpFirst = false;
+    if (fs::exists(tmpF, ec)) {
+        if (!fs::exists(mainF, ec)) tmpFirst = true;
+        else {
+            std::error_code e1, e2;
+            auto tm = fs::last_write_time(tmpF, e1), mm = fs::last_write_time(mainF, e2);
+            tmpFirst = !e1 && !e2 && tm >= mm;
+        }
+    }
+    const std::string order[2] = {tmpFirst ? tmpF : mainF, tmpFirst ? mainF : tmpF};
+    std::string firstErr;
+    for (int i = 0; i < 2; ++i) {
+        std::string e;
+        if (loadFrom(order[i], g, &e)) {
+            if (order[i] == tmpF) fs::rename(tmpF, mainF, ec);   // promote it; harmless if this fails too
+            return true;
+        }
+        if (order[i] == mainF || firstErr.empty()) firstErr = e;
+    }
+    if (err) *err = firstErr;
+    return false;
+}
+
+namespace {
+bool loadFrom(const std::string& file, GameState& g, std::string* err) {
+    std::ifstream f(file, std::ios::binary);
     if (!f) { if (err) *err = "no save file"; return false; }
     GameState n;
     std::string line;
     bool header = false, end = false;
+    int version = 0;
     while (std::getline(f, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         std::istringstream is(line);
         std::string k;
         is >> k;
-        if (k == "GHOSTNET") { int v = 0; is >> v; header = v >= 1 && v <= kVersion; }
+        if (k == "GHOSTNET") { int v = 0; is >> v; header = v >= 1 && v <= kVersion; version = v; }
         else if (k == "seed") is >> n.worldSeed;
         else if (k == "credits") { long long v = 0; is >> v; n.credits = clampi(v, 0, 100000000); }
         else if (k == "map") { long long a = 0, b = 3; is >> a >> b; n.mapIndex = clampi(a, 0, 1000000); n.mapRunsLeft = clampi(b, 1, bal::RUNS_PER_MAP); }
@@ -162,10 +242,13 @@ bool loadGame(GameState& g, std::string* err) {
             m.bay = static_cast<int>(std::max<long long>(-1, std::min<long long>(1000000000, bay)));
             m.role = static_cast<BayRole>(clampi(role, 0, kRoleCount - 1));
             m.bayOn = bayOn != 0;
+            int grade = 0;
+            if (!(is >> grade)) grade = 0;   // v7 and older: no chairman iron
+            m.grade = grade == 1 ? Grade::Accord : grade == 2 ? Grade::Signature : Grade::None;
             m.id = clampi(id, 0, 1000000000);
             m.name = unesc(name).substr(0, 24);
             m.job = static_cast<Job>(clampi(job, 0, kJobCount - 1));
-            m.tier = clampi(tier, 1, 4);
+            m.tier = m.chairIron() ? kMaxTier : clampi(tier, 1, 4);   // tier 5 iron is chairman or signature iron, nothing else
             m.captured = cap != 0;
             m.home = home != 0;
             m.active = act != 0;
@@ -173,6 +256,8 @@ bool loadGame(GameState& g, std::string* err) {
             m.noise = clampi(noise, 1, bal::MAX_NOISE);
             m.price = clampi(price, 0, 100000);
             m.origin = unesc(origin).substr(0, 120);
+            if (m.signature()) m.job = m.job == Job::Vault || m.job == Job::Proxy ? m.job : Job::Gateway;   // a signature job is one of three
+            if (m.chairIron()) { m.noise = 1; m.trait = Trait::None; m.captured = true; m.home = false; }
             if (m.dark()) m.active = false;
             if (m.home) m.active = true;
             n.net.machines.push_back(m);
@@ -191,7 +276,7 @@ bool loadGame(GameState& g, std::string* err) {
             if (!(is >> name >> job >> tier >> run >> where >> origin)) continue;
             w.name = unesc(name).substr(0, 24);
             w.job = static_cast<Job>(clampi(job, 0, kJobCount - 1));
-            w.tier = clampi(tier, 1, 4);
+            w.tier = clampi(tier, 1, kMaxTier);
             w.run = clampi(run, 0, 1000000);
             w.where = unesc(where).substr(0, 60);
             w.origin = unesc(origin).substr(0, 120);
@@ -210,6 +295,45 @@ bool loadGame(GameState& g, std::string* err) {
             n.towerFloor[at] = clampi(fl, 0, kFloors);
             n.towerKey[at] = clampi(key, 0, 1000000);
         }
+        else if (k == "house") {   // v7
+            long long tw = -1, gw = -1;
+            if (!(is >> tw >> gw) || tw < 0 || tw >= kTowerCount || gw < 0 || gw > 1000000000) continue;
+            if (n.net.house.size() <= static_cast<size_t>(tw)) n.net.house.resize(static_cast<size_t>(tw) + 1, -1);
+            n.net.house[static_cast<size_t>(tw)] = static_cast<int>(gw);
+        }
+        else if (k == "site") {   // v8
+            long long tw = -1, st = 0;
+            if (!(is >> tw >> st) || tw < 0 || tw >= kTowerCount || st < 0 || st > 3) continue;
+            if (n.siteState.size() < static_cast<size_t>(kTowerCount)) n.siteState.resize(kTowerCount, 0);
+            n.siteState[static_cast<size_t>(tw)] = static_cast<int>(st);
+        } else if (k == "vheld") {   // v8
+            long long id = -1;
+            std::string name;
+            if (!(is >> id >> name) || towerOfId(static_cast<int>(id)) < 0) continue;
+            n.vaultHeld[static_cast<int>(id)] = unesc(name).substr(0, 40);
+        }
+        else if (k == "fortress") {
+            long long id = -1, rekeys = 0;
+            int survey = 0;
+            if (!(is >> id >> rekeys >> survey) || id < 0 || id > 100000 || !fortressFloorId(static_cast<int>(id))) continue;
+            FortressRecord& r = n.fortress[static_cast<int>(id)];
+            r.rekeys = clampi(rekeys, 0, 1000000);
+            r.survey = survey != 0;
+        } else if (k == "frow") {
+            long long id = -1, stage = -1;
+            std::string guess;
+            if (!(is >> id >> stage >> guess) || id < 0 || id > 100000 || !fortressFloorId(static_cast<int>(id))) continue;
+            if ((stage != 0 && stage != 1) || !digits4(guess, stage == 0)) continue;
+            FortressRecord& r = n.fortress[static_cast<int>(id)];
+            if (static_cast<int>(r.rows.size()) < bal::FORTRESS_ROWS_MAX) r.rows.push_back({static_cast<int>(stage), guess});
+        } else if (k == "fpeek") {
+            long long id = -1, stage = -1, box = -1;
+            if (!(is >> id >> stage >> box) || id < 0 || id > 100000 || !fortressFloorId(static_cast<int>(id))) continue;
+            if ((stage != 0 && stage != 1) || box < 0 || box > 3) continue;
+            FortressRecord& r = n.fortress[static_cast<int>(id)];
+            std::pair<int, int> pk{static_cast<int>(stage), static_cast<int>(box)};
+            if (std::find(r.peeks.begin(), r.peeks.end(), pk) == r.peeks.end()) r.peeks.push_back(pk);
+        }
         else if (k == "journal") { std::string t; is >> t; n.journal.push_back(unesc(t)); }
         else if (k == "log") { std::string t; is >> t; n.stats.log.push_back(unesc(t)); }
         else if (k == "end") { end = true; break; }
@@ -223,7 +347,7 @@ bool loadGame(GameState& g, std::string* err) {
         if (m.bay < 0) continue;
         const Machine* gw = n.net.find(m.bay);
         bool ok = gw && gw->job == Job::Gateway && gw->bay < 0 && !m.home && m.job != Job::Gateway && m.active &&
-                  filled[m.bay] < bal::BAY_SLOTS;
+                  filled[m.bay] < n.net.baySlots(*gw);
         if (ok) ++filled[m.bay];
         else { m.bay = -1; m.active = false; }
     }
@@ -238,7 +362,36 @@ bool loadGame(GameState& g, std::string* err) {
     if (n.stats.captures > 0 && n.act < 2) n.act = 2;      // 0.1.x saves: derive the act from history
     if (n.stats.sacrifices > 0 && n.act < 3) n.act = 3;
     if (n.netUnlocked && !n.net.home()) n.netUnlocked = false;
-    if (!n.deepDone) { n.towerFloor.clear(); n.towerKey.clear(); if (n.act > 3) n.act = 3; }   // the Ledger opens after the deep job
+    if (!n.deepDone) { n.towerFloor.clear(); n.towerKey.clear(); n.fortress.clear(); n.siteState.clear(); n.vaultHeld.clear(); if (n.act > 3) n.act = 3; }   // the Ledger opens after the deep job
+    for (auto it = n.vaultHeld.begin(); it != n.vaultHeld.end();) {   // a held objective belongs to a floor not yet taken
+        int tower = towerOfId(it->first);
+        bool ok = tower >= 0 && it->first - floorId(tower, 0) >= n.floorsCleared(tower);
+        it = ok ? std::next(it) : n.vaultHeld.erase(it);
+    }
+    if (n.act >= 4) {   // v7 and older: the Ledger grew a tower (0.9) - it starts unclimbed
+        if (n.towerFloor.size() < static_cast<size_t>(kTowerCount)) n.towerFloor.resize(kTowerCount, 0);
+        if (n.towerKey.size() < static_cast<size_t>(kTowerCount)) n.towerKey.resize(kTowerCount, 0);
+        if (version > 0 && version < 8)
+            n.journal.push_back("THE LEDGER: a third tower - Halden Grid (LOADSHED) - is on your board. Every Boardroom now keeps a maintenance log.");
+        if (version > 0 && version < 9 && innerOpen(n))
+            n.journal.push_back("THE INNER CHAIRS: Aurex (LEDGERLOCK), Sable Wren (COUNTERTRACE) and the HELIOS PROVING GROUND are on your board.");
+        for (int k = 0; k < kOuterTowers; ++k)   // only a cage has an inner door
+            if (n.siteOf(k) == 3) n.siteState[static_cast<size_t>(k)] = 1;
+        for (int k = 0; k < kTowerCount; ++k)   // a tower you own has handed over its maintenance log
+            if (n.floorsCleared(k) >= kFloors && n.siteOf(k) == 0) {
+                if (n.siteState.size() < static_cast<size_t>(kTowerCount)) n.siteState.resize(kTowerCount, 0);
+                n.siteState[static_cast<size_t>(k)] = 1;
+                n.journal.push_back(std::string("CHAIRMAN IRON: ") + towerCorp(k) + "'s maintenance log names " +
+                                    (innerTower(k) ? "HELIOS CAGE " : "HELIOS SERVICE SITE ") + siteName(k) + ". It's on your board.");
+            }
+    }
+    for (auto it = n.fortress.begin(); it != n.fortress.end();) {   // a taken floor keeps no record; an empty record is no record
+        int tower = towerOfId(it->first);
+        bool taken = it->first - floorId(tower, 0) < n.floorsCleared(tower);
+        it = taken || it->second.blank() ? n.fortress.erase(it) : std::next(it);
+    }
+    tidyHousePower(n);   // a tower you no longer own (or a gateway that's gone) powers nothing
     g = n;
     return true;
 }
+}  // namespace

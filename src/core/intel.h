@@ -44,9 +44,24 @@ const char* voteName(Vote v);
 PanelView panelBriefing(const GameState& g, const Target& t);
 PanelView panelReview(const GameState& g);
 
+// STANDBY SUGGESTED (0.8): LEDGER's picks for tonight's briefing. The briefing starts with all of them OFF;
+// the player opts in. Each pick says what it saves and, in amber, what tonight loses if things go wrong.
+struct StandbyPick {
+    int id = -1;
+    int saving = 0;               // cr off tonight's bill (a gateway counts its whole subnet)
+    std::string why;              // "past the relay cap - adds nothing"
+    std::vector<std::string> risks;   // amber lines: vault, decoy cover, subnet, scans...
+};
+std::vector<StandbyPick> standbyPicks(const GameState& g, const Target& t);
+// What standing this machine down tonight costs, in plain words (empty = nothing it does tonight).
+std::vector<std::string> standbyRisks(const GameState& g, const Target& t, const Machine& m);
+// Everything tonight loses to what is on standby right now, against the fully awake rack (the amber lines).
+std::vector<std::string> standbyLosses(const GameState& g);
+
 // Act IV heist prep: intel on a tower floor, bought with credits between runs. Never a second currency,
 // never a timer - you pay once and you know it, until a trace re-keys the doors.
-enum class Prep { Plan = 0, Phrase = 1 };
+// 0.7: TUMBLER SURVEY (FORTRESS only) names a floor's keypad digits, unordered, until that floor re-keys.
+enum class Prep { Plan = 0, Phrase = 1, Survey = 2 };
 const char* prepName(Prep p);                 // "FLOOR PLAN"
 const char* prepText(Prep p);
 int prepCost(const Target& t, Prep p);

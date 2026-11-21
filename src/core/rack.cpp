@@ -6,6 +6,7 @@
 
 #include "balance.h"
 #include "text.h"
+#include "world.h"
 
 std::string sanitizeName(const std::string& raw) {
     std::string o;
@@ -85,6 +86,7 @@ Result deactivate(GameState& g, Machine& m) {
 }
 
 Result rejob(GameState& g, Machine& m, Job j) {
+    if (m.chairIron()) return {false, m.name + " is chairman iron: it was built for one job and its firmware is signed. It can't be re-imaged."};
     if (g.net.decoyId == m.id) return {false, m.name + " is armed as the decoy. Disarm it before you change its job."};
     if (m.job == j) return {false, "It already does that."};
     if (m.job == Job::Gateway && !g.net.bayMembers(m.id).empty()) return {false, "Unplug " + m.name + "'s subnet before you change its job."};
@@ -136,6 +138,7 @@ Result scrap(GameState& g, int id) {
     Machine* m = g.net.find(id);
     if (!m) return {false, "No such machine."};
     if (m->home) return {false, m->name + " can never be scrapped."};
+    if (m->chairIron()) return {false, m->name + " is chairman iron. Nobody in the city would touch its parts - store it instead."};
     if (m->job == Job::Gateway && !g.net.bayMembers(id).empty()) return {false, "Unplug " + m->name + "'s subnet first."};
     int value = scrapValue(*m);
     std::string name = m->name;
@@ -152,6 +155,7 @@ bool decoyNeedsConfirm(const Machine& m) { return !m.captured || m.job == Job::G
 Result armDecoy(GameState& g, Machine& m, bool confirmed) {
     if (m.home) return {false, "Never " + m.name + ". There has to be one thing you cannot lose."};
     if (g.net.decoyId == m.id) return {false, m.name + " is already the decoy."};
+    if (m.chairIron()) return {false, m.name + " is chairman iron. HELIOS would know exactly whose it was - it can never be the decoy."};
     if (m.job != Job::Proxy && m.job != Job::Gateway) return {false, "Only a PROXY - or a whole subnet, by its GATEWAY - can be a decoy."};
     if (!m.active) return {false, "It has to be in the rack, running."};
     if (m.dark()) return {false, "It's dark. A dead machine can't fool HELIOS."};
@@ -271,7 +275,7 @@ bool canPlug(const GameState& g, const Machine& m, const Machine& gw, std::strin
     if (m.job == Job::Gateway) return no("A gateway can't sit inside another subnet.");
     if (m.dark()) return no(m.name + " is dark. Repair it first.");
     if (m.bay == gw.id && m.active) return no(m.name + " is already in that subnet.");
-    if (static_cast<int>(g.net.bayMembers(gw.id).size()) >= bal::BAY_SLOTS) return no(gw.name + "'s subnet is full.");
+    if (static_cast<int>(g.net.bayMembers(gw.id).size()) >= g.net.baySlots(gw)) return no(gw.name + "'s subnet is full.");
     int draw = bal::POWER_DRAW[std::clamp(m.tier, 1, kMaxTier)];
     if (g.net.bayPower(gw.id) + draw > g.net.bayBudget(gw))
         return no(m.name + " draws " + std::to_string(draw) + " power; " + gw.name + " has " +
@@ -315,4 +319,95 @@ Result toggleBay(GameState& g, Machine& gw) {
     gw.bayOn = !gw.bayOn;
     if (g.net.decoyId >= 0 && !g.net.decoy()) g.net.decoyId = -1;
     return {true, gw.name + "'s subnet is " + (gw.bayOn ? "ON. It bills and wears with the rest." : "OFF. No bill, no wear, no effect.")};
+}
+
+// ---------------------------------------------------------------------------
+// Running lean (0.8): STANDBY, SIGNAL SCRUB, HOUSE POWER
+// ---------------------------------------------------------------------------
+bool canStandby(const GameState& g, const Machine& m, std::string* why) {
+    auto no = [&](const std::string& s) { if (why) *why = s; return false; };
+    if (m.home) return no("N0 is your home server: it never bills, so there's nothing to save.");
+    if (!m.working()) return no(m.name + " isn't running.");
+    if (g.net.decoyId == m.id) return no(m.name + " is the armed decoy. Disarm it first - a decoy on standby can't take a trace.");
+    if (g.net.decoy()) {   // would this standby quietly disarm the decoy (e.g. the last member of a decoy subnet)?
+        Network probe = g.net;
+        if (Machine* pm = probe.find(m.id)) pm->standby = true;
+        if (!probe.decoy()) return no("That would leave the armed decoy subnet empty. Disarm it first.");
+    }
+    return true;
+}
+
+Result setStandby(GameState& g, Machine& m, bool on) {
+    if (m.standby == on) return {false, m.name + (on ? " is already on standby." : " is already awake.")};
+    if (on) {
+        std::string why;
+        if (!canStandby(g, m, &why)) return {false, why};
+    }
+    m.standby = on;
+    return {true, on ? m.name + " goes on STANDBY for tonight: not billed, not worn, no effect. Back on at the reckoning."
+                     : m.name + " is awake again for tonight."};
+}
+
+void clearStandby(GameState& g) {
+    for (auto& m : g.net.machines) m.standby = false;
+}
+
+int scrubFloor(const Machine& m) { return m.captured ? bal::SCRUB_FLOOR_CAPTURED : 1; }
+
+int scrubSaving(const Machine& m) {
+    if (m.home || m.noise <= scrubFloor(m)) return 0;
+    Machine q = m;
+    q.noise -= 1;
+    return upkeepOf(m) - upkeepOf(q);
+}
+
+int scrubCost(const Machine& m) { return bal::SCRUB_PAYBACK_RUNS * scrubSaving(m); }
+
+bool canScrub(const GameState& g, const Machine& m, std::string* why) {
+    auto no = [&](const std::string& s) { if (why) *why = s; return false; };
+    if (m.home) return no("N0 is already silent.");
+    if (m.noise <= scrubFloor(m))
+        return no(m.captured ? "Captured hardware never gets quieter than noise " + std::to_string(bal::SCRUB_FLOOR_CAPTURED) + "."
+                             : "Bought hardware is already as quiet as it gets.");
+    if (g.credits < scrubCost(m)) return no("A scrub costs " + std::to_string(scrubCost(m)) + "cr.");
+    return true;
+}
+
+Result scrubSignal(GameState& g, Machine& m) {
+    std::string why;
+    if (!canScrub(g, m, &why)) return {false, why};
+    int cost = scrubCost(m), save = scrubSaving(m);
+    g.credits -= cost;
+    m.noise -= 1;
+    return {true, m.name + " is scrubbed to noise " + std::to_string(m.noise) + ": -" + std::to_string(cost) + "cr once, " + std::to_string(save) +
+                      "cr less on every bill. Upkeep now " + std::to_string(upkeepOf(m)) + "cr/run."};
+}
+
+void tidyHousePower(GameState& g) {
+    auto& h = g.net.house;
+    if (h.size() > static_cast<size_t>(kTowerCount)) h.resize(kTowerCount);
+    for (size_t k = 0; k < h.size(); ++k) {
+        const Machine* gw = h[k] >= 0 ? g.net.find(h[k]) : nullptr;
+        bool dup = false;
+        for (size_t j = 0; j < k; ++j) dup = dup || (h[j] == h[k] && h[k] >= 0);
+        if (h[k] >= 0 && (!towerOwned(g, static_cast<int>(k)) || !gw || gw->job != Job::Gateway || gw->home || dup)) h[k] = -1;
+    }
+    while (!h.empty() && h.back() < 0) h.pop_back();
+}
+
+Result setHousePower(GameState& g, int tower, int gatewayId) {
+    if (!towerOwned(g, tower)) return {false, "Own the tower first: HOUSE POWER comes with its Boardroom."};
+    auto& h = g.net.house;
+    if (h.size() < static_cast<size_t>(kTowerCount)) h.resize(kTowerCount, -1);
+    if (gatewayId < 0) {
+        h[static_cast<size_t>(tower)] = -1;
+        tidyHousePower(g);
+        return {true, std::string("The tower's house power is unassigned.")};
+    }
+    const Machine* gw = g.net.find(gatewayId);
+    if (!gw || gw->job != Job::Gateway || gw->home) return {false, "HOUSE POWER feeds a subnet: pick a gateway."};
+    for (auto& x : h) if (x == gatewayId) x = -1;   // a subnet takes one tower's power at most
+    h[static_cast<size_t>(tower)] = gatewayId;
+    tidyHousePower(g);
+    return {true, gw->name + "'s subnet now runs on HOUSE POWER: its bill is halved."};
 }

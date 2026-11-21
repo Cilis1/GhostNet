@@ -38,6 +38,13 @@ Color pulse(Color c, float speed, float lo) {
 float uiScale = 1.0f;
 ScriptInput* script = nullptr;
 std::vector<Widget> widgets;
+bool recordText = false;
+std::vector<std::string> drawnText;
+static std::vector<std::string> lastText;
+bool onScreen(const std::string& needle) {
+    for (auto& s : lastText) if (s.find(needle) != std::string::npos) return true;
+    return false;
+}
 
 void fit(int screenW, int screenH, float& scale, float& ox, float& oy) {
     scale = std::min(screenW / static_cast<float>(W), screenH / static_cast<float>(H));
@@ -86,6 +93,8 @@ void beginFrame(int modalDepth) {
     topLayer = modalDepth;
     layer = 0;
     widgets.clear();
+    lastText.swap(drawnText);
+    drawnText.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -142,6 +151,7 @@ float textWidth(F f, const std::string& s, float size) {
 
 void text(F f, const std::string& s, float x, float y, float size, Color c, Align a) {
     if (s.empty()) return;
+    if (recordText) drawnText.push_back(s);
     float w = (a == Left) ? 0 : textWidth(f, s, size);
     if (a == Center) x -= w / 2;
     if (a == Right) x -= w;
@@ -149,6 +159,7 @@ void text(F f, const std::string& s, float x, float y, float size, Color c, Alig
 }
 
 void glowText(F f, const std::string& s, float x, float y, float size, Color c, Align a, float strength) {
+    if (recordText && !s.empty()) drawnText.push_back(s);
     float w = (a == Left) ? 0 : textWidth(f, s, size);
     if (a == Center) x -= w / 2;
     if (a == Right) x -= w;

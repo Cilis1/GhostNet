@@ -222,6 +222,22 @@ int App::screenshotTour(const std::string& dir, const std::function<void()>& ren
     selMachine = proto;
     shot("28-prototype-in-subnet");
     selMachine = -1;
+    // 0.8 RUNNING LEAN: TONIGHT'S RACK at a briefing, LEDGER's picks taken (they start OFF), the amber lines showing.
+    if (const Target* lt = findTarget([&](const Target& t) { return !t.deep && t.kind != Kind::Story && !g.burned.count(t.id) && t.security <= 2 && !t.watchdog; })) {
+        brief = *lt;
+        for (auto& m : g.net.machines)   // the scout back in the rack: LEDGER knows a scout does nothing during a run
+            if (m.job == Job::Scout && m.bay < 0 && !m.home && !m.dark()) { m.active = true; m.noise = 3; m.tier = 3; m.captured = true; }
+        go(Scr::Brief);
+        shot("38-brief-votes-lean");
+        briefStandby = true;
+        for (auto& p : standbyPicks(g, brief)) {
+            if (Machine* m = g.net.find(p.id)) setStandby(g, *m, true);
+        }
+        shot("39-brief-standby");
+        tab = Tab::Rack;
+        go(Scr::Hub);   // leaving the briefing wakes everything
+        if (g.net.standbyCount() != 0) { std::fprintf(stderr, "standby outlived the briefing\n"); ++failures; }
+    }
     {
         int keep = g.mapIndex, keepAct = g.act;
         g.act = 2;
@@ -330,20 +346,31 @@ int App::screenshotTour(const std::string& dir, const std::function<void()>& ren
     else {
         Target fortT = *fort, bioT = *bio;
         buyPrep(g, fortT, Prep::Plan);
-        brief = fortT;
-        go(Scr::Brief);
-        shot("33-brief-fortress");
-        connect(fortT);
+        buyPrep(g, fortT, Prep::Survey);
+        connect(fortT);   // the first connection: two keypad misses, then the code; a rotor miss with arrows
         std::string k = run->lock.secret;
-        run->guess(k.substr(1) + k.substr(0, 1), err);   // a logged miss
-        run->guess(k, err);                             // the keypad opens; the rotor wakes
+        run->guess(k.substr(1) + k.substr(0, 1), err);
+        run->guess(k.substr(2) + k.substr(0, 2), err);
+        run->guess(k, err);
         std::string near = run->lock.secret;
         near[0] = near[0] == '9' ? '8' : static_cast<char>(near[0] + 1);
+        near[2] = near[2] < '2' ? '9' : static_cast<char>(near[2] - 2);
         run->guess(near, err);
         input = "4";
         handleEvents();
         floats.clear();
         shot("34-lock-composite", 1.0f);
+        run->disconnect();
+        run->settle();
+        run.reset();
+        brief = fortT;   // the briefing now reads the floor's record: alarm log, KEYPAD KNOWN, the estimate
+        go(Scr::Brief);
+        shot("33-brief-fortress");
+        connect(fortT);   // the second connection: the same code, every row LOGGED for free
+        input.clear();
+        handleEvents();
+        floats.clear();
+        shot("36-lock-logged", 1.0f);
         run->disconnect();
         run.reset();
         buyPrep(g, bioT, Prep::Phrase);
@@ -361,6 +388,204 @@ int App::screenshotTour(const std::string& dir, const std::function<void()>& ren
         run->disconnect();
         run.reset();
     }
+    {   // HOUSE POWER: own Tidewater's Boardroom, and its building feeds SPINE-GW's subnet at half the bill
+        if (g.towerFloor.size() < static_cast<size_t>(kTowerCount)) g.towerFloor.resize(kTowerCount, 0);
+        int keepFloor = g.towerFloor[1];
+        g.towerFloor[1] = kFloors;
+        if (!setHousePower(g, 1, gwA).ok) { std::fprintf(stderr, "house power refused\n"); ++failures; }
+        tab = Tab::Rack;
+        go(Scr::Hub);
+        dismiss();
+        selMachine = gwA;
+        shot("40-gateway-house-power");
+        selMachine = -1;
+        g.towerFloor[1] = keepFloor;
+        tidyHousePower(g);
+    }
+    // 0.9 CHAIRMAN IRON: Halden Grid's LOADSHED, a pinned service site, the ACCORD picker, the gold plate.
+    if (const Target* h = findTarget([](const Target& t) { return t.kind == Kind::Tower && t.doctrine == Doctrine::Loadshed; })) {
+        Target ht = *h;
+        brief = ht;
+        go(Scr::Brief);
+        shot("41-brief-loadshed");
+        buyPrep(g, ht, Prep::Phrase);
+        connect(ht);
+        run->phrase(ht.passphrase);
+        for (size_t i = 0; i < run->t.files.size(); ++i)
+            if (run->t.files[i].kind == FileKind::Objective && run->startDownload(static_cast<int>(i), err)) break;
+        for (int s = 0; s < 40 && !run->over() && !run->shedding(); ++s) {
+            if (!run->busy())
+                for (size_t i = 0; i < run->t.files.size(); ++i)
+                    if (!run->t.files[i].taken && run->startDownload(static_cast<int>(i), err)) break;
+            run->step();
+            run->trace = std::min(run->trace, 45.0);   // staging: keep the line open until the grid sheds
+        }
+        if (!run->shedding()) { std::fprintf(stderr, "no shed on Halden Grid\n"); ++failures; }
+        traceShown = static_cast<float>(run->trace);
+        handleEvents();
+        floats.clear();
+        shot("42-run-loadshed", 1.0f);
+        run->disconnect();
+        run.reset();
+    } else {
+        std::fprintf(stderr, "no Halden Grid on the Ledger\n");
+        ++failures;
+    }
+    {
+        if (g.towerFloor.size() < static_cast<size_t>(kTowerCount)) g.towerFloor.resize(kTowerCount, 0);
+        if (g.siteState.size() < static_cast<size_t>(kTowerCount)) g.siteState.resize(kTowerCount, 0);
+        std::vector<int> keepFloors = g.towerFloor;
+        g.towerFloor[1] = kFloors;
+        g.siteState[1] = 1;   // Tidewater owned, its Boardroom maintenance log read: OSSUARY is pinned
+        tab = Tab::Board;
+        go(Scr::Hub);
+        dismiss();
+        refreshBoard();
+        boardScroll = 1e6f;   // the sites sit at the end of the board
+        shot("43-board-site");
+        boardScroll = 0;
+        if (const Target* st = findTarget([](const Target& t) { return t.kind == Kind::Site; })) {
+            Target site = *st;
+            while (g.net.externalCount() >= bal::MAX_EXTERNAL) {   // make room: the rack is at its limit of owned machines
+                int victim = -1;
+                for (auto& m : g.net.machines)
+                    if (!m.home && m.job != Job::Gateway && m.bay < 0 && g.net.decoyId != m.id) victim = m.id;
+                if (victim < 0 || !scrap(g, victim).ok) break;
+            }
+            brief = site;
+            go(Scr::Brief);
+            shot("44-brief-site");
+            connect(site);
+            run->phrase(site.passphrase);
+            handleEvents();
+            floats.clear();
+            startCapture();
+            if (modals.empty() || modals.back().picks.empty()) { std::fprintf(stderr, "no ACCORD picker\n"); ++failures; }
+            else modals.back().pick = static_cast<int>(Job::Jammer);
+            shot("45-accord-picker", 1.0f);
+            modals.clear();
+            if (!run->startHold(Job::Jammer, err)) { std::fprintf(stderr, "ACCORD hold refused: %s\n", err.c_str()); ++failures; }
+            for (int s = 0; s < 200 && run->busy() && !run->over(); ++s) {
+                run->step();
+                run->trace = std::min(run->trace, 60.0);
+            }
+            run->events.clear();
+            run->settle();
+            run.reset();
+            int iron = -1;
+            for (auto& m : g.net.machines) if (m.accord()) iron = m.id;
+            if (iron < 0) { std::fprintf(stderr, "no ACCORD machine after the hold\n"); ++failures; }
+            if (Machine* m = g.net.find(iron); m && !m->active) activate(g, *m);
+            tab = Tab::Rack;
+            go(Scr::Hub);
+            dismiss();
+            selMachine = iron;
+            shot("46-rack-accord");
+            selMachine = -1;
+        } else {
+            std::fprintf(stderr, "no service site on the board\n");
+            ++failures;
+        }
+        // 0.10 THE INNER CHAIRS: two outer towers open them; LEDGERLOCK, COUNTERTRACE, a cage's inner door and SIGNATURE iron.
+        g.towerFloor[0] = g.towerFloor[1] = kFloors;
+        g.siteState[0] = 1;
+        tab = Tab::Board;
+        go(Scr::Hub);
+        dismiss();
+        refreshBoard();
+        shot("47-board-inner-chairs");
+        if (const Target* a = findTarget([](const Target& t) { return t.kind == Kind::Tower && t.doctrine == Doctrine::Ledgerlock; })) {
+            brief = *a;
+            go(Scr::Brief);
+            shot("48-brief-ledgerlock");
+        } else {
+            std::fprintf(stderr, "no Aurex on the board\n");
+            ++failures;
+        }
+        if (const Target* sw = findTarget([](const Target& t) { return t.kind == Kind::Tower && t.doctrine == Doctrine::Countertrace; })) {
+            Target st = *sw;
+            buyPrep(g, st, Prep::Phrase);
+            connect(st);
+            run->phrase(st.passphrase);
+            int landed = 0;
+            for (int s = 0; s < 80 && !run->over() && landed < 2; ++s) {
+                if (!run->busy())
+                    for (size_t i = 0; i < run->t.files.size(); ++i)
+                        if (run->t.files[i].kind == FileKind::Objective && !run->t.files[i].taken && run->startDownload(static_cast<int>(i), err)) break;
+                run->step();
+                run->trace = std::min(run->trace, 55.0);   // staging: keep the line open until Sable Wren reads it back
+                landed = run->counters;
+                if (run->nextCounter() == 2 && landed >= 1) break;
+            }
+            if (run->counters < 1) { std::fprintf(stderr, "no countertrace on Sable Wren\n"); ++failures; }
+            traceShown = static_cast<float>(run->trace);
+            handleEvents();
+            floats.clear();
+            shot("49-run-countertrace", 1.0f);
+            run->disconnect();
+            run.reset();
+        } else {
+            std::fprintf(stderr, "no Sable Wren on the board\n");
+            ++failures;
+        }
+        g.towerFloor[3] = kFloors;
+        g.siteState[3] = 3;   // the cage run done: OUBLIETTE's inner door is on the board, with the service key's phrase
+        g.knownPhrases.insert(cageDoorId(3));
+        while (g.net.externalCount() >= bal::MAX_EXTERNAL) {
+            int victim = -1;
+            for (auto& m : g.net.machines)
+                if (!m.home && !m.chairIron() && m.job != Job::Gateway && m.bay < 0 && g.net.decoyId != m.id) victim = m.id;
+            if (victim < 0 || !scrap(g, victim).ok) break;
+        }
+        refreshBoard();
+        if (const Target* cg = findTarget([](const Target& t) { return isCageCapture(t); })) {
+            Target door = *cg;
+            brief = door;
+            go(Scr::Brief);
+            shot("50-brief-cage-door");
+            connect(door);
+            run->phrase(door.passphrase);
+            handleEvents();
+            floats.clear();
+            startCapture();
+            if (modals.empty() || modals.back().title.find("SIGNATURE") == std::string::npos) { std::fprintf(stderr, "no SIGNATURE hold\n"); ++failures; }
+            shot("51-signature-hold", 1.0f);
+            modals.clear();
+            if (!run->startHold(Job::Vault, err)) { std::fprintf(stderr, "SIGNATURE hold refused: %s\n", err.c_str()); ++failures; }
+            for (int s = 0; s < 200 && run->busy() && !run->over(); ++s) {
+                run->step();
+                run->trace = std::min(run->trace, 60.0);
+            }
+            run->events.clear();
+            run->settle();
+            run.reset();
+            int sig = -1;
+            for (auto& m : g.net.machines) if (m.signature()) sig = m.id;
+            if (sig < 0) { std::fprintf(stderr, "no SIGNATURE machine after the hold\n"); ++failures; }
+            if (Machine* m = g.net.find(sig); m && !m->active) activate(g, *m);
+            tab = Tab::Rack;
+            go(Scr::Hub);
+            dismiss();
+            selMachine = sig;
+            shot("52-rack-signature");
+            selMachine = -1;
+        } else {
+            std::fprintf(stderr, "no cage door on the board\n");
+            ++failures;
+        }
+        g.towerFloor = keepFloors;
+        tidyHousePower(g);
+    }
+    drillConnect(true);   // FORTRESS DRILL on the real budget, one reconnect in
+    {
+        std::string dc = practice.outer;
+        practice.guess(dc.substr(1) + dc.substr(0, 1), err);
+        drillRows.push_back({0, practice.history.back().guess});
+        drillConnect(false);
+    }
+    go(Scr::Practice);
+    shot("37-practice-drill");
+    drillOn = false;
     practice = makeLock(LockType::Cipher, practiceRng, 0);
     practiceOn = true;
     practice.guess("crane", err);

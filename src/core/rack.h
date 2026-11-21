@@ -29,12 +29,28 @@ Result expandRack(GameState& g);
 Result upgradeHome(GameState& g);
 Result renameMachine(GameState& g, Machine& m, const std::string& name);
 
-// Subnets: a working GATEWAY in the main rack opens a bay of BAY_SLOTS machines.
+// Subnets: a working GATEWAY in the main rack opens a bay of BAY_SLOTS machines (ACCORD_GATE_SLOTS for chairman iron).
 bool canPlug(const GameState& g, const Machine& m, const Machine& gw, std::string* why = nullptr);
 Result plugIn(GameState& g, Machine& m, Machine& gw);   // from storage or the main rack
 Result unplug(GameState& g, Machine& m);                // back to cold storage
 Result setRole(GameState& g, Machine& gw, BayRole r);
 Result toggleBay(GameState& g, Machine& gw);
+
+// ---- Running lean (0.8) -------------------------------------------------------
+// STANDBY: tonight only. A machine on standby is not billed, not worn and does nothing this connection.
+// The armed decoy (or anything that would disarm it) can't go on standby. Cleared at the reckoning.
+bool canStandby(const GameState& g, const Machine& m, std::string* why = nullptr);
+Result setStandby(GameState& g, Machine& m, bool on);
+void clearStandby(GameState& g);
+// SIGNAL SCRUB: -1 noise for good, paid once. Captured machines stop at SCRUB_FLOOR_CAPTURED, bought ones at 1.
+int scrubFloor(const Machine& m);
+int scrubSaving(const Machine& m);   // upkeep saved per billed run by the next step (0 at the floor)
+int scrubCost(const Machine& m);     // SCRUB_PAYBACK_RUNS x the saving
+bool canScrub(const GameState& g, const Machine& m, std::string* why = nullptr);
+Result scrubSignal(GameState& g, Machine& m);
+// HOUSE POWER: a tower you own powers one subnet of your choice (half its bill). gatewayId -1 clears it.
+Result setHousePower(GameState& g, int tower, int gatewayId);
+void tidyHousePower(GameState& g);   // drops assignments whose tower or gateway no longer qualifies
 
 // The deck: tools you buy for yourself.
 enum class Tool { Breaker = 0, Uplink = 1, Shroud = 2, Lens = 3 };

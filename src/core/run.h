@@ -22,7 +22,9 @@ enum class Ev {
     Connected, AccessGranted, PhraseOk, PhraseBad, Guess, Lockout, Extra, MachineDark,
     Read, PhraseLearned, SideFound, DownloadDone, DownloadAborted, Honeypot, Objective,
     ContractDone, Captured, Traced, Sacrifice, Program, Spoofed, Strike,
-    Stage, Sweep, MissLogged   // 0.6: a composite's outer stage opens; doctrine pings
+    Stage, Sweep, MissLogged,  // 0.6: a composite's outer stage opens; doctrine pings
+    Shed, SiteFound, AccordFreeze,  // 0.9: LOADSHED drops the subnets; a service site is pinned; ACCORD iron freezes the trace
+    Audit, Countertrace, SpikeWarn, Absolved, CageKey   // 0.10: the inner chairs and their signature iron
 };
 struct Event {
     Ev type;
@@ -37,6 +39,10 @@ struct CaptureQuote {
     int leftCr = 0, leftIntel = 0;
     bool trailWarning = false, rackFull = false, honeypot = false, viaPhrase = false;
     Trait trait = Trait::None;   // what it would carry for life
+    // CHAIRMAN IRON (0.9): a service site's ACCORD unit takes any job - chosen at the hold, for good.
+    bool accord = false;
+    bool signature = false;      // 0.10: a cage's SIGNATURE iron - its job is fixed (def)
+    std::string ironName;
 };
 
 struct Shortfall {
@@ -52,16 +58,47 @@ struct Reckoning {
     int credits = 0;
     bool billable = false;
     int bill = 0;
+    int standbySaved = 0;          // bill avoided by STANDBY tonight (shown, never refunded)
+    int houseSaved = 0;            // bill avoided by HOUSE POWER tonight
     bool deep = false, deepWon = false;
     Shortfall shortfall;
     std::vector<std::pair<std::string, std::string>> actCards;   // title, text
     std::string storyTitle, storyOutro, infoReward;
     int tower = -1, floorCleared = -1;   // Act IV: the floor this run took (if any)
     bool towerOwned = false, ledgerDone = false, rekeyed = false;
+    int sitePinned = -1;                 // 0.9: the tower whose HELIOS service site went on the board tonight
+    bool siteRekeyed = false;            // 0.9: traced at a service site - it re-keyed, nothing else lost
+    bool accordCaptured = false;         // 0.9: tonight's capture was chairman iron
+    bool signatureCaptured = false;      // 0.10: tonight's capture was SIGNATURE iron from a cage
+    bool cageKeyed = false;              // 0.10: the cage run took the schematic and the SERVICE KEY: the inner door is on your board
+    bool cageKeyBurned = false;          // 0.10: traced at a cage's inner door - the key burned, back to the cage run
+    bool absolved = false;               // 0.10: ABSOLUTION turned tonight's trace into a clean exit
+    bool innerOpened = false;            // 0.10: tonight's Boardroom was the second outer tower - the inner chairs list
+    bool alarmRekeyed = false;           // FORTRESS: the alarm log filled and this floor re-keyed
+    int alarms = -1;                     // FORTRESS: misses on the floor's alarm log after the run (-1: not a FORTRESS floor)
     bool unlockedNetwork = false;
     bool boardRefreshed = false;
     std::string sacrificed, captured;
 };
+
+// FORTRESS (0.7): what a floor's record says about its door right now, for the briefing and MOTH.
+struct FortressOutlook {
+    bool active = false;          // a Kessler-Maru floor with a persistent code
+    int alarms = 0;               // misses on the alarm log (of bal::FORTRESS_ALARM_LOG)
+    int logged = 0;               // logged attempts
+    bool survey = false;
+    std::string surveyDigits;     // ascending, when surveyed
+    bool keypadKnown = false;
+    long codes = 0;               // keypad codes that still fit
+    long rotorCodes = -1;         // rotor settings that still fit (-1 until the keypad is known)
+    int likely = 0;               // guesses this door usually still needs
+    int budget = 0;               // your guesses per connection (1 + BREAKER)
+    int emergency = 0;            // + compute boxes / SIEGE subnets that can answer
+};
+bool isFortressFloor(const Target& t);
+int fortressMissesOn(const GameState& g, const Target& t);   // the alarm log: logged rows that weren't a stage's code
+FortressOutlook fortressOutlook(const GameState& g, const Target& t);
+Lock fortressLock(const GameState& g, const Target& t);   // the floor's door as it stands, logged rows replayed
 
 class RunSession {
 public:
@@ -79,7 +116,10 @@ public:
     bool jobDone = false;
     bool anchoring = false;
     int emergLeft = 0;
-    std::vector<int> billIds;      // fixed when the run begins
+    std::vector<int> billIds;      // fixed when the run begins (standby machines are left out)
+    std::vector<int> houseBays;    // subnets on HOUSE POWER when the run began: they bill at half
+    int standbyCount = 0;          // machines sitting tonight out
+    int standbySaved = 0;          // what standby took off tonight's bill
     int startRelay = 0, startProxy = 0;
     int jamDelay = 0, jamCut = 0;  // from working jammers, fixed when the run begins
     int vaultPct = 0;              // best working vault, fixed when the run begins
@@ -131,7 +171,32 @@ public:
     bool busy() const { return act != Act::None; }
     double rateNow(double mult = 1.0) const;
     int nextSweep() const;           // BIOSENTINEL: seconds until the next sentinel sweep (-1 if none)
+    // LOADSHED (0.9): every LOADSHED_EVERY seconds the grid drops every subnet not on HOUSE POWER for LOADSHED_SECS.
+    bool shedding() const;           // the grid is shedding right now
+    int nextShed() const;            // seconds until the next shed (-1 if none; 0 while shedding)
+    int shedLeft() const;            // seconds of the current shed left (0 if not shedding)
+    int sheds = 0;
+    // CHAIRMAN IRON (0.9), fixed when the run begins.
+    bool accordFreeze = false;       // an ACCORD jammer will freeze the trace once, at ACCORD_FREEZE_AT
+    std::string accordFreezeName;
+    bool accordVault = false;        // an ACCORD vault keeps one tower objective through a trace
+    std::string heldObjective;       // the objective an ACCORD vault kept from an earlier trace (already taken)
     int sweeps = 0, misses = 0;      // doctrine pings tonight
+    // THE INNER CHAIRS (0.10), fixed when the run begins.
+    int escrowLeft = 0;              // LEDGERLOCK: audits your vaults still escrow tonight
+    int audits = 0, escrowed = 0;    // LEDGERLOCK: audits that landed / that a vault spared
+    int deadEnds = 0;                // COUNTERTRACE: countertraces your proxies still dead-end tonight
+    int counters = 0;                // COUNTERTRACE: countertraces that landed (each one 1% bigger)
+    bool eclipse = false;            // ECLIPSE online: sweeps halved and flagged 3s early
+    int absolutionId = -1;           // ABSOLUTION online (not at a site): a trace becomes a clean exit, once
+    bool absolved = false;
+    unsigned pantheonUsed = 0;       // PANTHEON: which of the three strikes it has fired (bit per role)
+    std::vector<int> pantheonStruck;
+    int nextCounter() const;         // COUNTERTRACE: seconds until the next countertrace (-1 if none)
+    // FORTRESS (0.7): the floor's code persists; attempts are logged to its record as they happen.
+    bool fortress = false;
+    bool alarmSealed = false;        // the alarm log overflowed tonight: the door is sealed and the floor re-keyed
+    int alarms() const;              // misses on this floor's alarm log right now
     int secondsLeft() const;
     Reckoning settle();             // call once, after over()
 
@@ -140,6 +205,15 @@ private:
     bool spike(double amount);
     int spikeSize(double base) const;   // after jammers, for the log
     void traced();
+    bool audit(const File& f);       // LEDGERLOCK: true if the audit traced you
+    bool roleUsable(BayRole role, std::string* why = nullptr) const;
+    void fireRole(BayRole role, const std::string& who);
+    void endShed();                  // the run is over: the grid's lights come back on at home
+    bool shedAt(int s) const;
+    double dlSpeed_ = 0, dlCarry_ = 0;   // LOADSHED: a download slows while the grid sheds its relays
+    FortressRecord* record();
+    void logRow(int stage, const std::string& guess);
+    void logPeek(int pos);
     void openDoor(bool phrase);
     void finishDownload();
     void finishCapture();

@@ -52,7 +52,13 @@ GHOSTNET (after your first contract)
   in one subnet act a tier higher while together. Rare HELIOS PROTOTYPE labs
   hold the only real tier 4: UNSTABLE, loud and costly.
   Running machines bill you after a run and wear. Can't pay? Nothing is taken:
-  everything except N0 goes dark. Arm a PROXY as the DECOY and if the trace
+  everything except N0 goes dark.
+  RUNNING LEAN (0.8): at the briefing, TONIGHT'S RACK puts machines on
+  STANDBY for that connection only (not billed, not worn, no effect; back on
+  at the reckoning). LEDGER's picks start OFF - STANDBY SUGGESTED takes them.
+  SIGNAL SCRUB at the rack: -1 noise for good, priced at 25 runs of savings
+  (captured machines stop at noise 2). HOUSE POWER: each tower you own halves
+  one subnet's bill (never the main rack, never credits). Arm a PROXY as the DECOY and if the trace
   fills, HELIOS traces it instead of you - it is destroyed, the fine is halved.
 
 THE DEEP JOB
@@ -60,15 +66,45 @@ THE DEEP JOB
   appears; if you fall short, the game tells you by how much.
 
 THE LEDGER (Act IV - after the owner ending)
-  Two corp towers, three floors each; the Boardroom makes the tower yours.
+  Three corp towers, three floors each; the Boardroom makes the tower yours.
   You start every climb. Nothing is timed and taken floors stay taken.
   Each tower's DOCTRINE is announced up front:
     KESSLER-MARU (FORTRESS): composite locks, no maintenance ports, one guess
       per door (+Breaker), each compute box answers once, misses ping (+4%).
+      Since 0.7 a floor KEEPS ITS CODE between connections: earlier attempts
+      return as LOGGED rows that cost nothing, a found keypad shows KEYPAD
+      KNOWN (1 guess, never a miss), the rotor shows arrows (up = wheel higher),
+      and CODES LEFT counts what still fits. 6 misses fill the ALARM LOG; the
+      7th seals the door and re-keys that floor. A trace re-keys them all.
     TIDEWATER BIOSYS (BIOSENTINEL): watchdogs everywhere and a sentinel sweep
       every 12s (+6%; jammers soften it, FREEZE lets one pass). Each floor's
       memo names the next floor's maintenance phrase.
-  HEIST PREP, paid once and kept: FLOOR PLAN 350cr, PHRASE 700-1400cr.
+    HALDEN GRID (LOADSHED, 0.9): the fastest trace. Every 15s the grid sheds
+      for 3s and every subnet not on HOUSE POWER goes dark. No spike; the
+      main rack and your deck keep working; the decoy stays armed.
+  CHAIRMAN IRON (0.9): an owned tower's Boardroom keeps a maintenance_log.txt.
+    Read it and a HELIOS SERVICE SITE goes on your board (CITADEL, OSSUARY,
+    FURNACE). Get in and hold a capture: its ACCORD machine is tier 5 in any
+    job you pick - for good. No re-job, no scrap, never the decoy; 60cr a run
+    flat; dark when unpaid like everything else. A trace there only re-keys
+    the door.
+  THE INNER CHAIRS (0.10): own two outer towers and three more list.
+    AUREX (LEDGERLOCK): every download is AUDITED (+9% an objective, +4%
+      anything else; no jammer helps). Each file a vault would keep escrows
+      one audit.
+    SABLE WREN (COUNTERTRACE): +6% every 10s, 2% more each time. FREEZE and
+      jammers don't stop it; each working proxy dead-ends one.
+    HELIOS PROVING GROUND: FORTRESS, then BIOSENTINEL, then LOADSHED.
+  SIGNATURE IRON (0.10): an inner Boardroom's log names a HELIOS CAGE. Cage
+    run: take cage_schematic.enc (and read service_key.txt for the phrase).
+    Capture run: a 40s hold at the inner door; a trace burns the key.
+    ABSOLUTION (vault: a trace becomes a clean exit once a run, -40
+    condition), ECLIPSE (proxy: halves sweeps and countertraces, warns 3s
+    early), PANTHEON (gateway: 4 slots, +2 tiers, all three strikes).
+    220cr flat, +4% trace at every handshake, never the decoy, no scrap.
+  HEIST PREP, paid once and kept: FLOOR PLAN 350cr, PHRASE 700-1400cr,
+  TUMBLER SURVEY 600-1200cr (Kessler: the keypad's digits, unordered).
+  PRACTICE RANGE > FORTRESS DRILL: a Kessler door on your real budget.
   Get traced in a tower and it RE-KEYS: your phrases for it go stale.
 
 THE PANEL
@@ -77,7 +113,9 @@ THE PANEL
 
 SAVES
   %APPDATA%\GhostNet\ghostnet_save.txt  (kept when you uninstall or update;
-  saves from 0.2.x carry straight over)
+  saves from 0.2.x carry straight over). If a save can't replace the old
+  one (a virus scanner holding the file), the previous save is never
+  deleted; the new one waits in ghostnet_save.txt.tmp and loads next time.
 
 TROUBLESHOOTING
   Clicks not registering? Update to 0.3.1 or newer (run GhostNet-Setup.exe

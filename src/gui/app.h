@@ -29,6 +29,12 @@ struct Modal {
     std::vector<std::string> chips;
     std::string chipNote;
     int chipShift = 0;
+    // A pick list (the ACCORD job picker): one row per option with a note under it. The first button stays
+    // disabled until a row is picked, and onPick gets the row index in `field`.
+    std::vector<std::string> picks, pickNotes;
+    std::vector<Color> pickColors;
+    int pick = -1;
+    std::string pickVerb;               // the first button reads pickVerb + the picked row
     std::function<void(int choice, const std::string& field)> onPick;
 };
 
@@ -73,6 +79,7 @@ public:
     std::vector<Target> board;
     float boardScroll = 0;
     Target brief;
+    bool briefStandby = false;   // the briefing's right-hand panel shows STANDBY instead of the votes
 
     // run
     std::unique_ptr<RunSession> run;
@@ -98,6 +105,14 @@ public:
     // practice
     Lock practice;
     bool practiceOn = false;
+    // FORTRESS DRILL (0.7): a composite on your real Kessler budget; RECONNECT replays your rows as LOGGED.
+    bool drillOn = false;
+    Lock drillBase;                                     // the drill's code (until its alarm log fills)
+    std::vector<std::pair<int, std::string>> drillRows; // (stage, guess) logged so far
+    int drillConnections = 0, drillRekeys = 0;
+    int drillBudget() const;
+    int drillAlarms() const;
+    void drillConnect(bool fresh);
     bool practiceFromHub = false;
     size_t rowsSeen = 0;
     float rowBorn = 0;
@@ -130,6 +145,7 @@ private:
     void drawBoard(Rectangle area);
     void drawDeck(Rectangle area);
     void drawPanelTab(Rectangle area);
+    void drawStandby(Rectangle area);   // STANDBY at the briefing (0.8)
     void drawRecords(Rectangle area);
     void drawHelp(Rectangle area);
     void drawBrief();
@@ -162,6 +178,8 @@ private:
 
 const char* actName(int act);
 Color jobColor(Job j);
+Color doctrineColor(Doctrine d);
 Color kindColor(Kind k);
+inline constexpr Color kSignatureColor{214, 120, 255, 255};   // 0.10: SIGNATURE iron - a chair's own, never meant to leave
 Color roleColor(BayRole r);
 Color toneColor(Tone t);

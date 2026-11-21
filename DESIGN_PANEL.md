@@ -129,6 +129,121 @@ currency, loot-box machine rolls, and machines that work while you're away.
 * **The deep-job pillar still holds.** The bot's kit trials require that the matched kit
   takes every floor and that one build sent against the wrong doctrine fails.
 
+## 0.7.0 — Kessler codes persist: patience counts, the wall moves to the first visit
+
+* **The problem.** A Kessler door re-rolled every connection, so a deck without the matched
+  kit faced the same lottery every time: about 0.2% to open with 4 guesses. Patience taught
+  you nothing.
+* **The fix: the code stays.** It changes only when a player action re-keys it: a trace (the
+  whole tower) or a full alarm log (that floor). Nothing is timed, and nothing changes
+  while you're away. Your rows are kept as guesses, never as marks, and replayed as LOGGED
+  rows for free.
+* **The alarm log keeps it honest.** 6 misses fill it; the 7th seals the door and re-keys
+  that floor. Brute force still fails; careful play needs 5 misses or fewer (4 with a
+  survey).
+* **More information, not more guesses.** Directional rotor arrows, a CODES LEFT counter
+  (MOTH counts, never names), and a TUMBLER SURVEY bought with credits. No new currency,
+  no timers.
+* **The wall, reworded.** The matched kit takes every floor on its first visit, and the
+  wrong kit can't. Patience gets the wrong kit there later (bot: BREAKER 3 plus surveys
+  climbs all three floors within 9 connections, with no alarm re-keys). BREAKER 0 without
+  compute never opens a door, because its one guess goes on the keypad every time.
+
+## 0.8.0 — Running lean: paying less for your servers without breaking the bill
+
+* **The problem.** Late in the game the bill ate the night. Tower players paid about 19% of
+  what they earned, and subnet players about 22% (sim bot, 8 seeds). The only way to pay less
+  was to store machines between runs, which takes a trip to the rack every night.
+* **STANDBY (tonight only).** At the briefing, the TONIGHT'S RACK tab lets a machine sit out a
+  single connection: no bill, no wear, no effect. It is cleared at the reckoning, cleared when
+  you leave the briefing, and never saved, so it can't become a standing order or anything
+  that happens while you're away.
+  * LEDGER suggests machines but never switches them: by the panel's preference, its picks
+    start OFF on every briefing.
+  * Amber lines name what you give up.
+  * The armed decoy can't go on standby, and neither can the last member of a decoy subnet.
+  * A gateway takes its whole subnet with it.
+* **SIGNAL SCRUB (paid once, permanent).** It lowers noise by 1 for 25 billed runs' worth of
+  savings, so it is never free and never quick. Captured hardware has a floor of noise 2, so
+  capturing stays the loud way in.
+* **HOUSE POWER (an owner's dividend, not income).** Each owned tower halves one chosen
+  subnet's bill. It never applies to the main rack, so the pillar holds: an unpaid main bill
+  still switches the rack off. It never pays credits either. It needs save v7.
+* **Results (sim bot, 8 seeds; `GHOSTNET_SIM_FAT=1` replays a seed the 0.7 way).**
+  * Act I is unchanged: careful 4.9% either way. LEDGER suggests nothing to a starter rack.
+  * Act IV fell from 19.1% to 10.9% of earnings.
+  * Subnet play fell from 22.2% to 20.4%. This bot rarely leaves its strike subnets home.
+  * Nothing became free. Every run that does something still sends a bill, and the
+    bill-switches-off rule is untouched.
+
+## 0.9.0 — Chairman iron, part one: the outer ring
+
+* **The ask.** Tower rewards that feel extremely broken, earned late and never handed out:
+  a Boardroom maintenance log that leads to a capture you have to work for. Part one ships
+  the outer ring; the inner chairs and the signature machines follow in 0.10.
+* **Halden Grid (LOADSHED).** A third outer tower: keypad, rotor and cipher doors with ports, trace
+  3.4 / 3.7 / 4.0%/s, objectives 62 / 72 / 82MB. Every 15s the grid sheds for 3s and every
+  subnet not on HOUSE POWER goes dark: no spike, no damage, and the decoy stays armed through
+  a shed. It's the one doctrine that rewards the 0.8 dividend, and the matched kit is a
+  SPEED subnet the house keeps lit.
+* **Service sites.** Reading an owned Boardroom's `maintenance_log.txt` pins that tower's
+  site (CITADEL, OSSUARY, FURNACE), along with its phrase. It never expires. A site is
+  security 5 at 4.4%/s under the parent doctrine. A trace re-keys only its door and costs
+  nothing else, so it keeps the decoy's rules. It leaves the board when its machine is
+  taken.
+* **ACCORD iron (MONOLITH, LEVIATHAN, COLOSSUS).** A tier 5 whose job is picked at the hold,
+  from all seven, for good (panel answer 6: no re-image). It never takes a ticket (answer 4),
+  can't be scrapped, is allowed on STANDBY (answer 3), and costs 60cr a run flat: signal 1,
+  no trait, 2cr a point to repair. Unpaid, it goes dark like everything else. Each job breaks
+  one ceiling, never the hard caps: relay 45 (rack cap 60), proxy 30 (cap 42), scout secrets,
+  compute ×2, a self-FREEZE at 80%, a vault that keeps a tower objective, a 4-slot gateway.
+* **Results (sim bot, 12 seeds of `chairs`, 140 runs).** In 10 of 12 seeds the bot owns all
+  three towers and takes ACCORD iron. The other two stall on Tidewater's Boardroom. The first
+  ACCORD lands between runs 22 and 118. Every site falls to a prepared hold on its first try.
+  Without the phrase, CITADEL's door never opens, so the log is the real key. Halden's kit
+  trial takes 3/3 floors with the matched kit and 2/3 with a FORTRESS build.
+* **Fixed on the way.** A composite door opened by phrase lost the shorter phrase hold once
+  the rotor opened. It now keeps the ×0.6.
+
+## 0.10.0 — Chairman iron, part two: the inner chairs
+
+* **The ask.** Part two of Doc #6: the three hardest chairs, a two-run cage, and busted
+  SIGNATURE machines. Every new piece has a one-word black-site name (answer 7). The inner
+  chairs list once you own 2 of the 3 outer towers (answer 8).
+* **Aurex (LEDGERLOCK).** Every download is audited as it lands: a flat +9% for an objective
+  and +4% for anything else, with no jammer softening. Each file a working vault would keep
+  escrows one audit. The doctrine punishes greed and rewards vaults, a job no other tower
+  asks for.
+* **Sable Wren (COUNTERTRACE).** A countertrace every 10s: +6%, then 2% more each time one
+  lands. FREEZE doesn't stop it, because it follows hops, not the clock. Each working proxy
+  dead-ends one a night. It rewards proxies and short visits.
+* **HELIOS Proving Ground.** FORTRESS, BIOSENTINEL and LOADSHED, one per floor, at 4.6–5.0%/s.
+  No new rule, just the exam.
+* **Cages (OUBLIETTE, SEPULCHRE, CRUCIBLE).** The cage run takes the schematic, which lists
+  the inner door, and the service key, which is its phrase (answer 5, x0.6 on the hold).
+  Nothing in a cage is detachable. The capture run is a 40s hold. A trace there burns the key
+  and re-keys both doors, so you are back to the cage run. Nothing else is lost, which keeps
+  the decoy's rules.
+* **Signature iron.** Tier 5, fixed job, and busted on purpose:
+  * **ABSOLUTION** (vault): a trace becomes a clean exit once a run, at 40 condition. Never
+    at sites or cages.
+  * **ECLIPSE** (proxy): 30 proxy plus 25% past the caps. It halves sweeps and countertraces,
+    flagged 3s ahead.
+  * **PANTHEON** (gateway): 20 power, 4 slots, +2 tiers. All three strikes, each once a run.
+  * **What it costs.** 220cr flat, 4cr/pt repair and +4% at every handshake (answer 3). It is
+    allowed on STANDBY, never the decoy (answer 4), can't be scrapped and goes dark unpaid.
+* **Results (sim bot).**
+  * **Kit trials.** A T3 owner takes each inner tower 3/3 with the matched kit. With a
+    FORTRESS build it gets Aurex 0/3, Sable Wren 1/3 and Proving Ground 1/3.
+  * **Site trials.** Every cage falls in two runs, with or without prep.
+  * **The natural bot** in `chairs` opens the inner chairs in 10 of 12 seeds by run 140, but
+    gets to try them in only 2. It is traced out of every inner floor (18 and 40 tries). By
+    then it runs without proxies and has no vaults to escrow with. The inner ring is endgame
+    for a real build, not for the bot's farm rack.
+* **Selftests.** The unlock, the audit and escrow, countertrace dead-ends, ABSOLUTION's clean
+  exit, PANTHEON's strikes and single wear, the full cage cycle including a burned key, and
+  the v9 save round-trip.
+
 ## Deferred backlog
 
 1. ~~A graphical client~~ built in 0.3.0 (see section 6).

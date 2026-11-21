@@ -6,6 +6,7 @@
 #include "balance.h"
 #include "locks.h"
 #include "rules.h"
+#include "run.h"
 #include "text.h"
 #include "world.h"
 
@@ -34,6 +35,26 @@ Result scanTarget(GameState& g, const Target& t) {
     g.net.scoutCharges -= 1;
     g.reports[t.id] = best;
     std::string msg = who->name + " reached out quietly.";
+    // ACCORD scout: a new report on a tower floor or service site gives up one doctrine secret.
+    bool accordScout = false;
+    for (auto& m : g.net.machines) if (g.net.online(m) && m.accord() && m.job == Job::Scout) accordScout = true;
+    if (accordScout && (t.kind == Kind::Tower || t.kind == Kind::Site)) {
+        if (t.backdoor && !g.knownPhrases.count(t.id)) {
+            g.knownPhrases.insert(t.id);
+            g.journal.push_back("Passphrase for " + t.host + ": " + t.passphrase + " (ACCORD scout)");
+            msg += " The ACCORD scout pulled its maintenance phrase too: " + t.passphrase + ".";
+        } else if (isFortressFloor(t)) {
+            Lock L = fortressLock(g, t);
+            for (int i = 0; i < 4; ++i)
+                if (!L.known(i)) {
+                    FortressRecord& rec = g.fortress[t.id];
+                    std::pair<int, int> pk{0, i};
+                    if (std::find(rec.peeks.begin(), rec.peeks.end(), pk) == rec.peeks.end()) rec.peeks.push_back(pk);
+                    msg += " The ACCORD scout read keypad box " + std::to_string(i + 1) + " off the tumblers. It's on the floor's record.";
+                    break;
+                }
+        }
+    }
     if (!who->home) {
         who->condition = std::max(0, who->condition - bal::SCOUT_WEAR);
         if (who->dark()) {
@@ -50,7 +71,7 @@ ReportView reportView(const GameState& g, const Target& t) {
     auto it = g.reports.find(t.id);
     if (it == g.reports.end()) return r;
     r.exists = true;
-    r.quality = (g.net.bestScoutTier() > 0 || t.kind == Kind::Tower) ? it->second : 1;   // a bought floor plan doesn't fade
+    r.quality = (g.net.bestScoutTier() > 0 || t.kind == Kind::Tower || t.kind == Kind::Site) ? it->second : 1;   // a bought floor plan doesn't fade
     r.lockName = lockName(t.lock);
     r.lockRule = t.lock == LockType::None ? "No lock - the door is open." : lockRuleText(t.lock);
     r.lockWarning = lockHasOddNearRule(t.lock);
@@ -72,6 +93,20 @@ ReportView reportView(const GameState& g, const Target& t) {
                           (t.floor + 1 == kFloors                ? "The Boardroom."
                            : t.doctrine == Doctrine::Fortress ? "No ports, so no memo leaks a way up - only the locks."
                                                               : "Its facilities memo names the next floor's maintenance phrase."));
+    }
+    if (t.kind == Kind::Tower && towerDoctrine(t.tower) == Doctrine::Proving)
+        r.facts.push_back("PROVING GROUND: HELIOS examines you in its own doctrines, one a floor - FORTRESS, then BIOSENTINEL, then LOADSHED.");
+    if (isCage(t)) {
+        r.facts.push_back(std::string("DOCTRINE: ") + doctrineText(t.doctrine));
+        r.facts.push_back(isCageCapture(t)
+                              ? std::string("SIGNATURE IRON: ") + ironName(t.tower) + ", already imaged as a " + jobName(signatureJob(t.tower)) + ". A " +
+                                    std::to_string(bal::CAGE_HOLD) + "s hold (x0.6 with the service key). A trace burns the key: back to the cage run."
+                              : std::string("A HELIOS CAGE, the outer door. Take cage_schematic.enc (the inner door's address) and read service_key.txt "
+                                            "(its phrase). Nothing here is detachable. A trace re-keys the door."));
+    } else if (t.kind == Kind::Site) {
+        r.facts.push_back(std::string("DOCTRINE: ") + doctrineText(t.doctrine));
+        r.facts.push_back(std::string("CHAIRMAN IRON: one unimaged ACCORD unit, ") + ironName(t.tower) +
+                          ". Hold the line and choose its job - for good. No paydata. A trace re-keys the door; nothing else is lost.");
     }
     if (t.deep) r.facts.push_back("THE DEEP JOB. Tuned past any deck alone. Its maintenance phrase is kept by HELIOS facilities.");
     if (t.stealable && g.net.bestScoutTier() > 0) r.facts.push_back("Detachable hardware: you could capture a server here.");
@@ -127,8 +162,9 @@ PanelView panelBriefing(const GameState& g, const Target& t) {
                  : phrase                   ? bal::COST_PHRASE
                                             : static_cast<int>((baseGuesses(t.lock) + g.deck.breaker) * 0.75) * bal::COST_GUESS;
     const int cut = g.netUnlocked ? g.net.jamSpikeCut() : 0;
+    const FortressOutlook fo = fortressOutlook(g, t);
     if (t.lock == LockType::Composite) {   // a keypad and a rotor; misses ping the trace
-        int guesses = phrase ? 4 : 6;
+        int guesses = fo.active ? fo.likely : phrase ? 4 : 6;
         lockCost = (phrase ? bal::COST_PHRASE : 0) + guesses * bal::COST_GUESS;
         if (t.doctrine == Doctrine::Fortress)
             lockCost += static_cast<int>((guesses - 1) * bal::FORTRESS_MISS_SPIKE * (100 - cut) / 100.0 / eff);
@@ -137,9 +173,35 @@ PanelView panelBriefing(const GameState& g, const Target& t) {
     for (auto& f : t.files) if (f.kind == FileKind::Objective) objSecs += secondsToDownload(g, f.size);
     objSecs = static_cast<int>(std::ceil(objSecs * bal::DOWNLOAD_TRACE_MULT));
     int need = lockCost + objSecs + 4;
+    if (t.stealable && t.kind == Kind::Site)   // the hold: security x 6s (a cage's inner door: 40s) at x1.5, x0.6 by phrase
+        need += static_cast<int>(std::ceil(anchorSeconds(t, phrase) * bal::ANCHOR_TRACE_MULT));
+    // THE INNER CHAIRS (0.10): flat pings no jammer softens.
+    int escrow = 0, deadEnds = 0;
+    bool eclipse = false;
+    if (g.netUnlocked)
+        for (auto& m : g.net.machines) {
+            if (!g.net.online(m) || m.home) continue;
+            if (m.job == Job::Vault) escrow += m.chairIron() ? bal::ACCORD_VAULT_FILES : bal::VAULT_FILES[g.net.effTier(m)];
+            if (m.job == Job::Proxy) ++deadEnds;
+            if (m.signature() && m.job == Job::Proxy) eclipse = true;
+        }
+    const double half = eclipse ? (100 - bal::ECLIPSE_SWEEP_CUT) / 100.0 : 1.0;
+    if (t.doctrine == Doctrine::Ledgerlock) {
+        int objs = 0;
+        for (auto& f : t.files) if (f.kind == FileKind::Objective) ++objs;
+        int audited = std::max(0, objs - escrow);
+        need += static_cast<int>(audited * bal::LEDGER_AUDIT_OBJ / eff);
+    }
+    if (t.doctrine == Doctrine::Countertrace) {
+        int n = std::max(0, need / bal::COUNTER_EVERY - deadEnds);
+        double sum = 0;
+        for (int i = 0; i < n; ++i) sum += (bal::COUNTER_SPIKE + bal::COUNTER_GROWTH * i) * half;
+        need += static_cast<int>(sum / eff);
+    }
+    need += static_cast<int>(signaturesOnline(g.net) * bal::SIGNATURE_CONNECT_TRACE / eff);
     if (t.doctrine == Doctrine::Biosentinel) {
         int sweeps = need / bal::BIO_SWEEP_EVERY;
-        need += static_cast<int>(sweeps * bal::BIO_SWEEP_SPIKE * (100 - cut) / 100.0 / eff);
+        need += static_cast<int>(sweeps * bal::BIO_SWEEP_SPIKE * (100 - cut) / 100.0 * half / eff);
     }
 
     Vote vv = Vote::Go;
@@ -166,6 +228,38 @@ PanelView panelBriefing(const GameState& g, const Target& t) {
                                  "% each after jammers), and the door only gives you " + std::to_string(bal::FORTRESS_GUESSES + g.deck.breaker) +
                                  " guess(es) plus one per compute box (" + std::to_string(g.netUnlocked ? g.net.computeCapacity() : 0) +
                                  " tonight). Bring a SIEGE subnet, compute, PEEK.");
+    if (t.doctrine == Doctrine::Loadshed) {
+        int exposed = 0, lit = 0;
+        for (auto* gw : g.net.openBays())
+            if (g.net.bayOnline(*gw)) (g.net.housePowered(gw->id) ? lit : exposed) += 1;
+        Network shed = g.net;
+        shed.shed = true;
+        say(Advisor::Vesper, "LOADSHED doctrine. Every " + std::to_string(bal::LOADSHED_EVERY) + "s the grid sheds for " + std::to_string(bal::LOADSHED_SECS) +
+                                 "s: proxies " + std::to_string(g.net.proxyBonus()) + "% -> " + std::to_string(shed.proxyBonus()) + "%, relays " +
+                                 std::to_string(g.net.relayBonus()) + "% -> " + std::to_string(shed.relayBonus()) + "% while it lasts" +
+                                 (exposed ? ", and no strikes. " + std::to_string(exposed) + " subnet(s) exposed" : std::string(". Nothing of yours exposed")) +
+                                 (lit ? ", " + std::to_string(lit) + " on HOUSE POWER (stays lit)." : ".") + " Strike between sheds.");
+    }
+    if (t.doctrine == Doctrine::Ledgerlock)
+        say(Advisor::Vesper, "LEDGERLOCK doctrine. Every download is AUDITED as it lands: +" + std::to_string(static_cast<int>(bal::LEDGER_AUDIT_OBJ)) +
+                                 "% an objective, +" + std::to_string(static_cast<int>(bal::LEDGER_AUDIT_FILE)) +
+                                 "% anything else, and no jammer softens it. Your vaults escrow the first " + std::to_string(escrow) +
+                                 ". Take only what you came for. Bring VAULTS.");
+    if (t.doctrine == Doctrine::Countertrace)
+        say(Advisor::Vesper, "COUNTERTRACE doctrine. Every " + std::to_string(bal::COUNTER_EVERY) + "s Sable Wren reads your route back: +" +
+                                 std::to_string(static_cast<int>(bal::COUNTER_SPIKE)) + "%, then " + std::to_string(static_cast<int>(bal::COUNTER_GROWTH)) + "% more each time. FREEZE and jammers don't touch it. " +
+                                 "Your proxies dead-end the first " + std::to_string(deadEnds) + (eclipse ? "; ECLIPSE halves the rest." : ".") +
+                                 " Bring PROXIES, and be quick.");
+    if (t.stealable && t.kind == Kind::Site)
+        say(Advisor::Vesper, std::string(isCage(t) ? "A cage's inner door" : "A service site") + ": the hold is " + std::to_string(anchorSeconds(t, false)) +
+                                 "s at x1.5 trace (" + std::to_string(anchorSeconds(t, true)) + "s if you came in by phrase). " +
+                                 (isCage(t) ? "If they trace you, the service key burns and it's back to the cage run."
+                                            : "If they trace you, the door re-keys. That's all - try again."));
+    else if (isCage(t))
+        say(Advisor::Vesper, "The cage run. Get the schematic down and read the service key. Nothing to hold here - get out clean and the inner door lists.");
+    if (signaturesOnline(g.net) > 0)
+        say(Advisor::Vesper, "Your SIGNATURE iron is loud at the handshake: the trace starts at " +
+                                 std::to_string(static_cast<int>(signaturesOnline(g.net) * bal::SIGNATURE_CONNECT_TRACE)) + "%.");
     if (t.doctrine == Doctrine::Biosentinel)
         say(Advisor::Vesper, "BIOSENTINEL doctrine. A sentinel sweep every " + std::to_string(bal::BIO_SWEEP_EVERY) + "s, +" +
                                  std::to_string(static_cast<int>(std::lround(bal::BIO_SWEEP_SPIKE * (100 - cut) / 100.0))) +
@@ -175,7 +269,8 @@ PanelView panelBriefing(const GameState& g, const Target& t) {
         say(Advisor::Vesper, "Decoy armed: '" + b->name + "'. If this goes wrong, HELIOS traces it instead of you.");
     } else if (g.netUnlocked && t.security >= 3) {
         bool hasProxy = false;
-        for (auto& m : g.net.machines) if (g.net.online(m) && (m.job == Job::Proxy || m.job == Job::Gateway) && !m.home) hasProxy = true;
+        for (auto& m : g.net.machines)
+            if (g.net.online(m) && (m.job == Job::Proxy || m.job == Job::Gateway) && !m.home && !m.chairIron()) hasProxy = true;
         say(Advisor::Vesper, hasProxy ? "No decoy armed. You have a running proxy that could take the fall."
                                       : "No decoy, no proxy to sacrifice. A trace-out here seizes the night's haul.");
         if (vv == Vote::Go) vv = Vote::Caution;
@@ -190,8 +285,23 @@ PanelView panelBriefing(const GameState& g, const Target& t) {
         ll += " You can't cover the bill right now - earn " + txt::cr(bill - g.credits) + " or everything goes dark.";
     }
     if (t.reward) ll += " Contract pays " + txt::cr(t.reward) + " on completion.";
+    if (g.netUnlocked) {   // STANDBY SUGGESTED: named here, applied only if you say so
+        auto picks = standbyPicks(g, t);
+        int save = 0;
+        for (auto& p : picks) save += p.saving;
+        if (!picks.empty()) ll += " I'd stand " + std::to_string(picks.size()) + " machine(s) down tonight: -" + txt::cr(save) + " (TONIGHT'S RACK).";
+    }
     say(Advisor::Ledger, ll);
-    if (t.stealable && g.net.bestScoutTier() > 0) {
+    if (isCageCapture(t)) {
+        say(Advisor::Ledger, std::string("Signature iron: ") + ironName(t.tower) + ", SIGNATURE tier 5, a " + jobName(signatureJob(t.tower)) + " for good. " +
+                                 std::to_string(bal::SIGNATURE_UPKEEP) + "cr/run flat, +" + std::to_string(static_cast<int>(bal::SIGNATURE_CONNECT_TRACE)) +
+                                 "% at every handshake, " + std::to_string(bal::SIGNATURE_REPAIR) + "cr a point to fix. Broken, and worth it.");
+    } else if (isCage(t)) {
+        say(Advisor::Ledger, "Nothing to take home tonight but a schematic and a key. The iron is behind the next door.");
+    } else if (t.kind == Kind::Site) {
+        say(Advisor::Ledger, std::string("Chairman iron: ") + ironName(t.tower) + ", ACCORD tier 5, any job you name. " + std::to_string(bal::ACCORD_UPKEEP) +
+                                 "cr/run flat, signal 1, never a decoy. The cheapest tier 5 you'll ever run.");
+    } else if (t.stealable && g.net.bestScoutTier() > 0) {
         HardwareSpec hw = hardwareFor(t);
         int up = bal::TIER_UPKEEP[hw.tier] + (hw.noise - 1) * bal::NOISE_UPKEEP;
         if (t.kind == Kind::Prototype) up += up * bal::UNSTABLE_UPKEEP_PCT / 100;
@@ -203,6 +313,20 @@ PanelView panelBriefing(const GameState& g, const Target& t) {
     if (g.net.externalCount() >= bal::MAX_EXTERNAL && t.stealable)
         say(Advisor::Ledger, "You own " + std::to_string(bal::MAX_EXTERNAL) + " machines already. Scrap something before you try to capture.");
 
+    Vote fortressMv = Vote::Go;
+    if (fo.active) {   // MOTH counts the field; it never names a code
+        std::string ml = fo.keypadKnown ? "The keypad is KNOWN from your logged attempts"
+                                        : "Keypad: " + std::to_string(fo.codes) + " of 5040 codes still fit";
+        if (fo.rotorCodes >= 0) ml += ", rotor: " + std::to_string(fo.rotorCodes) + " setting(s)";
+        ml += ". This door usually needs " + std::to_string(fo.likely) + " guess(es); you bring " + std::to_string(fo.budget) +
+              (fo.emergency > 0 ? " + " + std::to_string(fo.emergency) + " emergency" : std::string()) + ". Alarm log " +
+              std::to_string(fo.alarms) + "/" + std::to_string(bal::FORTRESS_ALARM_LOG) + ".";
+        if (!fo.survey && !fo.keypadKnown) ml += " A TUMBLER SURVEY would name its four digits.";
+        if (fo.budget + fo.emergency < 2) ml = "One guess can't open a two-stage door - you'd spend it every night on the keypad. Bring BREAKER or compute. " + ml;
+        say(Advisor::Moth, ml);   // first, so the panel card shows it
+        if (fo.budget + fo.emergency < fo.likely) fortressMv = Vote::Caution;
+        if (fo.budget + fo.emergency < 2) fortressMv = Vote::Abort;
+    }
     Vote mv = Vote::Go;
     if (!reported) {
         if (g.net.usableScoutCharges() > 0) {
@@ -214,9 +338,12 @@ PanelView panelBriefing(const GameState& g, const Target& t) {
     } else {
         say(Advisor::Moth, "Report on file at quality " + std::to_string(quality) + "/3. Re-reading it is free.");
     }
+    if (fortressMv == Vote::Abort || (fortressMv == Vote::Caution && mv == Vote::Go)) mv = fortressMv;
     if (phrase && t.lock == LockType::Composite)
         say(Advisor::Moth, "You hold the phrase. It opens the outer keypad only - the rotor still has to be turned by hand.");
     else if (phrase) say(Advisor::Moth, "You've read the maintenance phrase for this door. Use it and skip the lock.");
+    else if (isCageCapture(t)) say(Advisor::Moth, "The service key had this door's phrase. You didn't read it - or a fixer will sell it.");
+    else if (t.kind == Kind::Site) say(Advisor::Moth, "The Boardroom's maintenance log had this door's phrase. Or buy it - same fixers.");
     else if (t.kind == Kind::Tower && !t.backdoor)
         say(Advisor::Moth, "FORTRESS: no maintenance ports, so no phrase will help. It's you, your kit and the lock.");
     else if (t.kind == Kind::Tower)
@@ -257,7 +384,9 @@ PanelView panelReview(const GameState& g) {
     const Machine* loud = nullptr;
     for (auto& m : n.machines) if (n.online(m) && !m.home && (!loud || upkeepOf(m) > upkeepOf(*loud))) loud = &m;
     if (loud && upkeepOf(*loud) >= 35)
-        say(Advisor::Ledger, "'" + loud->name + "' costs " + txt::cr(upkeepOf(*loud)) + "/run on its own. Store it on runs that don't need it.");
+        say(Advisor::Ledger, "'" + loud->name + "' costs " + txt::cr(upkeepOf(*loud)) + "/run on its own. Put it on STANDBY at the briefing on runs that don't need it" +
+                                 (scrubSaving(*loud) > 0 ? ", or SCRUB its signal at the rack: " + txt::cr(scrubCost(*loud)) + " once, " + txt::cr(scrubSaving(*loud)) + " less every bill."
+                                                         : "."));
     int repair = repairAllCost(g);
     if (repair > 0) say(Advisor::Ledger, "Full repair would cost " + txt::cr(repair) + ".");
     if (bill > g.credits) {
@@ -275,9 +404,10 @@ PanelView panelReview(const GameState& g) {
     for (auto* gw : n.openBays()) {
         int used = static_cast<int>(n.bayMembers(gw->id).size());
         std::string st = !gw->bayOn ? "switched OFF" : !n.bayOnline(*gw) ? "BROWNED OUT - over its power budget" : std::string(roleName(gw->role));
-        say(Advisor::Moth, "Subnet " + gw->name + ": " + std::to_string(used) + "/" + std::to_string(bal::BAY_SLOTS) + " plugged, " +
+        say(Advisor::Moth, "Subnet " + gw->name + ": " + std::to_string(used) + "/" + std::to_string(n.baySlots(*gw)) + " plugged, " +
                                std::to_string(n.bayPower(gw->id)) + "/" + std::to_string(n.bayBudget(*gw)) + " power, " + st + ", " +
-                               txt::cr(n.bayUpkeep(gw->id)) + "/run." + (n.clusterBonus(gw->id) ? " CLUSTER live: acting a tier higher." : ""));
+                               txt::cr(n.bayBill(gw->id)) + "/run" + (n.housePowered(gw->id) ? " on HOUSE POWER (half)." : ".") +
+                               (n.clusterBonus(gw->id) ? " CLUSTER live: acting a tier higher." : ""));
     }
     say(Advisor::Moth, "Scouting: " + std::to_string(n.usableScoutCharges()) + " charge(s), capacity " + std::to_string(n.scoutCapacity()) +
                            ", best report quality " + std::to_string(n.bestScoutTier()) + "/3.");
@@ -299,21 +429,35 @@ PanelView panelReview(const GameState& g) {
 // ---------------------------------------------------------------------------
 // Heist prep (Act IV)
 // ---------------------------------------------------------------------------
-const char* prepName(Prep p) { return p == Prep::Plan ? "FLOOR PLAN" : "MAINTENANCE PHRASE"; }
+const char* prepName(Prep p) { return p == Prep::Plan ? "FLOOR PLAN" : p == Prep::Phrase ? "MAINTENANCE PHRASE" : "TUMBLER SURVEY"; }
 const char* prepText(Prep p) {
-    return p == Prep::Plan ? "A full-quality report: security, objectives, trace window, and every bait file named. No scout needed."
-                           : "The floor's maintenance phrase, from a fixer who used to clean there. Good until a trace re-keys the tower.";
+    switch (p) {
+        case Prep::Plan: return "A full-quality report: security, objectives, trace window, and every bait file named. No scout needed.";
+        case Prep::Phrase: return "The floor's maintenance phrase, from a fixer who used to clean there. Good until a trace re-keys the tower.";
+        case Prep::Survey:
+            return "A tech who services the keypads names this floor's four digits - not their order. Good until the floor re-keys "
+                   "(a trace, or a full alarm log).";
+    }
+    return "";
 }
 int prepCost(const Target& t, Prep p) {
+    const int f = t.kind == Kind::Site ? kFloors - 1 : std::max(0, std::min(kFloors - 1, t.floor));
     if (p == Prep::Plan) return bal::PREP_PLAN_COST;
-    return bal::PREP_PHRASE_COST[std::max(0, std::min(kFloors - 1, t.floor))];
+    if (p == Prep::Survey) return bal::PREP_SURVEY_COST[f];
+    return bal::PREP_PHRASE_COST[f];
 }
 bool prepAvailable(const GameState& g, const Target& t, Prep p, std::string* why) {
     auto no = [&](const std::string& s) { if (why) *why = s; return false; };
-    if (t.kind != Kind::Tower) return no("Prep is sold for corp towers only.");
+    if (t.kind != Kind::Tower && t.kind != Kind::Site) return no("Prep is sold for corp towers and service sites only.");
     if (p == Prep::Plan && g.reports.count(t.id) && g.reports.at(t.id) >= 3) return no("You already hold the full floor plan.");
     if (p == Prep::Phrase && !t.backdoor) return no("FORTRESS: there are no maintenance ports to sell a phrase for.");
     if (p == Prep::Phrase && g.knownPhrases.count(t.id)) return no("You already hold this floor's phrase.");
+    if (p == Prep::Survey && !isFortressFloor(t)) return no("Only a FORTRESS keypad has tumblers worth surveying.");
+    if (p == Prep::Survey) {
+        auto it = g.fortress.find(t.id);
+        if (it != g.fortress.end() && it->second.survey) return no("You already hold this floor's survey (until it re-keys).");
+        if (fortressOutlook(g, t).keypadKnown) return no("Your logged attempts already found this keypad's code.");
+    }
     if (g.credits < prepCost(t, p)) return no("Not enough credits (" + txt::cr(prepCost(t, p)) + ").");
     return true;
 }
@@ -326,7 +470,128 @@ Result buyPrep(GameState& g, const Target& t, Prep p) {
         g.reports[t.id] = 3;
         return {true, "Floor plan bought for " + txt::cr(cost) + ". The report is on file at full quality."};
     }
+    if (p == Prep::Survey) {
+        g.fortress[t.id].survey = true;
+        std::string d = fortressLock(g, t).surveyDigits();
+        g.journal.push_back("Tumbler survey, " + t.host + ": the keypad's digits are " + d + " (any order).");
+        return {true, "Survey bought for " + txt::cr(cost) + ". The keypad's digits are " + d + ", in some order. In your journal."};
+    }
     g.knownPhrases.insert(t.id);
     g.journal.push_back("Passphrase for " + t.host + ": " + t.passphrase + " (bought)");
     return {true, "Phrase bought for " + txt::cr(cost) + ". It's in your journal."};
+}
+
+// ---------------------------------------------------------------------------
+// STANDBY SUGGESTED (0.8)
+// ---------------------------------------------------------------------------
+namespace {
+struct Loss {
+    bool relay = false, proxy = false, compute = false, jam = false, vault = false, scout = false, subnet = false, cluster = false;
+    std::vector<std::string> lines;
+    bool any() const { return relay || proxy || compute || jam || vault || scout || subnet || cluster; }
+};
+int decoyCandidates(const Network& n) {
+    int c = 0;
+    for (auto& m : n.machines)
+        if (!m.home && !m.chairIron() && n.online(m) && (m.job == Job::Proxy || (m.job == Job::Gateway && n.bayOnline(m)))) ++c;
+    return c;
+}
+// What tonight loses going from rack n to rack p (p has more on standby).
+Loss lossBetween(const Network& n, const Network& p) {
+    Loss L;
+    auto pct = [](int a, int b) { return std::to_string(a) + "% -> " + std::to_string(b) + "%"; };
+    if (p.relayBonus() < n.relayBonus()) { L.relay = true; L.lines.push_back("Relay bonus " + pct(n.relayBonus(), p.relayBonus()) + ": slower downloads."); }
+    if (p.proxyBonus() < n.proxyBonus()) { L.proxy = true; L.lines.push_back("Proxy bonus " + pct(n.proxyBonus(), p.proxyBonus()) + ": the trace runs faster."); }
+    if (p.computeCapacity() < n.computeCapacity()) {
+        L.compute = true;
+        L.lines.push_back("Emergency attempts " + std::to_string(n.computeCapacity()) + " -> " + std::to_string(p.computeCapacity()) + ".");
+    }
+    if (p.jamDelay() < n.jamDelay() || p.jamSpikeCut() < n.jamSpikeCut()) { L.jam = true; L.lines.push_back("Jammers weaker: watchdogs and alarm spikes hit harder."); }
+    const Machine* va = n.bestVault();
+    const Machine* vb = p.bestVault();
+    int ka = va ? bal::VAULT_KEEP[n.effTier(*va)] : 0, kb = vb ? bal::VAULT_KEEP[p.effTier(*vb)] : 0;
+    if (kb < ka) { L.vault = true; L.lines.push_back(kb == 0 ? "No VAULT tonight: if you're traced, every file is seized." : "Your VAULT keeps less if you're traced."); }
+    if (p.scoutCapacity() < n.scoutCapacity()) { L.scout = true; L.lines.push_back("Scout asleep: scan what you need before you connect."); }
+    for (auto* gw : n.openBays()) {
+        const Machine* pg = p.find(gw->id);   // bayOpen() goes by rack position: ask each rack about its own gateway
+        if (n.bayOnline(*gw) && (!pg || !p.bayOnline(*pg))) {
+            L.subnet = true;
+            L.lines.push_back("Takes " + gw->name + "'s subnet with it: no " + roleName(gw->role) + ", no strike tonight.");
+        } else if (n.clusterBonus(gw->id) && !p.clusterBonus(gw->id)) {
+            L.cluster = true;
+            L.lines.push_back("Breaks " + gw->name + "'s CLUSTER: the other two act a tier lower.");
+        }
+    }
+    if (n.decoyId < 0 && decoyCandidates(n) > 0 && decoyCandidates(p) == 0)
+        L.lines.push_back("Nothing left running that could be armed as a decoy tonight.");
+    return L;
+}
+Loss lossOf(const GameState& g, const Machine& m) {
+    Network p = g.net;
+    if (Machine* pm = p.find(m.id)) pm->standby = true;
+    return lossBetween(g.net, p);
+}
+// What standing m down saves tonight (a gateway takes its subnet's bill with it).
+int savingOf(const GameState& g, const Machine& m) {
+    Network p = g.net;
+    if (Machine* pm = p.find(m.id)) pm->standby = true;
+    return std::max(0, g.net.upkeepTotal() - p.upkeepTotal());
+}
+}  // namespace
+
+std::vector<std::string> standbyRisks(const GameState& g, const Target& t, const Machine& m) {
+    (void)t;
+    return lossOf(g, m).lines;
+}
+
+std::vector<std::string> standbyLosses(const GameState& g) {
+    if (g.net.standbyCount() == 0) return {};
+    Network awake = g.net;
+    for (auto& m : awake.machines) m.standby = false;
+    return lossBetween(awake, g.net).lines;
+}
+
+std::vector<StandbyPick> standbyPicks(const GameState& g, const Target& t) {
+    std::vector<StandbyPick> out;
+    if (!g.netUnlocked) return out;
+    const bool hot = t.security >= 3 || t.watchdog || t.deep || t.kind == Kind::Tower || t.kind == Kind::Site;   // a night the trace will matter
+    const bool hasLock = t.lock != LockType::None || t.kind == Kind::Tower || t.kind == Kind::Site;
+    const bool hasFiles = !t.files.empty();
+    for (auto& m : g.net.machines) {
+        if (m.home || m.standby || !g.net.online(m) || !canStandby(g, m)) continue;
+        int save = savingOf(g, m);
+        if (save <= 0) continue;
+        Loss L = lossOf(g, m);
+        std::string why;
+        if (!L.any()) why = "does nothing tonight (past its cap or out of power)";
+        else {
+            // Only loud machines on a job that won't miss them.
+            if (save < bal::STANDBY_SUGGEST_MIN) continue;
+            bool needed = (L.relay && hasFiles) || ((L.proxy || L.jam || L.vault || L.subnet) && hot) || (L.compute && hasLock) || L.cluster;
+            if (needed) continue;
+            if (L.scout && !L.relay && !L.proxy && !L.compute && !L.jam && !L.vault && !L.subnet) why = "a scout scouts between runs, not during one";
+            else why = "loud, and tonight's job won't miss it";
+        }
+        StandbyPick pk;
+        pk.id = m.id;
+        pk.saving = save;
+        pk.why = why;
+        pk.risks = L.lines;
+        out.push_back(pk);
+    }
+    std::sort(out.begin(), out.end(), [](const StandbyPick& a, const StandbyPick& b) { return a.saving > b.saving; });
+    // Picks are taken together: drop any that a bigger pick already covers (a member of a gateway picked whole).
+    std::vector<StandbyPick> kept;
+    Network p = g.net;
+    for (auto& pk : out) {
+        Machine* pm = p.find(pk.id);
+        if (!pm) continue;
+        int before = p.upkeepTotal();
+        pm->standby = true;
+        int got = before - p.upkeepTotal();
+        if (got <= 0) { pm->standby = false; continue; }
+        pk.saving = got;
+        kept.push_back(pk);
+    }
+    return kept;
 }

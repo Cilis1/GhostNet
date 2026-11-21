@@ -7,6 +7,7 @@
 //
 // The simulated window is 1600x1000 (not 16:9), so every click also goes
 // through the letterbox mapping from window pixels to the 1280x720 canvas.
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <string>
@@ -45,6 +46,13 @@ struct Driver {
         float s, ox, oy;
         gx::fit(in.screenW, in.screenH, s, ox, oy);
         return Vector2{ox + v.x * s, oy + v.y * s};
+    }
+
+    // The first clickable label that starts with this prefix ("" when none) - for labels that carry a live number.
+    std::string labelStarting(const std::string& prefix) const {
+        for (auto& w : gx::widgets)
+            if (w.label.rfind(prefix, 0) == 0) return w.label;
+        return "";
     }
 
     std::vector<gx::Widget> find(const std::string& label) const {
@@ -140,6 +148,8 @@ int App::autoplay(const std::function<void()>& render) {
 
     Driver d(*this, render);
     auto bad = [&] { return 1; };
+    gx::recordText = true;
+    struct TextOff { ~TextOff() { gx::recordText = false; } } textOff;
 
     // ---- title -> practice range: type a guess, click keys, leave -------------
     d.step = "practice range";
@@ -154,6 +164,19 @@ int App::autoplay(const std::function<void()>& render) {
         if (!d.click(std::string(1, c))) return bad();
     if (!d.click("OK")) return bad();
     if (!d.waitFor([&] { return practice.history.size() == 2; }, "the clicked guess to register")) return bad();
+    d.step = "fortress drill";   // the real Kessler budget; a reconnect keeps the code and replays the row for free
+    if (!d.click("FORTRESS DRILL")) return bad();
+    if (!d.waitFor([&] { return drillOn && practice.composite() && practice.maxGuesses == drillBudget(); }, "the drill door")) return bad();
+    {
+        const std::string drillCode = practice.outer;
+        d.type(wrongGuess(practice));
+        d.key(KEY_ENTER);
+        if (!d.waitFor([&] { return practice.history.size() == 1 && practice.sealed(); }, "the drill guess")) return bad();
+        if (!d.click("RECONNECT")) return bad();
+        if (!d.waitFor([&] { return drillConnections == 2; }, "the drill reconnect")) return bad();
+        if (practice.outer != drillCode || practice.used != 0 || practice.history.size() != 1 || !practice.history[0].logged)
+            return d.fail("the drill didn't keep its code and log"), bad();
+    }
     if (!d.click("BACK")) return bad();
     if (!d.waitFor([&] { return scr == Scr::Title; }, "the title screen")) return bad();
 
@@ -253,6 +276,81 @@ int App::autoplay(const std::function<void()>& render) {
     if (!d.click("BACK TO HARDWARE")) return bad();
     if (!d.waitFor([&] { return selMachine == -1; }, "the machine to be deselected")) return bad();
 
+    // ---- 0.8 RUNNING LEAN: scrub a loud machine at the rack, stand it down at a briefing ----
+    d.step = "signal scrub";
+    {   // fast-forward: a captured T3 scout (noise 3) in the rack, as a capture would leave it
+        Machine m;
+        m.id = g.net.nextId++;
+        m.name = "loudscout";
+        m.job = Job::Scout;
+        m.tier = 3;
+        m.noise = 3;
+        m.captured = true;
+        m.condition = 100;
+        m.active = true;
+        g.net.slots = std::max(g.net.slots, g.net.activeCount() + 1);
+        g.net.machines.push_back(m);
+        g.credits += 1500;
+    }
+    const int scoutId = g.net.machines.back().id;
+    if (!d.click("loudscout")) return bad();
+    if (!d.waitFor([&] { return selMachine == scoutId; }, "the loud scout to be selected")) return bad();
+    {
+        const int cost = scrubCost(*g.net.find(scoutId)), credits = g.credits;
+        if (cost != 375) return d.fail("a T3 noise-3 scrub should cost 375cr, not " + std::to_string(cost)), bad();
+        if (!d.click("SCRUB 375cr")) return bad();
+        if (!d.click("SCRUB IT")) return bad();
+        if (!d.waitFor([&] { return g.net.find(scoutId)->noise == 2 && g.credits == credits - cost; }, "the scrub to land")) return bad();
+        if (!d.waitFor([&] { return d.find("SCRUB 375cr").empty() && d.labelStarting("SCRUB").empty(); }, "the scrub button to go (captured floor)"))
+            return bad();
+    }
+    if (!d.click("BACK TO HARDWARE")) return bad();
+
+    d.step = "standby at the briefing";
+    if (!d.click("JOB BOARD")) return bad();
+    if (!d.waitFor([&] { return tab == Tab::Board; }, "the board")) return bad();
+    std::string quiet;
+    for (auto& t : board)
+        if (!t.deep && t.kind != Kind::Tower && t.kind != Kind::Story && !g.burned.count(t.id)) { quiet = t.name; break; }
+    if (quiet.empty()) return d.fail("no ordinary listing on the board"), bad();
+    for (int pass = 0; pass < 2; ++pass) {
+        if (!d.click(quiet)) return bad();
+        if (!d.waitFor([&] { return scr == Scr::Brief; }, "the briefing")) return bad();
+        if (g.net.standbyCount() != 0) return d.fail("a fresh briefing must start with LEDGER's picks OFF"), bad();
+        if (!d.waitFor([&] { return !d.labelStarting("TONIGHT'S RACK").empty(); }, "the TONIGHT'S RACK tab")) return bad();
+        if (!d.click(d.labelStarting("TONIGHT'S RACK"))) return bad();
+        if (!d.waitFor([&] { return briefStandby && gx::onScreen("Tonight only."); }, "TONIGHT'S RACK")) return bad();
+        const int awake = g.net.upkeepAwake();
+        if (!d.waitFor([&] { return !d.labelStarting("STANDBY SUGGESTED").empty(); }, "LEDGER's STANDBY SUGGESTED (a loud scout is running)"))
+            return bad();
+        std::string sug = d.labelStarting("STANDBY SUGGESTED");
+        if (!d.click(sug)) return bad();
+        if (!d.waitFor([&] { return g.net.find(scoutId)->standby && g.net.upkeepTotal() < awake; }, "LEDGER's picks on standby")) return bad();
+        if (!d.waitFor([&] { return gx::onScreen("STANDBY ") && gx::onScreen("! "); }, "the amber risk lines")) return bad();
+        if (pass == 0) {   // walking away wakes everything
+            if (!d.click("BACK")) return bad();
+            if (!d.waitFor([&] { return scr == Scr::Hub && g.net.standbyCount() == 0; }, "BACK to wake the rack")) return bad();
+            continue;
+        }
+        if (!d.click("CONNECT")) return bad();
+        if (!d.waitFor([&] { return scr == Scr::Run && run; }, "the lean connection")) return bad();
+        if (std::find(run->billIds.begin(), run->billIds.end(), scoutId) != run->billIds.end())
+            return d.fail("a machine on standby was put on tonight's bill"), bad();
+        if (!d.click("JACK OUT")) return bad();
+        if (!d.waitFor([&] { return run && run->over(); }, "the disconnect")) return bad();
+        d.in.click = true;
+        d.frame();
+        if (!d.waitFor([&] { return scr == Scr::Reckon; }, "the lean reckoning", 10.0)) return bad();
+        if (g.net.standbyCount() != 0) return d.fail("standby outlived the reckoning"), bad();
+        for (double until = GetTime() + 10.0; GetTime() < until && scr == Scr::Reckon;) {
+            if (!d.find("CONTINUE").empty()) d.click("CONTINUE");
+            else if (!d.find("SKIP").empty()) d.click("SKIP");
+            else d.frame();
+        }
+        if (!d.waitFor([&] { return scr == Scr::Hub; }, "the hub after the lean run")) return bad();
+        if (!d.clearModals()) return bad();
+    }
+
     // ---- the menu: save & quit ---------------------------------------------------
     d.step = "save and quit";
     if (!d.click("MENU")) return bad();
@@ -278,15 +376,69 @@ int App::autoplay(const std::function<void()>& render) {
     if (!d.click("FLOOR PLAN  " + std::to_string(bal::PREP_PLAN_COST) + "cr")) return bad();
     if (!d.waitFor([&] { return g.reports.count(tower.id) && g.reports.at(tower.id) == 3; }, "the bought floor plan")) return bad();
     if (!d.clearModals()) return bad();
+    d.step = "the tumbler survey";
+    if (!d.click("TUMBLER SURVEY  " + std::to_string(bal::PREP_SURVEY_COST[0]) + "cr")) return bad();
+    if (!d.waitFor([&] { return g.fortress.count(tower.id) && g.fortress.at(tower.id).survey; }, "the bought survey")) return bad();
+    if (!d.clearModals()) return bad();
     if (!d.click("CONNECT")) return bad();
     if (!d.waitFor([&] { return scr == Scr::Run && run; }, "the tower connection")) return bad();
     d.step = "the composite lock";
     if (!run->lock.composite()) return d.fail("Kessler-Maru's door isn't a composite"), bad();
-    for (char c : run->lock.secret)   // stage 1, the keypad, by mouse
+    if (!d.waitFor([&] { return gx::onScreen("ALARM LOG  0/" + std::to_string(bal::FORTRESS_ALARM_LOG)); }, "the ALARM LOG meter")) return bad();
+    if (!run->lock.surveyed || !gx::onScreen("SURVEY") || run->lock.codesLeft() != 24 || !gx::onScreen("CODES LEFT 24"))
+        return d.fail("the survey isn't on the lock"), bad();
+    const std::string outer = run->lock.outer, inner = run->lock.inner;
+    {   // a keypad miss by mouse: the digits in the wrong order
+        std::string miss = outer.substr(1) + outer.substr(0, 1);
+        for (char c : miss)
+            if (!d.click(std::string(1, c))) return bad();
+        if (!d.click("OK")) return bad();
+        if (!d.waitFor([&] { return run->lock.history.size() == 1 && run->alarms() == 1; }, "the logged miss")) return bad();
+        if (!d.waitFor([&] { return gx::onScreen("ALARM LOG  1/" + std::to_string(bal::FORTRESS_ALARM_LOG)); }, "the ALARM LOG to count the miss"))
+            return bad();
+    }
+    for (char c : outer)   // stage 1, the keypad, by mouse
         if (!d.click(std::string(1, c))) return bad();
     if (!d.click("OK")) return bad();
     if (!d.waitFor([&] { return run->lock.stage == 1 && run->lock.carried(); }, "the rotor to wake")) return bad();
-    d.type(run->lock.secret);   // stage 2, the rotor, by keyboard
+    std::string rmiss = inner;
+    rmiss[0] = rmiss[0] == '9' ? '8' : static_cast<char>(rmiss[0] + 1);
+    d.type(rmiss);   // a rotor miss by keyboard: arrows on the screen
+    d.key(KEY_ENTER);
+    if (!d.waitFor([&] { return run->lock.history.size() == 1 && run->lock.history.back().dir.size() == 4; }, "a rotor row with arrows")) return bad();
+    if (!d.waitFor([&] { return gx::onScreen("CODES LEFT"); }, "the rotor's CODES LEFT")) return bad();
+    if (!d.click("JACK OUT")) return bad();
+    if (!d.waitFor([&] { return run && run->over(); }, "the disconnect")) return bad();
+    d.in.click = true;
+    d.frame();
+    if (!d.waitFor([&] { return scr == Scr::Reckon; }, "the tower reckoning", 10.0)) return bad();
+    if (g.act != 4 || g.floorsCleared(tower.tower) != 0) return d.fail("a walk-away changed the tower"), bad();
+    for (double until = GetTime() + 10.0; GetTime() < until && scr == Scr::Reckon;) {
+        if (!d.find("CONTINUE").empty()) d.click("CONTINUE");
+        else if (!d.find("SKIP").empty()) d.click("SKIP");
+        else d.frame();
+    }
+    if (!d.waitFor([&] { return scr == Scr::Hub; }, "the hub after the tower")) return bad();
+    if (!d.clearModals()) return bad();
+
+    d.step = "reconnect: the same code";
+    if (tab != Tab::Board && !d.click("JOB BOARD")) return bad();
+    if (!d.waitFor([&] { return tab == Tab::Board; }, "the board")) return bad();
+    if (!d.click(tower.name)) return bad();
+    if (!d.waitFor([&] { return scr == Scr::Brief; }, "the tower briefing again")) return bad();
+    if (!d.click("CONNECT")) return bad();
+    if (!d.waitFor([&] { return scr == Scr::Run && run; }, "the second tower connection")) return bad();
+    if (run->lock.outer != outer || run->lock.inner != inner) return d.fail("Kessler-Maru re-keyed between connections"), bad();
+    if (!run->lock.keypadKnown() || run->lock.used != 0 || run->lock.history.size() != 2 || !run->lock.history[0].logged)
+        return d.fail("the logged rows didn't come back free"), bad();
+    if (!d.waitFor([&] { return gx::onScreen("KEYPAD KNOWN") && gx::onScreen("LOGGED"); }, "KEYPAD KNOWN and the LOGGED rows")) return bad();
+    for (char c : outer)
+        if (!d.click(std::string(1, c))) return bad();
+    if (!d.click("OK")) return bad();
+    if (!d.waitFor([&] { return run->lock.stage == 1; }, "the known keypad")) return bad();
+    if (run->lock.used != 1 || run->alarms() != 2 || run->lock.history.size() != 1 || !run->lock.history[0].logged)
+        return d.fail("the known keypad cost more than one guess, or the rotor rows didn't replay"), bad();
+    d.type(inner);
     d.key(KEY_ENTER);
     if (!d.waitFor([&] { return run->doorOpen; }, "the composite to open")) return bad();
     if (!d.click("JACK OUT")) return bad();
@@ -294,10 +446,9 @@ int App::autoplay(const std::function<void()>& render) {
     d.in.click = true;
     d.frame();
     if (!d.waitFor([&] { return scr == Scr::Reckon; }, "the tower reckoning", 10.0)) return bad();
-    if (g.act != 4 || g.floorsCleared(tower.tower) != 0) return d.fail("a walk-away changed the tower"), bad();
 
-    std::printf("autoplay: played title -> practice -> new game -> contract -> reckoning -> rack -> save & quit -> continue "
-                "-> the ledger -> composite lock with %d frames of clicks and typing, all OK\n",
+    std::printf("autoplay: played title -> practice -> new game -> contract -> reckoning -> rack -> scrub -> standby -> save & quit -> continue "
+                "-> the ledger -> survey -> composite lock -> reconnect to the same code with %d frames of clicks and typing, all OK\n",
                 d.frames);
     fs::remove_all(saves, ec);
     return 0;
